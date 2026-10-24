@@ -55,7 +55,7 @@ except Exception:
 APP_NAME = "Clickue"
 APP_ID = "Clickue"
 OLD_APP_ID = "ScheduledAutoClicker"      # previous name - data is migrated from here
-VERSION = "4.2"
+VERSION = "4.3"
 
 IS_WIN = sys.platform == "win32"
 FROZEN = getattr(sys, "frozen", False)
@@ -379,6 +379,8 @@ def resolve_target(job, activate=False, check_cover=True):
 # ---- picture matching ------------------------------------------------------
 SNAP_SIZES = {"Small": (90, 56), "Medium": (150, 90), "Large": (260, 150)}
 MATCH_SCALES = (1.0, 1.25, 0.8, 1.5, 0.67, 1.1, 0.9, 1.75, 0.57, 2.0, 0.5)
+STEP_POLL_S = 1.0           # "wait for a picture" steps look this often
+STEP_MAX_WAIT_S = 3600      # longest a "wait for a picture" step may wait
 MATCH_WHOLE_MIN = 0.65      # whole saved picture
 MATCH_CLOSEUP_MIN = 0.62    # close-up around the spot itself
 
@@ -2220,6 +2222,15 @@ class App:
                 return False, "Clickue is closing"
             time.sleep(0.15)
             t = st.get("type")
+            if t == "waitpic":
+                ok, msg = self.wait_for_picture(st)
+                if ok:
+                    self.log(f"[{job['name']}] step {i}: picture {msg}")
+                    continue
+                if msg.startswith("timeout") and st.get("on_timeout") == "continue":
+                    self.log(f"[{job['name']}] step {i}: {msg} - continuing")
+                    continue
+                return False, f"step {i}: {msg}"
             if t == "wait":
                 lo, hi = int(st.get("min", 1)), int(st.get("max", st.get("min", 1)))
                 secs = random.randint(min(lo, hi), max(lo, hi)) if hi != lo else lo
@@ -2244,6 +2255,132 @@ class App:
             if not ok:
                 return False, f"step {i}: {msg}"
         return True, f"clicked + {len(steps)} extra step{'s' if len(steps) != 1 else ''}"
+
+    def wait_for_picture(self, st):
+        """A chain step: wait until a picture appears (optionally click it) or disappears.
+        Returns (ok, message); a message starting with "timeout" means it didn't happen in time."""
+        if not HAVE_CV:
+            return False, "picture matching isn't installed"
+        if not st.get("png"):
+            return False, "no picture saved for this step"
+        appear = st.get("until", "appears") == "appears"
+        limit = max(1, min(STEP_MAX_WAIT_S, int(st.get("timeout", 60))))
+        end = time.time() + limit
+        hint = None
+        while not self.stop.is_set():
+            if screen_available():
+                try:
+                    found, x, y, score, sc = picture_on_screen(st["png"], hint)
+                except Exception as e:
+                    return False, f"couldn't look at the screen ({e})"
+                if found:
+                    hint = sc
+                if found == appear:
+                    if appear and st.get("click_it"):
+                        ok, m = do_click(x, y, st.get("button", "left"), int(st.get("clicks", 1)),
+                                         self.settings["restore_cursor"])
+                        if not ok:
+                            return False, f"couldn't click it ({m})"
+                        return True, f"appeared ({score:.0%}) and was clicked at ({x}, {y})"
+                    return True, f"appeared ({score:.0%})" if appear else "went away"
+            if time.time() >= end:
+                return False, (f"timeout - the picture didn't {'appear' if appear else 'go away'}"
+                               f" within {fmt_dur(limit)}")
+            nxt = time.time() + STEP_POLL_S
+            while time.time() < nxt and not self.stop.is_set():
+                time.sleep(min(0.2, STEP_POLL_S))
+        return False, "Clickue is closing"
+
+    def draw_capture(self, parent, prompt, on_done):
+        """Freeze the screen, let the user drag a box, call on_done(picture) (PIL image).
+        The whole app hides meanwhile."""
+        if not (HAVE_PIL and HAVE_CV) or getattr(self, "_spot_busy", False):
+            return
+        self._spot_busy = True
+        restore = self.hide_app(parent)
+
+        def start():
+            try:
+                shot, (vx, vy) = grab_screen(move_cursor=False)
+            except Exception as e:
+                restore()
+                messagebox.showerror(APP_NAME, f"Couldn't capture the screen:\n{e}",
+                                     parent=parent or self.root)
+                return
+            W, H = shot.size
+            dim = Image.blend(shot, Image.new("RGB", shot.size, (0, 0, 0)), 0.5)
+            ov = tk.Toplevel(self.root)
+            ov.overrideredirect(True)
+            ov.attributes("-topmost", True)
+            ov.geometry(f"{W}x{H}+{vx}+{vy}")
+            cv = tk.Canvas(ov, width=W, height=H, highlightthickness=0, bd=0,
+                           cursor="crosshair", bg="#000000")
+            cv.pack()
+            imgs = [ImageTk.PhotoImage(dim)]
+            cv.create_image(0, 0, image=imgs[0], anchor="nw")
+            bright = cv.create_image(0, 0, anchor="nw")
+            rect = cv.create_rectangle(0, 0, 0, 0, outline="#3b82f6", width=2)
+            tw = cv.create_text(W // 2, 34, text=prompt + "   ·   Esc to cancel", fill="#ffffff",
+                                font=(self.font_family, 13, "bold"))
+            bx = cv.bbox(tw)
+            bg = cv.create_rectangle(bx[0] - 18, bx[1] - 10, bx[2] + 18, bx[3] + 10,
+                                     fill="#1f2937", outline="#3b82f6")
+            cv.tag_raise(tw, bg)
+            if IS_WIN:
+                try:
+                    ov.update_idletasks()
+                    hwnd = user32.GetParent(ov.winfo_id()) or ov.winfo_id()
+                    user32.SetWindowPos(hwnd, wt.HWND(-1), vx, vy, W, H, 0x0040)
+                except Exception:
+                    pass
+            st = {"x0": None, "y0": None}
+
+            def box(e):
+                return (max(0, min(st["x0"], e.x)), max(0, min(st["y0"], e.y)),
+                        min(W, max(st["x0"], e.x)), min(H, max(st["y0"], e.y)))
+
+            def down(e):
+                st["x0"], st["y0"] = e.x, e.y
+                cv.itemconfigure(bg, state="hidden")
+                cv.itemconfigure(tw, state="hidden")
+
+            def move(e):
+                if st["x0"] is None:
+                    return
+                b = box(e)
+                cv.coords(rect, *b)
+                if b[2] - b[0] > 2 and b[3] - b[1] > 2:
+                    ph = ImageTk.PhotoImage(shot.crop(b))
+                    imgs[1:] = [ph]
+                    cv.itemconfigure(bright, image=ph)
+                    cv.coords(bright, b[0], b[1])
+
+            def up(e):
+                if st["x0"] is None:
+                    return
+                b = box(e)
+                st["x0"] = None
+                if b[2] - b[0] < 16 or b[3] - b[1] < 16:
+                    cv.itemconfigure(bg, state="normal")
+                    cv.itemconfigure(tw, state="normal", text="Too small (at least 16 × 16) - "
+                                                              "drag again, or Esc to cancel")
+                    return
+                crop = shot.crop(b)
+                ov.destroy()
+                restore()
+                on_done(crop)
+
+            def cancel(e=None):
+                ov.destroy()
+                restore()
+
+            cv.bind("<ButtonPress-1>", down)
+            cv.bind("<B1-Motion>", move)
+            cv.bind("<ButtonRelease-1>", up)
+            cv.bind("<Button-3>", cancel)
+            ov.bind("<Escape>", cancel)
+            ov.focus_force()
+        self.root.after(450, start)
 
     def execute(self, job, kind):
         """kind: 'scheduled', 'test' (scheduled test click) or 'manual' (Test click now)."""
@@ -4474,7 +4611,7 @@ class Dialog(tk.Toplevel):
                     vals[k] = tuple(str(x.get()) for x in v)
             except Exception:
                 vals[k] = "?"
-        for k in ("snap_png", "watch_png", "snap_spot", "watch_area", "steps"):
+        for k in ("snap_png", "watch_png", "snap_spot", "watch_area", "steps", "step"):
             if hasattr(self, k):
                 vals[k] = str(getattr(self, k))
         return vals
@@ -4787,8 +4924,10 @@ class JobEditor(Dialog):
         g = ttk.LabelFrame(f, text="More steps after the click (optional)", padding=(12, 8))
         g.pack(fill="x", pady=(12, 0))
         ttk.Label(g, style="Muted.TLabel", wraplength=560, justify="left", text=(
-            "Run right after the main click, in order: click other spots, wait, type text or "
-            "press keys (e.g. click a box, type a message, press Enter).")).pack(anchor="w")
+            "Run right after the main click, in order: click other spots, wait, wait for a "
+            "picture to appear or go away (and click it), type text or press keys. Chain them "
+            "to react to each click's result, e.g. click Refresh, wait for Export to appear, "
+            "click it, wait for Save, click it.")).pack(anchor="w")
         tf = ttk.Frame(g, style="Card.TFrame", padding=1)
         tf.pack(fill="x", pady=(6, 6))
         self.steps_tree = ttk.Treeview(tf, columns=("n", "what", "detail"), show="headings",
@@ -4801,8 +4940,9 @@ class JobEditor(Dialog):
         self.steps_tree.bind("<Double-1>", lambda e: self.edit_step())
         br = ttk.Frame(g)
         br.pack(fill="x")
-        for text, kind in (("+ Click a spot", "click"), ("+ Wait", "wait"),
-                           ("+ Type text", "type"), ("+ Press keys", "key")):
+        for text, kind in (("+ Click", "click"), ("+ Wait", "wait"),
+                           ("+ Wait for picture", "waitpic"), ("+ Type", "type"),
+                           ("+ Keys", "key")):
             ttk.Button(br, text=text, style="Small.TButton",
                        command=lambda k=kind: StepDialog(self.app, self, {"type": k})).pack(
                 side="left", padx=(0, 4))
@@ -4826,6 +4966,14 @@ class JobEditor(Dialog):
             return "Type text", (txt[:60] + "…") if len(txt) > 60 else txt.replace("\n", " ⏎ ")
         if t == "key":
             return "Press keys", st.get("keys", "")
+        if t == "waitpic":
+            what = ("until it appears, then click it" if st.get("until", "appears") == "appears"
+                    and st.get("click_it") else
+                    "until it appears" if st.get("until", "appears") == "appears"
+                    else "until it goes away")
+            then = "stop the chain" if st.get("on_timeout", "stop") == "stop" else "continue"
+            return "Wait for picture", (f"{what} · up to {fmt_dur(int(st.get('timeout', 60)))}, "
+                                        f"then {then}")
         return t, ""
 
     def refresh_steps(self):
@@ -6177,8 +6325,8 @@ class WatchTestDialog(Dialog):
 
 class StepDialog(Dialog):
     """Add or edit one extra step of a job: click a spot, wait, type text, press keys."""
-    TYPES = (("click", "Click a spot"), ("wait", "Wait"), ("type", "Type text"),
-             ("key", "Press keys"))
+    TYPES = (("click", "Click a spot"), ("wait", "Wait"), ("waitpic", "Wait for a picture"),
+             ("type", "Type text"), ("key", "Press keys"))
 
     def __init__(self, app, editor, step, index=None):
         super().__init__(app, "Edit step" if index is not None else "Add a step", editor)
@@ -6190,7 +6338,7 @@ class StepDialog(Dialog):
         ttk.Label(row, text="Step").pack(side="left", padx=(0, 8))
         names = [n for _, n in self.TYPES]
         self.v_type = tk.StringVar(value=dict(self.TYPES).get(self.step.get("type", "click")))
-        cb = ttk.Combobox(row, values=names, state="readonly", width=16, textvariable=self.v_type)
+        cb = ttk.Combobox(row, values=names, state="readonly", width=20, textvariable=self.v_type)
         cb.pack(side="left")
         cb.bind("<<ComboboxSelected>>", lambda e: self.show_type())
         self.frames = {}
@@ -6251,6 +6399,58 @@ class StepDialog(Dialog):
         self.txt.pack(fill="x", pady=(6, 0))
         self.txt.insert("1.0", self.step.get("text", ""))
 
+        # wait for a picture
+        fr = ttk.Frame(f, padding=(0, 10, 0, 0))
+        self.frames["waitpic"] = fr
+        top = ttk.Frame(fr)
+        top.pack(fill="x")
+        self.pic_lbl = ttk.Label(top, style="Thumb.TLabel", anchor="center", width=24)
+        self.pic_lbl.pack(side="left", anchor="n")
+        rc = ttk.Frame(top, padding=(12, 0, 0, 0))
+        rc.pack(side="left", fill="x", expand=True, anchor="n")
+        ttk.Button(rc, text="▢  Draw box around picture…", style="Accent.TButton",
+                   command=self.draw_pic).pack(anchor="w")
+        ttk.Label(rc, style="Muted.TLabel", wraplength=280, justify="left", text=(
+            "Draw a box around what the previous click should make appear (or disappear), "
+            "e.g. the next button or a “Done” message.")).pack(anchor="w", pady=(6, 0))
+        self.v_until = tk.StringVar(value=self.step.get("until", "appears"))
+        r = ttk.Frame(fr)
+        r.pack(anchor="w", pady=(10, 0))
+        ttk.Label(r, text="Wait until it").pack(side="left", padx=(0, 6))
+        ttk.Radiobutton(r, text="appears", value="appears", variable=self.v_until,
+                        command=self.until_changed).pack(side="left")
+        ttk.Radiobutton(r, text="goes away", value="disappears", variable=self.v_until,
+                        command=self.until_changed).pack(side="left", padx=(10, 0))
+        r = ttk.Frame(fr)
+        r.pack(anchor="w", pady=(6, 0))
+        self.v_click_it = tk.BooleanVar(value=bool(self.step.get("click_it", True)))
+        self.click_it_cb = ttk.Checkbutton(r, text="then click it (where it appeared) with",
+                                           variable=self.v_click_it)
+        self.click_it_cb.pack(side="left")
+        self.v_pbtn = tk.StringVar(value=self.step.get("button", "left"))
+        self.pbtn_cb = ttk.Combobox(r, values=("left", "right", "middle"), state="readonly",
+                                    width=7, textvariable=self.v_pbtn)
+        self.pbtn_cb.pack(side="left", padx=6)
+        self.v_pclicks = tk.StringVar(value="double" if self.step.get("clicks") == 2 else "single")
+        self.pclk_cb = ttk.Combobox(r, values=("single", "double"), state="readonly", width=7,
+                                    textvariable=self.v_pclicks)
+        self.pclk_cb.pack(side="left")
+        r = ttk.Frame(fr)
+        r.pack(anchor="w", pady=(8, 0))
+        ttk.Label(r, text="Wait up to").pack(side="left")
+        self.v_ptimeout = tk.IntVar(value=int(self.step.get("timeout", 60)))
+        ttk.Spinbox(r, from_=1, to=STEP_MAX_WAIT_S, width=6, textvariable=self.v_ptimeout).pack(
+            side="left", padx=6)
+        ttk.Label(r, text="seconds; if it doesn't happen,").pack(side="left")
+        self.v_ponto = tk.StringVar(value="continue anyway" if self.step.get("on_timeout") ==
+                                    "continue" else "stop the chain")
+        ttk.Combobox(r, values=("stop the chain", "continue anyway"), state="readonly", width=15,
+                     textvariable=self.v_ponto).pack(side="left", padx=6)
+        ttk.Label(fr, style="Muted.TLabel", wraplength=460, justify="left", text=(
+            "It looks about once a second. While a chain is waiting, other jobs wait their turn "
+            "(the mouse can only do one thing at a time).")).pack(anchor="w", pady=(8, 0))
+        self._pic_thumb = None
+
         # key
         fr = ttk.Frame(f, padding=(0, 10, 0, 0))
         self.frames["key"] = fr
@@ -6274,8 +6474,38 @@ class StepDialog(Dialog):
         ttk.Button(b, text="Save step", style="Accent.TButton", command=self.on_save).pack(
             side="right", padx=6)
         self.update_click_info()
+        self.update_pic_thumb()
+        self.until_changed()
         self.show_type()
         self.finish()
+
+    def until_changed(self):
+        on = self.v_until.get() == "appears"
+        for w in (self.click_it_cb, self.pbtn_cb, self.pclk_cb):
+            w.state(["!disabled"] if on else ["disabled"])
+            if on and isinstance(w, ttk.Combobox):
+                w.state(["readonly"])
+
+    def update_pic_thumb(self):
+        png = self.step.get("png")
+        if not (HAVE_PIL and png):
+            self.pic_lbl.configure(image="", text="No picture yet")
+            return
+        try:
+            img = b64_to_img(png)
+            f = min(200 / img.width, 110 / img.height, 3.0)
+            if abs(f - 1) > 0.05:
+                img = img.resize((max(1, round(img.width * f)), max(1, round(img.height * f))))
+            self._pic_thumb = ImageTk.PhotoImage(img)
+            self.pic_lbl.configure(image=self._pic_thumb, text="")
+        except Exception:
+            self.pic_lbl.configure(image="", text="(picture unreadable)")
+
+    def draw_pic(self):
+        def done(img):
+            self.step["png"] = img_to_b64(img)
+            self.update_pic_thumb()
+        self.app.draw_capture(self, "Drag a box around the picture to wait for", done)
 
     def kind(self):
         return {n: k for k, n in self.TYPES}.get(self.v_type.get(), "click")
@@ -6323,6 +6553,18 @@ class StepDialog(Dialog):
                 if hi < lo:
                     lo, hi = hi, lo
                 st.update(min=max(0, lo), max=max(0, hi))
+            elif k == "waitpic":
+                if not self.step.get("png"):
+                    messagebox.showerror(APP_NAME, "Draw a box around the picture to wait for "
+                                                   "first.", parent=self)
+                    return
+                st.update(png=self.step["png"], until=self.v_until.get(),
+                          click_it=bool(self.v_click_it.get()) and self.v_until.get() == "appears",
+                          button=self.v_pbtn.get(),
+                          clicks=2 if self.v_pclicks.get() == "double" else 1,
+                          timeout=max(1, min(STEP_MAX_WAIT_S, int(self.v_ptimeout.get()))),
+                          on_timeout="continue" if self.v_ponto.get().startswith("continue")
+                          else "stop")
             elif k == "type":
                 st["text"] = self.txt.get("1.0", "end-1c")
                 if not st["text"]:

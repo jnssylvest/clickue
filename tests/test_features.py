@@ -204,4 +204,46 @@ inst = tempfile.mkdtemp(); ac.INSTALL_MARKER = os.path.join(inst, "install.ini")
 ok("no install.ini -> no install id (portable/source)", ac.read_install_id() == "")
 open(ac.INSTALL_MARKER, "w").write("[Install]\nId=20261024162500\n")
 ok("install.ini -> install id", ac.read_install_id() == "20261024162500")
+
+# ---------------------------------------------------------------- v4.3: click chains ("wait for a picture" steps)
+ac.STEP_POLL_S = 0.05
+A.stop.clear(); clicks.clear(); typed.clear()
+btn_img, _ = draw_app(1.0, 1920, 1080, 200, 150)
+db = ImageDraw.Draw(btn_img)
+db.rounded_rectangle((1300, 700, 1460, 740), radius=6, fill=(37, 99, 235))
+db.text((1325, 710), "EXPORT", fill="white", font=F(16))
+export_png = ac.img_to_b64(btn_img.crop((1290, 690, 1470, 750)))
+plain, _ = draw_app(1.0, 1920, 1080, 200, 150)
+frames = {"n": 0}
+def screen_seq():          # the button shows up on the 3rd look
+    frames["n"] += 1
+    return (btn_img if frames["n"] >= 3 else plain), (0, 0)
+ac.grab_screen = lambda move_cursor=True: screen_seq()
+chain = ac.new_job(9); chain.update(name="Chain", x=10, y=10, use_image=False, steps=[
+    {"type": "waitpic", "png": export_png, "until": "appears", "click_it": True, "timeout": 5},
+    {"type": "type", "text": "report"}])
+A.jobs = [chain]
+okk, msg, *_ = A.perform(chain, check_idle=False)
+ok("chain: click, wait for the button to appear, click it, then type",
+   okk and len(clicks) == 2 and abs(clicks[1][0] - 1380) <= 3 and abs(clicks[1][1] - 720) <= 3
+   and typed == ["report"] and frames["n"] >= 3, (msg, clicks, frames["n"]))
+clicks.clear(); typed.clear()
+ac.grab_screen = lambda move_cursor=True: (plain, (0, 0))
+chain["steps"][0]["timeout"] = 1
+t0 = time.time(); okk, msg, *_ = A.perform(chain, check_idle=False)
+ok("chain: picture never appears -> stops after the timeout, rest skipped",
+   okk and "timeout" in msg and typed == [] and 0.9 <= time.time() - t0 < 3, msg)
+chain["steps"][0]["on_timeout"] = "continue"
+okk, msg, *_ = A.perform(chain, check_idle=False)
+ok("chain: timeout set to 'continue' -> carries on", typed == ["report"], msg)
+typed.clear(); clicks.clear()
+seq = {"n": 0}
+def going():
+    seq["n"] += 1
+    return (btn_img if seq["n"] < 3 else plain), (0, 0)
+ac.grab_screen = lambda move_cursor=True: going()
+chain["steps"][0].update(until="disappears", click_it=True, timeout=5, on_timeout="stop")
+okk, msg, *_ = A.perform(chain, check_idle=False)
+ok("chain: wait until it goes away (no extra click), then continue",
+   len(clicks) == 1 and typed == ["report"], (msg, clicks))
 print(f"\nRESULT {sum(R)}/{len(R)}")
