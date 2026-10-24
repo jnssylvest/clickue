@@ -14,7 +14,7 @@
   <a href="../../releases/latest">Download</a> ·
   <a href="#why-would-i-need-clickue">Why use it?</a> ·
   <a href="FEATURES.md">All features</a> ·
-  <a href="docs/USER_GUIDE.md">User guide</a> ·
+  <a href="docs/GUIDE.md"><b>Complete guide</b></a> ·
   <a href="CHANGELOG.md">Changelog</a> ·
   <a href="../../issues/new?template=feature_request.yml">Suggest a feature</a>
 </p>
@@ -127,6 +127,18 @@ be thinking *"I'll just keep an eye on it and click when…"*.
 
 ➡️ **See the complete [feature list](FEATURES.md).**
 
+📖 **New to Clickue?** The [**complete guide**](docs/GUIDE.md) explains every feature with
+step-by-step scenarios, recipes and example pictures. It's also one click away inside the app:
+**☰ Menu → Complete guide (online)**.
+
+### In pictures
+
+| A watcher reacts to a change | A click chain waits for each screen |
+|---|---|
+| [![Watcher: when the Connected badge disappears, click Reconnect](docs/images/guide/watcher-disappears.png)](docs/GUIDE.md#6-screen-watchers) | [![Click chain: Refresh, then Export, then Save, then Done](docs/images/guide/click-chain.png)](docs/GUIDE.md#click-chains-react-to-each-click) |
+
+*Illustrations from the [complete guide](docs/GUIDE.md), using an invented example app.*
+
 <!--
 ## Screenshots
 Add screenshots to docs/images/ (main.png, watcher.png, tests.png) and remove this comment:
@@ -167,7 +179,8 @@ version.
 4. Open **🧪 Tests** and use **Show spot** / **Dry run** to confirm it found the right things.
 5. Minimize Clickue to the tray. It keeps working in the background.
 
-The [user guide](docs/USER_GUIDE.md) walks through every option.
+The [quick start guide](docs/USER_GUIDE.md) covers the basics; the
+[**complete guide**](docs/GUIDE.md) explains every option with examples and pictures.
 
 ## How it works (in short)
 
@@ -238,7 +251,7 @@ automatically for every release.
 **Does it work while the screen is locked or my remote session is disconnected?**
 No. Windows itself blocks this, for every app. Leave the session unlocked (hand an RDP
 session over to the console instead of disconnecting) and lock the computer you connect from
-instead. See the [user guide](docs/USER_GUIDE.md#locked-screens-and-remote-sessions).
+instead. See the [guide](docs/GUIDE.md#18-locked-screens-remote-desktop-and-virtual-machines).
 
 **It clicked in the wrong place / says "picture not found".**
 Re-pick the spot with some text or an icon nearby (plain areas look the same everywhere), or

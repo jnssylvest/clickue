@@ -1,4 +1,4 @@
-"""Clickue 4 features: hours, limits, steps, appears/area, history, backups, undo, alerts, migration. Expect: RESULT 43/43"""
+"""Clickue 4 features: hours, limits, steps, appears/area, history, backups, undo, alerts, migration. Expect: RESULT 55/55"""
 import os
 exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_helpers.py")).read())
 import time, threading, queue, tempfile, json, os
@@ -246,4 +246,21 @@ chain["steps"][0].update(until="disappears", click_it=True, timeout=5, on_timeou
 okk, msg, *_ = A.perform(chain, check_idle=False)
 ok("chain: wait until it goes away (no extra click), then continue",
    len(clicks) == 1 and typed == ["report"], (msg, clicks))
+
+# ---- the complete guide: menu link points to a guide that exists, and opens it
+import webbrowser
+repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+rel = ac.GUIDE_URL.split("/blob/main/", 1)[-1]
+ok("guide: link points at a file in the repository",
+   ac.GUIDE_URL.startswith(ac.REPO_URL + "/blob/main/") and os.path.isfile(os.path.join(repo, rel)),
+   ac.GUIDE_URL)
+opened = []
+webbrowser.open = lambda url, new=0: opened.append(url) or True
+A.open_guide()
+ok("guide: menu item opens the guide in the browser", opened == [ac.GUIDE_URL], opened)
+guide = open(os.path.join(repo, rel), encoding="utf-8").read()
+import re
+missing = [m for m in re.findall(r"\]\((images/[^)]+)\)", guide)
+           if not os.path.isfile(os.path.join(repo, "docs", m))]
+ok("guide: every example picture exists", not missing and "images/guide/" in guide, missing)
 print(f"\nRESULT {sum(R)}/{len(R)}")

@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.4 - The complete guide
+- New **[complete guide](docs/GUIDE.md)**: every feature, setting and default explained, with
+  scenarios, six step-by-step recipes, troubleshooting, an FAQ and 16 example pictures.
+- **☰ Menu → Complete guide (online)** opens it in your browser. **Help & shortcuts** has an
+  **Open the complete guide** button, and mentions click chains.
+
 ## 4.3 - Click chains
 - New step **Wait for a picture**: pause a job's steps until a picture **appears** (and
   optionally **click it** where it appeared) or **goes away**, with a time limit

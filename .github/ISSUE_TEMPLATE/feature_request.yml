@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for helping make Clickue better! Please check the [feature list](https://github.com/jnssylvest/clickue/blob/main/FEATURES.md) and existing ideas first. Clickue may already do it, or someone may have suggested it (add a 👍 there instead).
+        Thanks for helping make Clickue better! Please check the [feature list](https://github.com/jnssylvest/clickue/blob/main/FEATURES.md), the [complete guide](https://github.com/jnssylvest/clickue/blob/main/docs/GUIDE.md) and existing ideas first. Clickue may already do it, or someone may have suggested it (add a 👍 there instead).
   - type: textarea
     id: idea
     attributes:

@@ -17,5 +17,7 @@ Essentials:
   portable zip and the installer, and creates the `v<VERSION>` release itself. Don't push tags;
   this session's proxy blocks them.
 - Keep the docs in sync: `README.md` (overview, use cases, warnings), `FEATURES.md`
-  (complete list), `docs/USER_GUIDE.md` (how to), `CHANGELOG.md`.
+  (complete list), `docs/GUIDE.md` (complete guide: every feature, setting and default, with
+  scenarios and pictures; linked from ☰ Menu via `GUIDE_URL`), `docs/USER_GUIDE.md` (quick
+  start), `CHANGELOG.md`. Guide pictures are drawn by `scripts/make_guide_images.py`.
 - Public docs must stay general: no personal details about the owner's own use.

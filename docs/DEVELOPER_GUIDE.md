@@ -2,7 +2,7 @@
 
 Everything a developer (or an AI coding session) needs to understand, rebuild, change, test
 and release Clickue. User-facing docs: [README](../README.md) · [FEATURES](../FEATURES.md) ·
-[USER_GUIDE](USER_GUIDE.md).
+[USER_GUIDE](USER_GUIDE.md) (quick start) · [GUIDE](GUIDE.md) (complete guide, every feature).
 
 ## 1. What Clickue is (one paragraph)
 
@@ -24,7 +24,9 @@ installer/portable.txt    marker file shipped in the portable zip
 scripts/*.bat             run from source / build the exe locally (Windows)
 tests/                    headless logic tests + a GUI test (see section 8)
 .github/workflows/build.yml   Windows build + automatic GitHub Release
-docs/                     USER_GUIDE.md, this file, images/ (screenshots go here)
+docs/                     GUIDE.md (complete guide), USER_GUIDE.md (quick start), this file,
+                          images/guide/ (example pictures for GUIDE.md)
+scripts/make_guide_images.py  draws docs/images/guide/*.png (needs only Pillow)
 README.md FEATURES.md CHANGELOG.md LICENSE (MIT) requirements.txt
 ```
 
@@ -217,7 +219,7 @@ Run from the repository root.
 | Command | What | Expected |
 |---|---|---|
 | `python tests/test_watchers.py` | watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries) | `RESULT 21/21` |
-| `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id | `RESULT 52/52` |
+| `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id, guide link + pictures | `RESULT 55/55` |
 | `python tests/test_click_spot.py` | click-spot matching at 3 picture sizes × 8 screens (100–175 % scaling, moved, look-alikes) | `0 of 24` failures |
 | `python tests/gui_test.py` | drives every window and control of the real UI | `N/N checks passed, 0 errors` |
 | `python tests/gui_screenshots.py` | saves screenshots to `tests/screenshots/` | `done` |
@@ -236,8 +238,10 @@ Run from the repository root.
 
 1. Make the change in `src/clickue.py`, following the compatibility rules (section 4).
 2. Bump `VERSION = "x.y"` near the top of `src/clickue.py`.
-3. Add an entry at the top of `CHANGELOG.md`. Update `FEATURES.md`, `docs/USER_GUIDE.md` and
-   `README.md` if the behaviour or UI changed.
+3. Add an entry at the top of `CHANGELOG.md`. Update `FEATURES.md`, `docs/GUIDE.md` (the
+   complete guide: every feature, setting and default), `docs/USER_GUIDE.md` and `README.md`
+   if the behaviour or UI changed. If a picture in the guide no longer matches, change its
+   function in `scripts/make_guide_images.py` and run `python scripts/make_guide_images.py`.
 4. Run the tests (section 8).
 5. Commit and push to `main`. That's all: the workflow builds and publishes the release.
 

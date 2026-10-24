@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 import uuid
+import webbrowser
 from datetime import datetime
 from datetime import timedelta
 from logging.handlers import RotatingFileHandler
@@ -55,7 +56,9 @@ except Exception:
 APP_NAME = "Clickue"
 APP_ID = "Clickue"
 OLD_APP_ID = "ScheduledAutoClicker"      # previous name - data is migrated from here
-VERSION = "4.3"
+VERSION = "4.4"
+REPO_URL = "https://github.com/jnssylvest/clickue"
+GUIDE_URL = REPO_URL + "/blob/main/docs/GUIDE.md"      # the complete guide (☰ Menu)
 
 IS_WIN = sys.platform == "win32"
 FROZEN = getattr(sys, "frozen", False)
@@ -3871,6 +3874,7 @@ class App:
         m.add_command(label="Open data folder", command=self.open_data_folder)
         m.add_command(label="Open log file", command=self.open_log)
         m.add_separator()
+        m.add_command(label="Complete guide (online)", command=self.open_guide)
         m.add_command(label="Help & shortcuts", command=lambda: HelpDialog(self))
         m.add_command(label=f"About {APP_NAME}", command=lambda: AboutDialog(self))
         m.add_separator()
@@ -3878,6 +3882,15 @@ class App:
         m.add_command(label="Exit", command=self.quit_app)
         b = self.menu_btn
         m.tk_popup(b.winfo_rootx() + b.winfo_width() - 240, b.winfo_rooty() + b.winfo_height() + 2)
+
+    def open_guide(self):
+        """Open the complete guide on GitHub in the default browser."""
+        try:
+            webbrowser.open(GUIDE_URL, new=2)
+            self.log("Opened the complete guide in your browser")
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Couldn't open the browser:\n{e}\n\n"
+                                           f"The guide is at:\n{GUIDE_URL}", parent=self.root)
 
     def open_data_folder(self):
         try:
@@ -6712,8 +6725,9 @@ class HelpDialog(Dialog):
             ("Screen watchers", "👁 New watcher → Draw box around the picture → choose to click "
              "when it disappears or appears → pick the button (or click the picture itself) → "
              "Save. Optionally search only an area, and add active hours."),
-            ("More steps", "Any job can do more after its click: click other spots, wait, type "
-             "text, press keys - add them under “More steps” in Edit."),
+            ("More steps & click chains", "Any job can do more after its click: click other "
+             "spots, wait, wait for a picture to appear (and click it) or go away, type text, "
+             "press keys - add them under “More steps” in Edit."),
             ("Tests", "🧪 Tests opens a popup with Show spot, Test click, Check picture, Dry run "
              "and scheduled tests. The whole app hides while a test runs."),
             ("Locked screen", "Windows blocks clicks and screenshots while locked or "
@@ -6729,6 +6743,11 @@ class HelpDialog(Dialog):
             ttk.Label(f, text=title, style="Section.TLabel").pack(anchor="w", pady=(8, 2))
             ttk.Label(f, text=text, style="Muted.TLabel", wraplength=560,
                       justify="left").pack(anchor="w")
+        ttk.Label(f, text="Every feature, with examples and pictures, is explained in the "
+                          "complete guide on GitHub.", style="Muted.TLabel", wraplength=560,
+                  justify="left").pack(anchor="w", pady=(12, 0))
+        ttk.Button(self.footer, text="Open the complete guide", style="Accent.TButton",
+                   command=app.open_guide).pack(side="left")
         ttk.Button(self.footer, text="Close", command=self.destroy).pack(side="right")
         self.finish()
 

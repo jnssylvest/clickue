@@ -1,6 +1,7 @@
 # Clickue: complete feature list
 
-← Back to the [README](README.md) · Step-by-step help in the [user guide](docs/USER_GUIDE.md)
+← Back to the [README](README.md) · Every feature explained with examples and pictures in the
+[**complete guide**](docs/GUIDE.md) · [Quick start](docs/USER_GUIDE.md)
 
 ## Contents
 - [Finding the right spot](#finding-the-right-spot)
@@ -182,6 +183,8 @@ All tests hide the whole app while they run, so nothing is in the way.
   start/stop, P pause job, Ctrl+P pause all, Ctrl+T tests, Ctrl+Z undo, Ctrl+, preferences,
   Del delete.
 - **Tests** opens as a popup over the main window; popups close when you click outside them.
+- **Help built in:** ☰ Menu → **Complete guide (online)** opens the [complete guide](docs/GUIDE.md)
+  in your browser; **Help & shortcuts** shows a short summary in the app.
 
 ## Appearance & layout
 

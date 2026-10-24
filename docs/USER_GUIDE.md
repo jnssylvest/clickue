@@ -1,6 +1,11 @@
-# Clickue user guide
+# Clickue quick start guide
 
-← [README](../README.md) · [All features](../FEATURES.md)
+← [README](../README.md) · [All features](../FEATURES.md) · [**Complete guide**](GUIDE.md)
+
+> [!TIP]
+> This page is the short version. The [**complete guide**](GUIDE.md) explains every feature in
+> detail, with scenarios, recipes and example pictures. In the app: **☰ Menu → Complete guide
+> (online)**.
 
 1. [The main window](#the-main-window)
 2. [Your first scheduled click](#your-first-scheduled-click)
@@ -29,7 +34,7 @@
   it to show all jobs, only scheduled clicks or only watchers.
 - **Activity:** a live, colour-coded log. Filter it to *Clicks* or *Problems*.
 - **☰ Menu:** import/export, backups, click-history export, preferences, data folder, log,
-  help, about, uninstall, exit.
+  the complete guide (online), help, about, uninstall, exit.
 
 Drag the divider between the list and Activity to give either more room.
 

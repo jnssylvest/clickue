@@ -3,6 +3,6 @@ contact_links:
   - name: 💬 Discuss an idea or ask a question
     url: https://github.com/jnssylvest/clickue/discussions
     about: Chat about ideas, share how you use Clickue, or ask for help.
-  - name: 📖 User guide
-    url: https://github.com/jnssylvest/clickue/blob/main/docs/USER_GUIDE.md
-    about: Step-by-step help for every feature, plus troubleshooting.
+  - name: 📖 Complete guide
+    url: https://github.com/jnssylvest/clickue/blob/main/docs/GUIDE.md
+    about: Every feature explained with examples and pictures, plus troubleshooting and FAQ.
