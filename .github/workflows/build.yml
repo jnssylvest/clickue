@@ -2,7 +2,9 @@ name: Build
 
 # Builds Clickue.exe, the portable zip and the installer on Windows.
 # - every push / pull request: build + smoke test, files available under "Artifacts"
-# - pushing a tag like v4.1: also publishes a GitHub Release with the downloads
+# - every push to main: publishes (or updates) the GitHub Release for the version in
+#   src/clickue.py, e.g. VERSION = "4.1" -> release "v4.1" with the downloads attached.
+#   Bump VERSION to make a new release.
 on:
   push:
     branches: [main]
@@ -65,11 +67,21 @@ jobs:
             dist/Clickue-Setup-*.exe
             dist/Clickue-Portable-*.zip
 
-      - name: Publish release (tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish release
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: Clickue ${{ steps.ver.outputs.version }}
+          body: |
+            **Downloads**
+            - **Clickue-Setup-${{ steps.ver.outputs.version }}.exe**: installer (only for you, or all users)
+            - **Clickue-Portable-${{ steps.ver.outputs.version }}.zip**: unzip and run, no install
+
+            Windows 10/11, 64-bit. Windows may show "Windows protected your PC" for a new unsigned app: click **More info → Run anyway**.
+            Please read the [warnings](https://github.com/${{ github.repository }}#%EF%B8%8F-responsible-use--warnings) before use. What's new: see [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md).
           files: |
             dist/Clickue-Setup-*.exe
             dist/Clickue-Portable-*.zip
-          generate_release_notes: true
+          make_latest: true
