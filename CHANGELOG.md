@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.2
+- **Asks before reusing old jobs.** The first start no longer imports *Scheduled AutoClicker*
+  jobs silently; it asks. After a fresh install or reinstall, if jobs from before are found,
+  it asks whether to keep them or **start fresh** (a backup is saved first).
+- The uninstaller asks whether to also delete your jobs, settings, history and backups.
+
 ## 4.1
 - Developer guide, AI-session notes (CLAUDE.md) and the test suites added to the repository.
 - README: "Why would I need Clickue?" use cases.

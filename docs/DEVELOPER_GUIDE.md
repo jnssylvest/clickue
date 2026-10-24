@@ -106,6 +106,16 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
 4. `load()` only keeps settings keys that exist in `DEFAULT_SETTINGS`.
 5. Keep `migrate_old_data()` (copies `%APPDATA%\ScheduledAutoClicker` once, leaving it as a
    backup) and the old-name mutex check in `main()`.
+6. **Startup prompts (in `App.__init__`, before `load()` builds the UI):**
+   - If `DATA_DIR` doesn't exist yet and the old folder has jobs (`count_saved_jobs`), ask
+     *"Import them?"*. Never import silently. Saying No still creates `DATA_DIR`, so it isn't
+     asked again.
+   - The installer writes `install.ini` (`[Install] Id=<timestamp>`) next to `Clickue.exe`.
+     `read_install_id()` compares it with `settings["install_id"]`. On a new id, if jobs exist,
+     ask *"Keep them?"*. No means backup (tag `before-fresh-start`) and an empty job list. The id
+     is then stored, so each Windows user is asked once per install. Portable/source runs have
+     no `install.ini` and never ask.
+   - The uninstaller (Inno `[Code]`) asks whether to delete `%APPDATA%\Clickue` too.
 
 ## 5. Behaviour decisions & hard-won lessons (keep these)
 
@@ -194,7 +204,7 @@ Run from the repository root.
 | Command | What | Expected |
 |---|---|---|
 | `python tests/test_watchers.py` | watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries) | `RESULT 21/21` |
-| `python tests/test_features.py` | hours, limits, steps, appears/area, history, backups, undo, alerts (faked network), migration | `RESULT 43/43` |
+| `python tests/test_features.py` | hours, limits, steps, appears/area, history, backups, undo, alerts (faked network), migration, install id | `RESULT 48/48` |
 | `python tests/test_click_spot.py` | click-spot matching at 3 picture sizes × 8 screens (100–175 % scaling, moved, look-alikes) | `0 of 24` failures |
 | `python tests/gui_test.py` | drives every window and control of the real UI | `N/N checks passed, 0 errors` |
 | `python tests/gui_screenshots.py` | saves screenshots to `tests/screenshots/` | `done` |

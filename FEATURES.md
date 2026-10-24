@@ -159,7 +159,11 @@ All tests hide the whole app while they run, so nothing is in the way.
   current jobs are backed up before any restore.
 - Everything is stored in `%APPDATA%\Clickue` and survives reinstalling or moving the
   program. Damaged files are set aside instead of wiping your jobs.
-- Automatically imports data from the previous version (*Scheduled AutoClicker*).
+- Offers to import jobs from the previous version (*Scheduled AutoClicker*). It asks first and
+  never imports silently.
+- **Reinstalling:** if jobs from before are found after a fresh install, Clickue asks whether
+  to keep them or start fresh (they're backed up first). The uninstaller asks whether to remove
+  your data too.
 - **Uninstall** from inside the app, with an optional backup of your jobs to Documents first.
 
 ## Window, tray & hotkeys

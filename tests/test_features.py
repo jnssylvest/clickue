@@ -185,10 +185,23 @@ ok("alerts: only chosen events are sent", len(sent) == 1, sent)
 
 # ---------------------------------------------------------------- migration from the old name
 old = tempfile.mkdtemp(); new = os.path.join(tempfile.mkdtemp(), "Clickue")
-open(os.path.join(old, "jobs.json"), "w").write('{"jobs": []}')
+open(os.path.join(old, "jobs.json"), "w").write('{"jobs": [{"name": "old job"}]}')
 open(os.path.join(old, "autoclicker.log"), "w").write("old log")
 ac.DATA_DIR, ac.OLD_DATA_DIR = new, old
 ok("migration copies the old folder", ac.migrate_old_data() and os.path.exists(os.path.join(new, "jobs.json"))
    and os.path.exists(os.path.join(old, "jobs.json")))
 ok("migration only once", not ac.migrate_old_data())
+
+# ---------------------------------------------------------------- v4.2: ask before reusing old jobs
+fold = tempfile.mkdtemp()
+ok("count_saved_jobs: none", ac.count_saved_jobs(fold) == 0)
+json.dump({"jobs": [{"name": "a"}, {"name": "b"}]}, open(os.path.join(fold, "jobs.json"), "w"))
+ok("count_saved_jobs: 2", ac.count_saved_jobs(fold) == 2)
+empty_old = tempfile.mkdtemp(); new2 = os.path.join(tempfile.mkdtemp(), "Clickue")
+ac.DATA_DIR, ac.OLD_DATA_DIR = new2, empty_old
+ok("migration skipped when the old folder has no jobs", not ac.migrate_old_data() and not os.path.exists(new2))
+inst = tempfile.mkdtemp(); ac.INSTALL_MARKER = os.path.join(inst, "install.ini")
+ok("no install.ini -> no install id (portable/source)", ac.read_install_id() == "")
+open(ac.INSTALL_MARKER, "w").write("[Install]\nId=20261024162500\n")
+ok("install.ini -> install id", ac.read_install_id() == "20261024162500")
 print(f"\nRESULT {sum(R)}/{len(R)}")

@@ -48,9 +48,34 @@ Name: "{autodesktop}\Clickue"; Filename: "{app}\Clickue.exe"; Tasks: desktopicon
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Clickue"; ValueData: """{app}\Clickue.exe"" --minimized"; Tasks: startup; Flags: uninsdeletevalue
 
+[INI]
+; A new id on every install/reinstall: Clickue then asks once whether to keep jobs left from
+; before (see read_install_id() in src/clickue.py).
+Filename: "{app}\install.ini"; Section: "Install"; Key: "Id"; String: "{code:InstallId}"; Flags: uninsdeletesection
+
 [Run]
 Filename: "{app}\Clickue.exe"; Description: "Start Clickue now"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Settings and jobs in %APPDATA%\Clickue are kept on purpose (use Uninstall inside the
-; app, or delete that folder, to remove them too).
+Type: files; Name: "{app}\install.ini"
+
+[Code]
+function InstallId(Param: String): String;
+begin
+  Result := GetDateTimeString('yyyymmddhhnnss', #0, #0);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  DataDir: String;
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    DataDir := ExpandConstant('{userappdata}\Clickue');
+    if DirExists(DataDir) and not UninstallSilent then
+      if MsgBox('Also delete your Clickue jobs, settings, history and backups?' + #13#10 + #13#10 +
+                'Choose No to keep them for a future reinstall.' + #13#10 + DataDir,
+                mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+        DelTree(DataDir, True, True, True);
+  end;
+end;

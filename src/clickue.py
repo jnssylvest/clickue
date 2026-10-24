@@ -55,7 +55,7 @@ except Exception:
 APP_NAME = "Clickue"
 APP_ID = "Clickue"
 OLD_APP_ID = "ScheduledAutoClicker"      # previous name - data is migrated from here
-VERSION = "4.1"
+VERSION = "4.2"
 
 IS_WIN = sys.platform == "win32"
 FROZEN = getattr(sys, "frozen", False)
@@ -776,11 +776,37 @@ def write_icon_file(path):
                                         (128, 128), (256, 256)])
 
 
+INSTALL_MARKER = os.path.join(PROGRAM_DIR, "install.ini")
+
+
+def read_install_id():
+    """The installer writes install.ini (a unique id per install) next to Clickue.exe.
+    Returns that id, or '' when not installed with the installer (portable / source)."""
+    try:
+        import configparser
+        cp = configparser.ConfigParser()
+        cp.read(INSTALL_MARKER, encoding="utf-8")
+        return cp.get("Install", "Id", fallback="").strip()
+    except Exception:
+        return ""
+
+
+def count_saved_jobs(folder):
+    """How many jobs are saved in a data folder (0 if none / unreadable)."""
+    try:
+        with open(os.path.join(folder, "jobs.json"), encoding="utf-8") as f:
+            return len(json.load(f).get("jobs", []))
+    except Exception:
+        return 0
+
+
 def migrate_old_data():
     """First start under the new name: copy the old data folder over (the old folder is
     left untouched as a backup). Returns True if something was copied."""
     try:
         if os.path.isdir(DATA_DIR) or not os.path.isdir(OLD_DATA_DIR):
+            return False
+        if count_saved_jobs(OLD_DATA_DIR) == 0:
             return False
         shutil.copytree(OLD_DATA_DIR, DATA_DIR)
         old_log = os.path.join(DATA_DIR, "autoclicker.log")
@@ -1413,6 +1439,7 @@ DEFAULT_SETTINGS = {
     "default_watch_interval": 30,
     "default_watch_confirm": 2,
     "prefs_tab": "general",
+    "install_id": "",               # last install this user has answered "keep jobs?" for
 }
 
 
@@ -1556,9 +1583,48 @@ class App:
         self.uninstalled = False
         self.pal = LIGHT
 
-        self.renamed_from_old = migrate_old_data()
+        self.renamed_from_old = False
+        self.fresh_start = False
+        asked_import = False
+        n_old = count_saved_jobs(OLD_DATA_DIR) if not os.path.isdir(DATA_DIR) else 0
+        if n_old and os.path.isdir(OLD_DATA_DIR):
+            asked_import = True
+            root.withdraw()
+            if messagebox.askyesno(
+                    APP_NAME, f"Welcome to Clickue!\n\nFound {n_old} job(s) from the previous "
+                              f"version (Scheduled AutoClicker) on this computer.\n\n"
+                              f"Import them into Clickue?\n\nYes = import my jobs and settings\n"
+                              f"No = start with an empty list (the old jobs stay where they "
+                              f"are)", parent=root):
+                self.renamed_from_old = migrate_old_data()
         os.makedirs(DATA_DIR, exist_ok=True)
         self.settings, self.jobs, migrated = self.load()
+        install_id = read_install_id()
+        if install_id and self.settings.get("install_id") != install_id:
+            # freshly installed / reinstalled: offer a clean start if jobs are left over
+            if self.jobs and not asked_import:
+                root.withdraw()
+                keep = messagebox.askyesno(
+                    APP_NAME, f"Clickue was just installed and found {len(self.jobs)} job(s) "
+                              f"from before on this computer.\n\nKeep them?\n\n"
+                              f"Yes = keep my jobs and settings\n"
+                              f"No = start fresh (your old jobs are saved in a backup first, "
+                              f"so you can bring them back from \u2630 Menu \u2192 Backups)",
+                    parent=root)
+                if not keep:
+                    try:
+                        make_backup(self.jobs, self.settings, "before-fresh-start")
+                    except Exception:
+                        pass
+                    self.jobs = []
+                    self.fresh_start = True
+                    try:
+                        write_json(TESTS_PATH, [])
+                    except Exception:
+                        pass
+            self.settings["install_id"] = install_id
+            migrated = True
+        root.deiconify()
         self.setup_logging()
         keep_awake(self.settings["keep_awake"])
 
@@ -1593,6 +1659,9 @@ class App:
         root.bind("<Unmap>", self.on_unmap)
 
         self.log(f"{APP_NAME} {VERSION} started. Data folder: {DATA_DIR}")
+        if self.fresh_start:
+            self.log("Started fresh - your previous jobs were saved in a backup "
+                     "(\u2630 Menu \u2192 Backups to bring them back).")
         if self.renamed_from_old:
             self.log(f"Welcome to Clickue! Your jobs, settings and history were copied from "
                      f"Scheduled AutoClicker. The old folder was kept as a backup: {OLD_DATA_DIR}")
@@ -6301,7 +6370,8 @@ class BackupsDialog(Dialog):
         self.tree.delete(*self.tree.get_children())
         self.items = list_backups()
         names = {"auto": "Daily", "manual": "Manual", "before-restore": "Before a restore",
-                 "before-uninstall": "Before uninstall"}
+                 "before-uninstall": "Before uninstall",
+                 "before-fresh-start": "Before a fresh start"}
         for i, b in enumerate(self.items):
             when = b["created"].replace("T", "  ") if b["created"] else b["name"]
             self.tree.insert("", "end", iid=str(i), values=(when, names.get(b["tag"], b["tag"]),

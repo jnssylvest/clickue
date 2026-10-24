@@ -160,6 +160,9 @@ from the computer running Clickue. Keep the webhook URL and bot token private.
   up now**, or **Restore…** to replace or add jobs (your current jobs are backed up first).
 - **Undo delete:** right after deleting, click **Undo** or press Ctrl+Z.
 - **Import / Export** jobs to share them between computers.
+- **Reinstalling:** your jobs are kept in your user folder. After a fresh install, Clickue asks
+  whether to keep them or start fresh (it saves a backup first). When uninstalling, choose
+  whether to delete your data as well.
 
 ## Preferences
 

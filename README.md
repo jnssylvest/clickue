@@ -236,6 +236,12 @@ choose a larger picture size. **Show spot** shows exactly where it would click.
 By default it waits until you've been idle for 5 seconds, then puts the mouse back where it
 was after clicking.
 
+**I reinstalled it and my old jobs are still there.**
+Your jobs live in your user folder, not in the program, so they survive a reinstall. After a
+fresh install Clickue asks whether to keep them or start fresh (with a backup). To remove
+everything, answer **Yes** when the uninstaller asks about deleting your data, or use
+☰ Menu → **Uninstall…**.
+
 **Where are my settings?** ☰ Menu → **Open data folder**.
 
 **How do I stop everything at once?** Ctrl+Alt+P (global hotkey) or **Pause all**.
