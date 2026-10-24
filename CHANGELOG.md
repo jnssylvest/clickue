@@ -1,6 +1,8 @@
 # Changelog
 
 ## 4.1
+- Developer guide, AI-session notes (CLAUDE.md) and the test suites added to the repository.
+- README: "Why would I need Clickue?" use cases.
 - **Portable mode:** a `portable.txt` file next to the program keeps all data in a
   `ClickueData` folder beside it.
 - Installer for one user or all users; release builds made automatically.

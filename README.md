@@ -12,6 +12,7 @@
 
 <p align="center">
   <a href="../../releases/latest">Download</a> ·
+  <a href="#why-would-i-need-clickue">Why use it?</a> ·
   <a href="FEATURES.md">All features</a> ·
   <a href="docs/USER_GUIDE.md">User guide</a> ·
   <a href="CHANGELOG.md">Changelog</a>
@@ -45,6 +46,50 @@ console).
 
 It runs quietly in the system tray, uses no internet connection unless you turn on phone
 alerts, and keeps all of its data on your own computer.
+
+## Why would I need Clickue?
+
+Because some apps and web pages need a click now and then, or every time something changes,
+and you shouldn't have to sit there to do it. Clickue is for the moments when you'd otherwise
+be thinking *"I'll just keep an eye on it and click when…"*.
+
+### Keep things fresh and alive
+- **Dashboards and status pages that don't refresh on their own.** Press their Refresh
+  button every few minutes or hours, so whatever is on screen is always current.
+- **Sessions that time out.** Click a harmless spot (or a "Stay signed in" / "Keep working"
+  button) on a schedule so a web app, remote tool or console doesn't log you out.
+- **Wall screens and kiosks.** Keep a shared display cycling, refreshed and in the right view
+  without anyone touching it.
+
+### React when something changes on screen
+- **"Session expired" / "Reconnect" / "Try again" dialogs.** A watcher that clicks the
+  button when the dialog *appears* gets things running again by itself.
+- **A status badge, icon or "Connected" indicator that goes away.** A watcher that clicks
+  *Reconnect* (or *Retry*, *Refresh*) when the picture *disappears*.
+- **Recurring pop-ups and prompts** that block a long-running task until someone clicks OK.
+- **Waiting for something to finish.** Click *Next* or *Continue* the moment a "Done" message
+  or a button appears, instead of watching a progress bar.
+
+### Take care of routine clicking
+- **Recurring checks and confirmations.** Open a page, click through to the same screen and
+  press the same buttons on a schedule, with **multi-step jobs** that click, wait, type and
+  press keys.
+- **Only during working hours.** Active hours and days keep it quiet at night and on weekends.
+- **A fixed number of times.** "Stop after 20 clicks" or "stop on Friday at 18:00".
+
+### Look after a remote or virtual machine
+- Clickue runs inside the machine it automates, such as a VM or a remote desktop. It keeps
+  working when you switch between connection methods with different screen sizes or display
+  scaling, because it finds spots by their **picture**, not fixed pixel positions.
+- **Phone alerts** (Discord / Telegram) tell you when a watcher had to step in, or when a click
+  couldn't happen, so you know without logging in.
+
+### Save your hands and attention
+- Fewer repetitive clicks means less strain, and less need to babysit a screen. Set it up once,
+  test it with **Dry run**, and get on with something else.
+
+> Clickue isn't a game bot or a scraper. It's a careful, visible helper for clicks you'd
+> otherwise do yourself. See [Responsible use & warnings](#%EF%B8%8F-responsible-use--warnings).
 
 ## Highlights
 
@@ -194,6 +239,11 @@ was after clicking.
 **Where are my settings?** ☰ Menu → **Open data folder**.
 
 **How do I stop everything at once?** Ctrl+Alt+P (global hotkey) or **Pause all**.
+
+## For developers
+
+The [developer guide](docs/DEVELOPER_GUIDE.md) covers the architecture, data model, design
+decisions, tests and the release process. Run the tests in `tests/` before sending changes.
 
 ## Contributing
 
