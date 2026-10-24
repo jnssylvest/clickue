@@ -1,0 +1,213 @@
+# Clickue user guide
+
+← [README](../README.md) · [All features](../FEATURES.md)
+
+1. [The main window](#the-main-window)
+2. [Your first scheduled click](#your-first-scheduled-click)
+3. [Your first screen watcher](#your-first-screen-watcher)
+4. [Where to click: picture, window or position](#where-to-click-picture-window-or-position)
+5. [When it may run: hours and limits](#when-it-may-run-hours-and-limits)
+6. [More steps after the click](#more-steps-after-the-click)
+7. [Testing a job](#testing-a-job)
+8. [Pausing, stopping and hotkeys](#pausing-stopping-and-hotkeys)
+9. [Phone alerts](#phone-alerts)
+10. [History, stats and backups](#history-stats-and-backups)
+11. [Preferences](#preferences)
+12. [Locked screens and remote sessions](#locked-screens-and-remote-sessions)
+13. [Troubleshooting](#troubleshooting)
+
+---
+
+## The main window
+
+- **Summary cards** (top): the next click and countdown, active jobs, clicks today, and whether
+  the screen is available. Collapse them with **▴ Summary**.
+- **Toolbar:** New click, New watcher, Edit, Duplicate, Delete, Start/Stop, Pause, Pause all,
+  Tests, Import, Export. Buttons that don't fit go into **More ▾**.
+- **Job list:** one row per job, with status, target, schedule, next click, a countdown, clicks
+  and last result. Double-click to edit; right-click for everything else. Use the filter above
+  it to show all jobs, only scheduled clicks or only watchers.
+- **Activity:** a live, colour-coded log. Filter it to *Clicks* or *Problems*.
+- **☰ Menu:** import/export, backups, click-history export, preferences, data folder, log,
+  help, about, uninstall, exit.
+
+Drag the divider between the list and Activity to give either more room.
+
+## Your first scheduled click
+
+1. Click **＋ New click** (Ctrl+N) and give it a name.
+2. Click **◎ Pick on screen…**. The app hides and a countdown appears. Point at the button
+   within 5 seconds. If the countdown box is in the way, move your mouse towards it and it
+   jumps aside, or drag it.
+3. Under **Schedule**, set **Scheduled every** (e.g. 8 h).
+4. Leave **Add a random delay** on to vary the time (e.g. 10 s to 15 min after each scheduled
+   time), or turn it off for exact timing.
+5. Optionally set a **First scheduled time** (24 h, e.g. 08:00).
+6. Leave **Start this schedule when I save** ticked and click **Save**.
+
+The row shows the next click time and counts down. Hover over Activity to follow what happens.
+
+## Your first screen watcher
+
+A watcher looks at the screen every so often and clicks when something changes.
+
+1. Click **👁 New watcher** (Ctrl+Shift+N).
+2. Choose **Click when the picture disappears** or **when the picture appears**.
+3. Click **▢ Draw box around picture…**. The screen freezes; drag a box around the picture
+   to watch (something distinctive, with text or an icon), then release.
+4. Optional: **Search only an area** → **Draw area…** to limit where it looks.
+5. Under **Button to click…**, **Pick on screen…** the button. For "appears" watchers you can
+   instead tick **Click the picture itself**.
+6. Set **Check every** (e.g. 30 s) and **Click when missing/showing for** (e.g. 2 checks in a
+   row, to ignore brief flickers).
+7. **Click only once each time it disappears** (on by default): after a click it waits for
+   the picture to come back before it will click again. Turn it off to keep clicking for as
+   long as the picture stays gone.
+8. Optional: a **random delay** before clicking, and a **wait after each click** before it
+   looks again (useful when "click once" is off and the app needs a moment to recover).
+9. **Check now** and **Dry run** confirm everything is found. Then **Save**.
+
+> [!TIP]
+> While the Clickue window is open on screen, a *missing* picture isn't counted (the window
+> might be covering it). Minimize Clickue or send it to the tray when you're done.
+
+## Where to click: picture, window or position
+
+When you pick a spot, Clickue saves three things and uses them in this order:
+
+1. **Its picture** (recommended, on by default). Found again anywhere on screen and at any
+   size. Choose **Small / Medium / Large**; bigger is more unique but slower. If it can't be
+   found: **Wait and retry** (safe) or **Click the saved position**.
+2. **Inside a window.** Used when you picked inside an app window. Follows that window when
+   it moves; optionally brings it to the front and scales with its size. Edit **Window title
+   contains** if the app's title changes (keep only the part that stays the same).
+3. **Fixed screen position.** The exact pixel. Can scale with the screen resolution.
+
+**Show spot** always shows where it would click *right now*, and how it found it.
+
+## When it may run: hours and limits
+
+In any job's editor, under **When it may run**:
+
+- **Only run during set hours and days.** E.g. 08:00–22:00 Mon–Fri. Overnight ranges like
+  22:00–06:00 work, and the same time twice means all day. For scheduled clicks, choose what
+  happens when a click comes due outside the hours: **Wait until the hours start, then
+  click**, or **Skip that click**. Watchers simply don't look outside the hours.
+- **Stop after N clicks**, counted from when the job is (re)started.
+- **Stop at** a date and time (`YYYY-MM-DD HH:MM`).
+
+A job that reaches a limit stops, shows *Finished*, and can send a phone alert.
+
+## More steps after the click
+
+Under **More steps after the click**, add any number of steps that run, in order, right after
+the main click:
+
+| Step | What it does |
+|---|---|
+| **Click a spot** | Pick on screen; found by its picture; any button, single or double |
+| **Wait** | e.g. 3 s, or a random 3–5 s |
+| **Type text** | Types into whatever has focus. Any characters; a new line presses Enter |
+| **Press keys** | e.g. `Enter`, `Tab`, `Ctrl+S`, `Alt+F4`, `Ctrl+Shift+S`, `F5`, arrows |
+
+Example: *click the search box → type a name → press Enter → wait 2 s → click the first
+result.* If a step fails (e.g. its spot can't be found), the remaining steps are skipped and
+it's reported in Activity and the click history.
+
+## Testing a job
+
+Open **🧪 Tests** (Ctrl+T, or right-click a job → **Open Tests…**). Pick the job at the top.
+The whole app hides during each test and comes back with the result.
+
+| Test | Does |
+|---|---|
+| **Show spot** | Moves the mouse to the spot and marks it. No click |
+| **Test click now** | One real click, runs the extra steps too; schedule unchanged |
+| **Schedule test click…** | One click X minutes from now (e.g. after you disconnect) |
+| **Check picture** | Is the watched picture on screen / in its area? |
+| **Dry run** | Marks the picture, then the button, and says whether it would click. No click |
+| **Schedule watcher test…** | Runs the watcher check later in the background; optionally clicks |
+
+Every result goes into the **Test history** (this job or all jobs). Click a line for details.
+
+## Pausing, stopping and hotkeys
+
+- **Pause** (or **P**): keeps the job's schedule but doesn't click until you resume. A click
+  that came due while paused is skipped, not fired the moment you resume.
+- **Stop**: turns the job off and clears its schedule.
+- **Pause all** (Ctrl+P, the tray menu, or **Ctrl+Alt+P** from anywhere).
+- **Show / hide Clickue** from anywhere: **Ctrl+Alt+K**.
+- Change or turn off the global hotkeys in **Preferences → Hotkeys**.
+
+## Phone alerts
+
+**Preferences → Phone alerts**, tick **Send alerts to my phone**, then set up one or both:
+
+- **Discord:** in a server you own, open *Channel settings → Integrations → Webhooks → New
+  webhook → Copy webhook URL*, and paste it in.
+- **Telegram:** message **@BotFather**, create a bot and paste its **token**. Send your new
+  bot any message, then get your **chat id** (for example from @userinfobot) and paste it.
+
+Choose which events send alerts and click **Send a test alert**. Alerts need internet access
+from the computer running Clickue. Keep the webhook URL and bot token private.
+
+## History, stats and backups
+
+- **Stats:** right-click a job → **Stats & click history…** shows totals, today, the last 7
+  days, problems and recent activity. You can export that job's history.
+- **Export click history (CSV):** ☰ Menu. Opens in Excel or Google Sheets.
+- **Backups:** ☰ Menu → **Backups…**. One is made automatically every day (keeps 14). **Back
+  up now**, or **Restore…** to replace or add jobs (your current jobs are backed up first).
+- **Undo delete:** right after deleting, click **Undo** or press Ctrl+Z.
+- **Import / Export** jobs to share them between computers.
+
+## Preferences
+
+**☰ Menu → Preferences** (Ctrl+,):
+
+| Tab | Settings |
+|---|---|
+| General | Tray behaviour, notifications, start with Windows, start minimized, keep awake |
+| Clicking | Retry time when the screen is unavailable, wait-for-idle, put mouse back |
+| Watchers | Default check interval and confirmation count for new watchers |
+| Hotkeys | Global hotkeys on/off and their key combinations |
+| Phone alerts | Discord / Telegram, which events, test alert |
+| Appearance | Light / dark / system theme, summary cards |
+| Data & backups | Daily backups and how many to keep, click history on/off, log size, data folder, uninstall |
+
+## Locked screens and remote sessions
+
+Windows doesn't allow **any** program to click on, or take pictures of, a locked screen or a
+disconnected remote-desktop session. While that's the case, Clickue waits, retries, and then
+reports *Missed*. It never clicks blindly.
+
+To keep Clickue working while you're away:
+
+- **Don't lock the computer running Clickue.** Turn off its screensaver and lock screen, and
+  lock the computer you connect *from* instead.
+- **Leaving an RDP session:** instead of closing the window, hand the session back to the
+  console so the desktop stays active. Run this from an administrator command prompt inside
+  the session:
+  ```bat
+  for /f "skip=1 tokens=3" %s in ('query user %USERNAME%') do %windir%\System32\tscon.exe %s /dest:console
+  ```
+- **Virtual machines:** protect the hypervisor console and remote access with strong
+  passwords and two-factor sign-in, since the session itself stays unlocked.
+- Check it works: **Schedule test click…** for 2 minutes, disconnect, reconnect later and
+  read the result in the Test history.
+
+## Troubleshooting
+
+| Problem | Try |
+|---|---|
+| "Picture not found" | Re-pick with text or an icon near the spot, or use a Large picture. **Show spot** to check |
+| Clicks the wrong place | **Show spot**. Re-pick if the app's look changed. Make sure the target isn't covered |
+| Watcher shows "Can't tell: Clickue window open" | Minimize Clickue or send it to the tray |
+| Watcher never clicks again | "Click only once" is waiting for the picture to come back; untick it to keep clicking |
+| Nothing happens while away | The screen was locked or disconnected; see [above](#locked-screens-and-remote-sessions) |
+| A hotkey doesn't work | Another program uses it; choose a different one in Preferences → Hotkeys (see the log) |
+| Alerts don't arrive | **Send a test alert**; check the URL / token / chat id and internet access |
+| Want to start over | ☰ Menu → **Backups…** to restore, or **Uninstall…** |
+
+Still stuck? Open an issue with the relevant lines from the log (☰ Menu → **Open log file**),
+with anything private removed.

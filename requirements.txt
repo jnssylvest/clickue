@@ -1,0 +1,4 @@
+pillow>=10.0
+pystray>=0.19
+opencv-python-headless>=4.8
+numpy>=1.24

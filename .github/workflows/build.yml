@@ -1,0 +1,75 @@
+name: Build
+
+# Builds Clickue.exe, the portable zip and the installer on Windows.
+# - every push / pull request: build + smoke test, files available under "Artifacts"
+# - pushing a tag like v4.1: also publishes a GitHub Release with the downloads
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Smoke test (code compiles, all modules import, logo renders)
+        run: |
+          python -m py_compile src/clickue.py
+          python -c "import sys, importlib.util; sys.argv=['clickue']; s=importlib.util.spec_from_file_location('c','src/clickue.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); assert m.HAVE_CV and m.HAVE_TRAY and m.HAVE_PIL, 'missing packages'; m.make_logo(64); m.parse_combo('Ctrl+S'); print('Clickue', m.VERSION, 'OK')"
+
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path src/clickue.py -Pattern '^VERSION = "(.+)"').Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build Clickue.exe
+        run: python -m PyInstaller --noconfirm --onefile --noconsole --name Clickue --icon assets/clickue.ico --hidden-import pystray._win32 src/clickue.py
+
+      - name: Make portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force pkg | Out-Null
+          Copy-Item dist/Clickue.exe, installer/portable.txt, README.md, LICENSE pkg/
+          Compress-Archive -Path pkg/* -DestinationPath "dist/Clickue-Portable-${{ steps.ver.outputs.version }}.zip" -Force
+
+      - name: Make installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          $env:CLICKUE_VERSION = "${{ steps.ver.outputs.version }}"
+          & $iscc installer/clickue.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Clickue-${{ steps.ver.outputs.version }}
+          path: |
+            dist/Clickue-Setup-*.exe
+            dist/Clickue-Portable-*.zip
+
+      - name: Publish release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Clickue-Setup-*.exe
+            dist/Clickue-Portable-*.zip
+          generate_release_notes: true

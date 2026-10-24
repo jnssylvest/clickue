@@ -1,0 +1,1 @@
+Put this file next to Clickue.exe to run in portable mode: all data is kept in the ClickueData folder beside it. Delete this file to use %APPDATA%\Clickue instead.
