@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: write
+  discussions: write
 
 jobs:
   build:
@@ -81,7 +82,10 @@ jobs:
 
             Windows 10/11, 64-bit. Windows may show "Windows protected your PC" for a new unsigned app: click **More info → Run anyway**.
             Please read the [warnings](https://github.com/${{ github.repository }}#%EF%B8%8F-responsible-use--warnings) before use. What's new: see [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md).
+
+            💡 Ideas? [Suggest a feature](https://github.com/${{ github.repository }}/issues/new?template=feature_request.yml) or chat in [Discussions](https://github.com/${{ github.repository }}/discussions). 🐞 [Report a bug](https://github.com/${{ github.repository }}/issues/new?template=bug_report.yml).
           files: |
             dist/Clickue-Setup-*.exe
             dist/Clickue-Portable-*.zip
           make_latest: true
+          discussion_category_name: Announcements

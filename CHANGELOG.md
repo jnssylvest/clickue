@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.3 - Click chains
+- New step **Wait for a picture**: pause a job's steps until a picture **appears** (and
+  optionally **click it** where it appeared) or **goes away**, with a time limit
+  (**stop the chain** or **continue anyway**). This lets one job react to the result of each
+  click: click → wait for the next button → click it → wait for "Done" → …
+- Shorter step buttons in the editor (+ Click, + Wait, + Wait for picture, + Type, + Keys).
+- Each release is now announced in GitHub Discussions; feature-request and bug-report forms.
+
 ## 4.2
 - **Asks before reusing old jobs.** The first start no longer imports *Scheduled AutoClicker*
   jobs silently; it asks. After a fresh install or reinstall, if jobs from before are found,

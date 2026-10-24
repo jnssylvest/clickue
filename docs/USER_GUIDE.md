@@ -107,12 +107,29 @@ the main click:
 |---|---|
 | **Click a spot** | Pick on screen; found by its picture; any button, single or double |
 | **Wait** | e.g. 3 s, or a random 3–5 s |
+| **Wait for a picture** | Waits until a picture **appears** (optionally **clicks it**) or **goes away**, up to a time limit; then stops the chain or continues |
 | **Type text** | Types into whatever has focus. Any characters; a new line presses Enter |
 | **Press keys** | e.g. `Enter`, `Tab`, `Ctrl+S`, `Alt+F4`, `Ctrl+Shift+S`, `F5`, arrows |
 
 Example: *click the search box → type a name → press Enter → wait 2 s → click the first
 result.* If a step fails (e.g. its spot can't be found), the remaining steps are skipped and
 it's reported in Activity and the click history.
+
+### Click chains: react to each click
+
+Fixed waits are guesses: too short and the next click lands before the app is ready, too long
+and time is wasted. **Wait for a picture** waits for the actual result instead:
+
+1. Main click: **Refresh**.
+2. **Wait for a picture** → draw a box around the **Export** button → *until it appears* →
+   *then click it* → up to 60 s → *stop the chain*.
+3. **Wait for a picture** → the **Save** button → *appears* → *click it*.
+4. **Wait for a picture** → the "Download complete" message → *appears* (no click).
+
+Draw each picture while that screen is showing (open the app to that state first). Start the
+chain on a schedule, or make the job a **screen watcher** so the chain starts when something
+changes. While a chain waits, other jobs wait their turn, since the mouse can only do one
+thing at a time. Keep the time limits sensible.
 
 ## Testing a job
 

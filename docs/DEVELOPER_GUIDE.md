@@ -93,7 +93,9 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
   ("wait"|"skip"), limit_clicks_on, limit_clicks, limit_until_on, limit_until
   ("YYYY-MM-DD HH:MM")`; runtime `run_clicks`
 - Steps: `steps: [{type:"click", x, y, use_image, snap_png, snap_spot, button, clicks, ...} |
-  {type:"wait", min, max} | {type:"type", text} | {type:"key", keys}]`
+  {type:"wait", min, max} | {type:"type", text} | {type:"key", keys} |
+  {type:"waitpic", png, until ("appears"|"disappears"), click_it, button, clicks, timeout (s),
+  on_timeout ("stop"|"continue")}]`
 - Tests: runtime `test_at, test_deadline, wtest_at, wtest_deadline, wtest_click`
 
 ### Compatibility rules (don't break users' data)
@@ -156,6 +158,17 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
 - "Click the picture itself" re-finds the picture at click time; if it has vanished, nothing is
   clicked.
 
+**Click chains (`waitpic` steps, `App.wait_for_picture`)**
+- Polls `picture_on_screen()` every `STEP_POLL_S` (1 s), up to `timeout` (capped by
+  `STEP_MAX_WAIT_S` = 1 h), remembering the last seen scale. When the condition is met it
+  optionally clicks the found centre. A message starting with `timeout` plus
+  `on_timeout="continue"` continues the chain; anything else stops it (the click itself still
+  counts as OK and the reason is logged).
+- Runs on the scheduler thread, so **other jobs wait while a chain waits**. This is
+  intentional, because two jobs can't use the mouse at once. Keep timeouts sensible.
+- `App.draw_capture(parent, prompt, on_done)` is the reusable "drag a box" screen used by the
+  step editor (the watcher editor keeps its own `_draw_overlay`).
+
 **UI**
 - Theme: `ttk` `clam` re-styled from `LIGHT`/`DARK` palettes in `apply_theme()`. Dark title bar
   via DwmSetWindowAttribute. `Seg.TRadiobutton` = segmented tabs/filters.
@@ -204,7 +217,7 @@ Run from the repository root.
 | Command | What | Expected |
 |---|---|---|
 | `python tests/test_watchers.py` | watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries) | `RESULT 21/21` |
-| `python tests/test_features.py` | hours, limits, steps, appears/area, history, backups, undo, alerts (faked network), migration, install id | `RESULT 48/48` |
+| `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id | `RESULT 52/52` |
 | `python tests/test_click_spot.py` | click-spot matching at 3 picture sizes × 8 screens (100–175 % scaling, moved, look-alikes) | `0 of 24` failures |
 | `python tests/gui_test.py` | drives every window and control of the real UI | `N/N checks passed, 0 errors` |
 | `python tests/gui_screenshots.py` | saves screenshots to `tests/screenshots/` | `done` |
@@ -243,7 +256,13 @@ Run from the repository root.
   7. upload as build artifacts
   8. **on pushes to `main` (or `v*` tags): create or update the GitHub Release `v<VERSION>`**
      with both files (softprops/action-gh-release, `tag_name` + `target_commitish`). The
-     workflow creates the tag itself.
+     workflow creates the tag itself. A **new** release also posts an announcement in
+     **Discussions → Announcements** (`discussion_category_name`; needs the
+     `discussions: write` permission and Discussions turned on in the repository settings).
+- Community: issue forms in `.github/ISSUE_TEMPLATE/` (Feature idea, Bug report, links to
+  Discussions), `CONTRIBUTING.md`. Discussions is on (categories: Announcements, Ideas, Q&A,
+  …). Claude sessions can't post to Discussions directly (GraphQL is blocked), so
+  announcements go through the workflow.
 - Consequences: pushing to `main` without bumping `VERSION` **replaces the files on the
   existing release**. Bump `VERSION` for a new release.
 - **Claude Code (claude.ai) sessions:** pushing branches/commits to this repo works once the

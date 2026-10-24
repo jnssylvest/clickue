@@ -78,6 +78,15 @@ be thinking *"I'll just keep an eye on it and click when…"*.
 - **Only during working hours.** Active hours and days keep it quiet at night and on weekends.
 - **A fixed number of times.** "Stop after 20 clicks" or "stop on Friday at 18:00".
 
+### Chain clicks that depend on each other
+- **Multi-screen routines** where each click opens the next screen: click *Refresh* → wait
+  until *Export* appears → click it → wait for *Save* → click it → wait for "Done". Each step
+  waits for the real result instead of a guessed delay.
+- **Recover in several steps:** a watcher notices an error banner → clicks *Retry* → waits for
+  the sign-in button → clicks it → waits for the main page to come back.
+- **Confirmation dialogs that follow an action:** click *Submit* → wait for the "Are you
+  sure?" dialog → click *Yes* → wait for the success message.
+
 ### Look after a remote or virtual machine
 - Clickue runs inside the machine it automates, such as a VM or a remote desktop. It keeps
   working when you switch between connection methods with different screen sizes or display
@@ -100,7 +109,9 @@ be thinking *"I'll just keep an eye on it and click when…"*.
   fixed first time of day, and active hours and days (including overnight).
 - 👁️ **Screen watchers.** Click when a picture appears or disappears. Search the whole screen
   or just an area, with flicker protection and "click once until it changes back".
-- 🧩 **Multi-step jobs.** After the click, click other spots, wait, type text and press keys.
+- 🧩 **Multi-step jobs & click chains.** After the click, click other spots, wait, type text,
+  press keys, or **wait for the next picture to appear and click it**, so each step reacts to
+  the result of the previous one.
 - 🧪 **Built-in tests.** Show the spot, test-click, check the picture, dry-run a watcher, or
   schedule a test for later and read the result when you're back.
 - 🔔 **Alerts.** Tray notifications, plus optional Discord and Telegram messages to your phone.

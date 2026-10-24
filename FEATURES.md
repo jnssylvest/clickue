@@ -7,7 +7,7 @@
 - [Scheduled clicks](#scheduled-clicks)
 - [Screen watchers](#screen-watchers)
 - [Rules for any job](#rules-for-any-job)
-- [Multi-step jobs](#multi-step-jobs)
+- [Multi-step jobs & click chains](#multi-step-jobs--click-chains)
 - [Safety](#safety)
 - [Tests](#tests)
 - [Notifications & phone alerts](#notifications--phone-alerts)
@@ -85,15 +85,21 @@
 - **Stop at** a date and time.
 - When a limit is reached the job stops, shows *Finished* and can send an alert.
 
-## Multi-step jobs
+## Multi-step jobs & click chains
 
 After its main click, any job can run more steps in order:
 - **Click a spot**, picked on screen and found by its picture; any button, single or double
 - **Wait** a fixed time or a random range
+- **Wait for a picture** to **appear** (then optionally **click it** where it appeared, with any
+  button, single or double) or to **go away**. It looks about once a second, up to a time limit
+  (1 s–1 h); if nothing happens it **stops the chain** or **continues anyway**. This turns a
+  job into a **click chain** that reacts to each click's result.
 - **Type text** of any characters, including other languages and symbols; new lines press Enter
 - **Press keys**, e.g. `Enter`, `Tab`, `Esc`, `Ctrl+S`, `Alt+F4`, `Ctrl+Shift+S`, arrows, F1–F12
 - Add, edit, reorder and remove steps. If a step fails, the rest are skipped and it's
   reported.
+- Start a chain on a schedule, or from a screen watcher (the chain starts when the watched
+  picture appears or disappears).
 
 ## Safety
 
