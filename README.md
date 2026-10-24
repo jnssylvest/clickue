@@ -15,7 +15,8 @@
   <a href="#why-would-i-need-clickue">Why use it?</a> ·
   <a href="FEATURES.md">All features</a> ·
   <a href="docs/USER_GUIDE.md">User guide</a> ·
-  <a href="CHANGELOG.md">Changelog</a>
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href="../../issues/new?template=feature_request.yml">Suggest a feature</a>
 </p>
 
 ---
@@ -251,11 +252,19 @@ everything, answer **Yes** when the uninstaller asks about deleting your data, o
 The [developer guide](docs/DEVELOPER_GUIDE.md) covers the architecture, data model, design
 decisions, tests and the release process. Run the tests in `tests/` before sending changes.
 
-## Contributing
+## Ideas, feature requests & bugs
 
-Bug reports and ideas are welcome. Please open an [issue](../../issues) with what you
-expected, what happened, and the relevant lines from the log (☰ Menu → **Open log file**).
-Remove anything private first.
+Have an idea that would make Clickue more useful? We'd love to hear it.
+
+- 💡 **[Suggest a feature](../../issues/new?template=feature_request.yml)**: a short form
+  asks what you'd like and why. If someone already suggested it, give it a 👍 instead.
+- 💬 **[Discussions](../../discussions)**: talk an idea through, share how you use Clickue, or
+  ask a question.
+- 🐞 **[Report a bug](../../issues/new?template=bug_report.yml)**: include the steps, your
+  version (☰ Menu → About) and the relevant log lines (☰ Menu → **Open log file**), with
+  anything private removed.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details, including how to contribute code.
 
 ## License
 

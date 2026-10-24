@@ -1,0 +1,60 @@
+name: 💡 Feature idea
+description: Suggest something new for Clickue, or an improvement to an existing feature
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping make Clickue better! Please check the [feature list](https://github.com/jnssylvest/clickue/blob/main/FEATURES.md) and existing ideas first. Clickue may already do it, or someone may have suggested it (add a 👍 there instead).
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like Clickue to do?
+      description: Describe the feature or change.
+      placeholder: e.g. "Let a watcher wait for two different pictures before clicking."
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What problem does it solve for you?
+      description: Your situation and why the current features don't cover it. Real examples help a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: how
+    attributes:
+      label: How do you imagine it working? (optional)
+      description: Where the option would be, what it would look like, any ideas about the details.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of Clickue is it about?
+      options:
+        - Scheduled clicks
+        - Screen watchers
+        - Multi-step jobs / chains
+        - Tests
+        - Alerts & notifications
+        - Hotkeys, tray & window
+        - Backups, history & data
+        - Install / portable
+        - Something else
+    validations:
+      required: true
+  - type: dropdown
+    id: importance
+    attributes:
+      label: How important is it to you?
+      options:
+        - Nice to have
+        - Would really help
+        - I can't use Clickue for my task without it
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked the feature list and existing ideas, and this isn't there yet.
+          required: true
