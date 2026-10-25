@@ -106,9 +106,14 @@ security checks. See [Responsible use & warnings](#%EF%B8%8F-responsible-use--wa
   with your Windows account and is never exported.
 - 👁️ **Screen watchers.** Click (or run steps) when a picture appears or disappears. Search
   the whole screen or just an area, with flicker protection and "click once until it changes back".
+- 🎯 **Only the exact picture.** By default a similar-looking button is never clicked, even when
+  the one you picked is scrolled out of view. Show spot can outline every similar picture so
+  you can see what Clickue sees.
 - 🧪 **Test before you trust.** Show spot, Test click, Check picture, **Dry run** (finds every
   target and checks every condition without clicking) and **Step through** (runs one step at a
   time and explains why it chose each target).
+- 🖱️ **Status at a glance.** Point at the tray icon to see whether your jobs are healthy while
+  Clickue is minimized.
 - 🚦 **One mouse, many jobs.** Jobs take turns through one queue, watchers keep watching
   meanwhile, and a status bar shows what's running and what's waiting. Priorities, "let other
   jobs go first" and warnings when two jobs use the same window.
@@ -196,8 +201,8 @@ The [quick start guide](docs/USER_GUIDE.md) covers the basics; the
 - When you pick a spot or draw a box, Clickue saves a small **picture** of that area.
 - Before each click, it takes a screenshot and searches it for the picture at several sizes,
   checking the shape, a close-up of the exact spot and the colours. It only clicks when all
-  of them agree, so a look-alike (say, a red badge where a green one used to be) isn't
-  mistaken for the real thing.
+  of them agree, so a look-alike (say, a red badge where a green one used to be, or a
+  *Reload* button where *Refresh* used to be) isn't mistaken for the real thing.
 - Clicks and keystrokes are real input sent through Windows, the same as if you did them
   yourself. Windows has **one mouse and one keyboard focus per desktop**, so Clickue runs one
   job at a time; it can't run several "virtual mice" on the same desktop. Watchers keep looking
@@ -295,7 +300,9 @@ instead. See the [guide](docs/GUIDE.md#18-locked-screens-remote-desktop-and-virt
 
 **It clicked in the wrong place / says "picture not found".**
 Re-pick the spot with some text or an icon nearby (plain areas look the same everywhere), or
-choose a larger picture size. **Show spot** and **Step through** show exactly where it would click.
+choose a larger picture size. Keep **Only the exact picture** ticked (the default) so look-alikes
+are never clicked. **Show spot** (optionally with every similar picture outlined) and **Step
+through** show exactly where it would click.
 
 **Will it grab my mouse while I'm working?**
 By default it waits until you've been idle for 5 seconds, then puts the mouse back where it

@@ -11,7 +11,7 @@
 
 This guide explains **every feature** of Clickue, with real-world scenarios and example
 pictures. Read it from top to bottom to learn everything, or jump to the part you need.
-In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.5.
+In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.5.1.
 
 > [!NOTE]
 > The example pictures show an invented "Example App" so the ideas are easy to see. Your own
@@ -123,7 +123,7 @@ From the [Releases page](https://github.com/jnssylvest/clickue/releases/latest):
   Clickue asks whether to **keep them** or **start fresh**. Starting fresh saves a backup first
   (shown as *Before a fresh start* in Backups), so nothing is lost.
 - **Upgrading from 4.4 or earlier.** Your jobs keep working. Before saving them in the new
-  format, Clickue saves a backup named *before-upgrade-4.5*.
+  format, Clickue saves a backup named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.1*).
 - **One copy only.** If Clickue is already running (maybe hidden in the tray), starting it
   again just tells you so, instead of opening a second copy that could double-click. Look for
   its icon near the clock (you may need to click the **^** arrow).
@@ -143,7 +143,8 @@ From the [Releases page](https://github.com/jnssylvest/clickue/releases/latest):
    is too narrow, the least-used buttons fold into **More ▾**.
 4. **Filter.** Show all jobs, only scheduled clicks, or only screen watchers.
 5. **Job list.** One row per job. **Double-click** (or Enter) to edit, **right-click** for every
-   action. Less important columns hide when the window gets narrow.
+   action. Less important columns hide when the window gets narrow. Column widths can be
+   changed (below).
 6. **Activity.** A live, colour-coded log. Filter it to **Clicks** or **Problems**. **Clear
    view** empties the panel (the log file keeps everything); **Open log file** opens the full
    log.
@@ -168,6 +169,19 @@ Drag the divider between the job list and Activity to give either more room.
 | **Starts in** | A live countdown |
 | **Clicks** | How many times the job has clicked |
 | **Last result** | The outcome of the latest click: *OK*, *Missed*, *Click FAILED*, *Finished…* |
+
+### Column widths
+
+Like in a spreadsheet:
+
+- **Drag** the border between two column headings to make a column wider or narrower.
+- **Double-click** the border to the right of a column heading to **fit the column to its
+  contents**, so every name, target and result shows in full.
+
+Clickue **remembers** the widths you set (fitted or dragged) and keeps them the next time it
+starts; the other columns share the remaining space. **☰ Menu → Reset column widths** goes back
+to the standard layout. Double-clicking a column border works the same way in every other
+table in the app (steps, history, run history, backups), there without being remembered.
 
 ### Status values
 
@@ -196,6 +210,7 @@ Drag the divider between the job list and Activity to give either more room.
 | Import jobs… / Export jobs… | Share jobs between computers ([section 14](#14-managing-jobs)) |
 | Backups… | Back up now, restore, open the backups folder ([section 17](#17-backups-and-your-data)) |
 | Export click history (CSV)… | Every click, miss and failure as a spreadsheet |
+| Reset column widths | Puts the job list's columns back to their standard widths ([above](#column-widths)) |
 | Preferences… | All settings ([section 20](#20-preferences-setting-by-setting)) |
 | Open data folder / Open log file | Where your jobs, settings and log live |
 | Complete guide (online) | Opens this guide in your browser |
@@ -216,10 +231,19 @@ watcher presses.
 1. In the job editor, click **◎ Pick on screen…**.
 2. Clickue hides and a **5-second countdown** box appears. Point the mouse at the spot and
    keep it still.
-3. When the countdown ends, the spot under the pointer is saved.
+3. When the countdown ends, the spot under the pointer is saved, and the editor comes back
+   exactly where it was.
+
+![The countdown box with its Cancel (Esc) button](images/guide/pick-cancel.png)
+
+**Changed your mind?** Press **Esc** (it works from anywhere, even when another program has the
+keyboard focus) or click **✕ Cancel (Esc)** on the countdown box. Right-clicking the box also
+cancels. Nothing is changed and the editor comes back. The countdown **waits while the mouse is
+on Cancel**, so it never picks the Cancel button itself.
 
 The countdown box is designed to stay out of your way: it **moves aside** when your mouse
-comes near it, and you can **drag** it anywhere (the countdown pauses while you drag).
+rests near it for a moment, and you can **drag** it anywhere (the countdown pauses while you
+drag).
 
 When you pick, Clickue saves three things, used in this order:
 
@@ -242,10 +266,44 @@ How the search works:
   scaling from 100 % to 175 %. It remembers the size it last found, so later checks are faster.
 - It compares the **whole picture** and a **close-up of the exact spot**, so it can tell the
   right button from look-alikes.
-- If the picture appears **more than once**, it picks the copy **closest to where you
-  picked it**.
+- With **Only the exact picture** (on by default, below) a similar-looking picture is never
+  used, and if the exact picture appears **more than once**, only the copy **where you picked
+  it** is used. If it can't tell which copy you picked, it doesn't click.
 - If the spot is **plain** (an empty area that looks the same everywhere), Clickue **warns**
   you when you pick it. Pick a spot with text or an icon nearby instead.
+
+### Only the exact picture
+
+![The same button is clicked; a different button, or a look-alike while yours is off-screen, is not](images/guide/exact-matching.png)
+
+**Only the exact picture** (in the editor, under the picture; **on** by default, also for jobs
+made with older versions) makes sure Clickue clicks **the thing you picked and nothing else**:
+
+- At the size you picked it, the picture must match **almost pixel for pixel**, including the
+  close-up of the spot and the colours. A button that merely looks similar (another button in
+  the same style, *Reload* instead of *Refresh*, a different icon in the same place) doesn't
+  count.
+- At another size (different display scaling or a remote session), the place found is
+  **scaled back to the picture's size and compared again**, close-up included, so a resized
+  look-alike doesn't count either.
+- If your button is **off the screen** (scrolled away, a window covering it, minimized) and
+  only something similar is visible, **nothing is clicked**. The job waits and tries again,
+  like any other "can't click right now" situation, and the log says *couldn't find the exact
+  picture on screen (… similar places ignored)*.
+- If the **exact same picture is on screen several times** (a row of identical icons), the copy
+  **at the place you picked** is used. If none of them is there (the window moved), nothing is
+  clicked: *the exact picture is on screen N times and Clickue can't tell which one you
+  picked*. Pick a **Large** picture (it includes the surroundings, which usually differ), or
+  use **Inside a window** so the saved place moves with the window.
+
+Untick **Only the exact picture** to get the older, more tolerant matching: similar pictures
+count, and among look-alikes the one closest to where you picked is used. Use it only when the
+spot's look changes a little on purpose (for example a counter or a timestamp inside the
+picture) and there's nothing similar nearby that must never be clicked.
+
+**Click steps** have the same option (**Only the exact picture**, on by default) under *By its
+picture*. Screen watchers always compare their watched picture strictly ([section
+6](#strict-matching)).
 
 **Picture size.** Choose how much of the screen around the spot is saved. It applies the
 next time you pick.
@@ -294,7 +352,26 @@ numbers yourself.
 
 **Show spot** (in the editor, the Tests window, or the right-click menu) moves the mouse to
 where Clickue would click **right now**, shows a pulsing crosshair, and tells you how it found
-the spot, e.g. *picture 81% at 150% size*. It never clicks. See [section 10](#10-testing-a-job).
+the spot, e.g. *exact picture 100%* or *exact picture 93% at 150% size*. It never clicks. See
+[section 10](#10-testing-a-job).
+
+- **How long the marker stays.** 5 seconds by default. Change it in **Preferences → Clicking →
+  Keep the marker on screen for** (1 to 120 seconds). Click the marker or press **Esc** to close
+  it sooner. The same setting applies to a watcher's **Check now**.
+- **Point out every similar picture.** Turn on **Preferences → Clicking → Also point out every
+  similar picture on the screen at the same time** (off by default) to see, together with the
+  crosshair, an outline around **everything that looks like your picture**, each labelled with
+  how closely it matches:
+
+  ![Green: the picture that would be clicked. Grey: similar pictures that are ignored](images/guide/similar-pictures.png)
+
+  - **Green**: the place that would be clicked.
+  - **Orange**: the same picture somewhere else (not used).
+  - **Grey**: similar, but not your picture (ignored).
+
+  When the picture isn't found, the outlines still show what Clickue saw, so you can tell why
+  (for example, only look-alikes are on screen).
+- When everything is back, the windows return **exactly** where and how big they were.
 
 **Scenario: the same job from two different screens.** You set up a job while sitting at the
 computer, but later connect to it by remote desktop at a different resolution. With **Find the
@@ -395,7 +472,8 @@ button.
 
 1. **Click** *when the picture disappears* or *when the picture appears*.
 2. **▢ Draw box around picture…** The screen freezes and dims. Drag a box around what to
-   watch, then release. The size shows while you drag. Esc or a right-click cancels.
+   watch, then release. The size shows while you drag. **Esc**, a right-click, or the
+   **✕ Cancel (Esc)** button next to the instructions cancels.
    - Draw it **while the picture is on screen** (for "appears" watchers, open the dialog or
      prompt once so you can draw it).
    - Box something **distinctive**: text, an icon, a logo. Clickue warns you about plain areas
@@ -408,8 +486,11 @@ button.
 5. Set the timing: **Check every**, **Click when missing/showing for … checks in a row**, the
    optional **random delay**, the optional **wait after each click**, and **Click only once**.
    All explained below.
-6. **Check now** confirms the picture can be found right now. **Dry run** shows the picture,
-   then the button, and says whether it would click. Neither one clicks.
+6. **Check now** confirms the picture can be found right now and marks it on the screen (for 5
+   seconds, or what you set in **Preferences → Clicking**; with **point out every similar
+   picture** on, look-alikes are outlined too). **Show spot** does the same for the button.
+   **Dry run** shows the picture, then the button, and says whether it would click. None of
+   them clicks, and the editor comes back exactly where it was.
 7. **Save.** Leave **Start watching when I save** ticked to start right away.
 
 ### Search only an area
@@ -431,7 +512,8 @@ panel, so a small window move doesn't push the picture outside it.
 Watchers compare **shape, close-up detail and colour**. A badge that turns from green to red,
 or whose text changes from *Online* to *Offline*, counts as **changed** (gone), even though
 its shape is the same. The same picture at another size (different display scaling) is still
-found.
+found: since 4.5.1 it's scaled back to the drawn size and compared again, so a resized
+look-alike doesn't count as "still there" either.
 
 ### Timing settings
 
@@ -598,7 +680,7 @@ editor shows which one, and what happens if the target isn't there, under *Targe
 
 | Way | What Clickue checks before clicking | If it isn't found |
 |---|---|---|
-| **By its picture** (recommended) | Searches the screen for the saved picture | Nothing is clicked. The step fails (and can retry) |
+| **By its picture** (recommended) | Searches the screen for the saved picture. With **Only the exact picture** (on by default) a similar-looking picture never counts ([section 4](#only-the-exact-picture)) | Nothing is clicked. The step fails (and can retry) |
 | **Inside a window** | Finds the window by its title, uses the spot inside it, checks nothing covers it | Nothing is clicked |
 | **Fixed screen position** | Only that Clickue's own window isn't covering it. **Not verified**: only for things that never move | — |
 
@@ -876,16 +958,17 @@ its shape (a long, wiggly movement becomes a few dozen points), and one recordin
 
 Open **🧪 Tests** (Ctrl+T, the toolbar, or right-click a job → **Open Tests…**). Pick the job
 at the top. **The whole app hides while a test runs** so nothing is in the way, and comes
-back with the result.
+back with the result: every window returns **exactly** where it was, at the same size (or
+maximized, if it was), with the window you were using on top.
 
 ![Show spot marks where it would click; Dry run marks the picture and the button](images/guide/tests-show-spot-dry-run.png)
 
 | Test | For | What it does |
 |---|---|---|
-| **Show spot** | All jobs | Moves the mouse to where it would click right now, shows a pulsing crosshair, and says how it found the spot. **No click** |
+| **Show spot** | All jobs | Moves the mouse to where it would click right now, shows a pulsing crosshair, and says how it found the spot. Optionally outlines every similar picture too ([section 4](#checking-a-spot)). **No click** |
 | **Test click now** | All jobs | Clicks once right away, including the extra steps. The schedule isn't changed |
 | **Schedule test click…** | All jobs | Clicks once in X minutes (at least 5 s away). Follows the same rules as a real click: waits for the screen, retries, then reports |
-| **Check picture** | Watchers | Is the watched picture on screen (or in its area) right now? |
+| **Check picture** | Watchers | Is the watched picture on screen (or in its area) right now? Marks it for the time set in Preferences → Clicking, and can outline similar pictures too |
 | **Dry run** | Watchers | Marks the watched picture, then the button, and says whether it **would** click now. **No click** |
 | **Schedule watcher test…** | Watchers | Runs the watcher check later, in the background. Optionally **really clicks** if the picture is missing |
 
@@ -1224,7 +1307,7 @@ damaged, it's set aside (renamed) instead of wiping your jobs.
 - Backups contain your jobs, step groups and settings, but **never your phone-alert
   credentials**.
 - **Before an upgrade:** the first time Clickue 4.5 starts with jobs from an older version, it
-  saves a backup named *before-upgrade-4.5* before saving them in the new format. Older jobs
+  saves a backup named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.1*) before saving them in the new format. Older jobs
   keep working exactly as before.
 - **☰ Menu → Backups…** lists them (Daily, Manual, Before a restore, Before an import, Before a
   fresh start, Before an upgrade) with how many jobs each holds.
@@ -1285,9 +1368,34 @@ automations side by side, run a copy of Clickue inside each machine.
 - **Minimize to the system tray** and **Close button (X) hides to the tray** are on by default,
   so jobs keep running after you close the window. The first time, a notification reminds you
   that Clickue is still running.
-- **Tray menu** (right-click the icon): **Show window**, **Pause all / Resume all**, **Stop
-  everything now**, **Exit**.
+- **Tray menu** (right-click the icon): **Show window**, **Job status**, **Pause all / Resume
+  all**, **Stop everything now**, **Exit**.
 - To quit completely, use **Exit** in the tray menu or ☰ Menu.
+
+### Job status at a glance (tray icon)
+
+![Pointing at the tray icon shows the jobs' status; the tray menu lists every job](images/guide/tray-status.png)
+
+While Clickue is minimized, **point at its tray icon** to see whether your jobs are healthy:
+
+- The first line sums it up: *Clickue: 3 active · all OK*, *… · 1 needs attention*, *Clickue:
+  ALL PAUSED*, or *Clickue: no jobs running*.
+- If a job is running right now: *▶ Running "Refresh dashboard" · step 2 of 4*.
+- Then one line per active job, **problems first**: ✖ failed (for example *Missed* or *Click
+  FAILED*), ⚠ needs attention (a watcher seeing a change, a job waiting because the screen is
+  locked), ✓ working normally (*Running · next in 4m 10s*, *Watching · Seen 13:49:58*), ⏸ paused.
+- Windows shows at most about 127 characters there, so with many jobs the tooltip ends with
+  *+N more*. **Right-click the icon → Job status** lists **every** active job in full;
+  clicking one opens the window.
+
+The status refreshes every couple of seconds. Turn it off in **Preferences → General → Show the
+jobs' status when I point at the tray icon**; the tooltip then just says *Clickue*.
+
+> [!NOTE]
+> Windows may remember an icon's old name in **Settings → Personalization → Taskbar → Other
+> system tray icons** for a program it has seen before (for example if an older version ran
+> from the same place). Clickue 4.5.1 tells Windows its name and identity explicitly (also in
+> the program file's details), so the tooltip and the Windows settings show **Clickue**.
 
 ### Global hotkeys
 
@@ -1317,8 +1425,13 @@ minimized** to go straight to the tray.
 - **Responsive:** toolbar buttons that don't fit go into **More ▾**, less important columns
   hide, and the summary cards re-flow from 4 to 2 to 1 per row. **▴ Summary** hides the cards.
 - **Drag dividers** to resize the job list and Activity, and the parts of the Tests window.
-- **Every window remembers its size and position** (and whether it was maximized). If your
-  screen gets smaller, windows are kept on screen.
+- **Every window remembers its size and position** (and whether it was maximized). When
+  Clickue hides itself for a pick, a test, Show spot or Check now, every window comes back
+  **exactly** as it was, with the window you were using (for example the job editor) on top.
+  Sizes and positions are only changed if a window wouldn't fit on the screen any more (for
+  example a smaller remote-desktop screen).
+- **Job list columns** can be dragged or fitted to their contents with a double-click on the
+  column border, and are remembered ([section 3](#column-widths)).
 - **Popups close when you click outside them** (they also have a Close button), so they never
   block the app.
 
@@ -1338,6 +1451,7 @@ minimized** to go straight to the tray.
 | Start minimized | Off |
 | Start automatically when I sign in to Windows | Off |
 | Keep the PC and display awake | On |
+| Show the jobs' status when I point at the tray icon (and in its menu → Job status) | On |
 
 ### Clicking
 
@@ -1347,6 +1461,8 @@ minimized** to go straight to the tray.
 | Wait until mouse & keyboard have been idle for (0 = off) | 5 s |
 | Put the mouse back where it was after clicking | On |
 | Warn me when two running jobs use the same window or spot | On |
+| **Checking a spot:** keep the marker on screen for (Show spot, Check now) | 5 s (1 to 120) |
+| Also point out every similar picture on the screen at the same time | Off |
 
 ### Watchers
 
@@ -1620,7 +1736,9 @@ Only in admin tools where your organisation allows automation:
 | Ctrl+Z | Undo delete |
 | Ctrl+, | Preferences |
 | Del | Delete the selected job (or the selected steps, in the timeline) |
+| Esc | Cancel **Pick on screen** (from anywhere), or close a Show spot / Check now marker |
 | Esc / right-click | Cancel drawing a box |
+| Double-click a column border | Fit the column to its contents |
 
 ### Anywhere (global, changeable)
 
@@ -1731,8 +1849,12 @@ signed in as that user). If Clickue was ended abruptly, Windows may leave a temp
 
 | Problem | What to try |
 |---|---|
-| **"Picture not found"** | Re-pick a spot with text or an icon nearby, or use a **Large** picture. Run **Show spot**. If the app's look changed, re-pick |
-| **Clicks the wrong place** | **Show spot** to see what it finds. Use a Large picture if there are look-alikes, or **search only an area** (watchers). Make sure nothing covers the target |
+| **"Picture not found"** / *couldn't find the exact picture* | Is the spot on screen (not scrolled away, covered or minimized)? Run **Show spot** with **point out every similar picture** on (Preferences → Clicking) to see what Clickue finds. If the app's look changed, re-pick. If the look changes a little on purpose (a counter inside the picture), untick **Only the exact picture** |
+| **"the exact picture is on screen N times…"** | Identical copies, none where you picked. Re-pick with a **Large** picture (includes the surroundings), or use **Inside a window** so the saved place follows the window |
+| **Clicks the wrong place** | Make sure **Only the exact picture** is ticked (it is by default since 4.5.1). **Show spot** to see what it finds. Use a Large picture if there are look-alikes, or **search only an area** (watchers). Make sure nothing covers the target |
+| **The editor disappeared after picking or a test** | Fixed in 4.5.1: the editor comes back on top, exactly where it was. If a window ever seems lost, click Clickue's taskbar or tray icon |
+| **A window changed size after a test** | Fixed in 4.5.1: windows come back at exactly the size and position you left them |
+| **The tray icon shows an old name** | Update to 4.5.1 or later. Windows may also remember an old name in Settings → Personalization → Taskbar → Other system tray icons until the icon is seen again |
 | **Job shows Waiting** | It's due but can't click: the screen is locked or disconnected, you're using the mouse, or the target is covered. Check Activity for the reason |
 | **Missed while I was away** | The screen was locked or the session disconnected; see [section 18](#18-locked-screens-remote-desktop-and-virtual-machines) |
 | **Watcher says "Can't tell: Clickue window open"** | Minimize Clickue or send it to the tray |

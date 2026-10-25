@@ -19,7 +19,11 @@ Essentials:
 - Ways to find targets are `TargetAdapter`s in the source; no plugin loading from files.
 - Never call Tk from background threads. Use `self.log()` or `self.cmdq`.
 - No `grab_set()`. Popups close on click-outside (see `close_on_click_outside`).
-- Restore the main window with `restore_main()`, never `root.state("normal")`.
+- Restore the main window with `restore_main()`, never `root.state("normal")`. To hide
+  windows for a pick or test use `hide_windows()`/`show_windows()` (or `hide_app()`), which
+  bring every window back at its exact size and position with the right one on top.
+- Click-spot pictures use exact matching by default (`exact_match`); don't loosen it without
+  a test in `tests/test_click_spot.py`.
 - Before every release, run `python tests/test_watchers.py`, `python tests/test_features.py`,
   `python tests/test_click_spot.py`, `python tests/test_workflows.py` and
   `python tests/check_release.py` (all must pass), plus the GUI test when the UI changed.

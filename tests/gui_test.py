@@ -648,12 +648,138 @@ def t_workflows_45():
         btn(hd, "Close").invoke(); pump(100)
 
 
+def t_fixes_451():
+    """4.5.1: windows come back exactly (size, position, on top) after picking / checking,
+    even after a dropdown was used; Esc and Cancel end a pick; markers last as set and can
+    outline similar pictures; columns fit on double-click; tray status text."""
+    app.restore_main(); pump(200)
+    root.state("normal"); root.geometry("910x640+37+29"); pump(600)
+    g0 = root.geometry()
+    app.settings["main_geom"] = "700x500+300+200"     # a stale saved size must not be used
+    app.add_watcher(); pump(400)
+    ed = find_dialog(ac.JobEditor)
+    ok("4.5.1 editor has the exact-picture option", hasattr(ed, "v_exact") and ed.v_exact.get())
+    # use the Picture size dropdown first (that's what triggered the bug)
+    cbs = [c for c in widgets(ed, ttk.Combobox) if c.cget("textvariable") == str(ed.v_snap_size)]
+    if cbs:
+        cb = cbs[0]
+        cb.tk.call("ttk::combobox::Post", cb); pump(200)
+        cb.set("Large"); cb.event_generate("<<ComboboxSelected>>")
+        cb.tk.call("ttk::combobox::Unpost", cb); pump(200)
+    eg0 = ed.geometry()
+    # Pick on screen, then cancel with the box's Cancel button
+    ed.pick(); pump(500)
+    cds = [w for w in toplevels() if w.overrideredirect() and any(
+        "Cancel" in str(l.cget("text")) for l in widgets(w, tk.Label))]
+    ok("4.5.1 pick: countdown box shows a Cancel button", cds)
+    ok("4.5.1 pick: editor and main window hidden meanwhile", not ed.winfo_viewable() and not root.winfo_viewable())
+    if cds:
+        lab = [l for l in widgets(cds[0], tk.Label) if "Cancel" in str(l.cget("text"))][0]
+        lab.event_generate("<Button-1>"); pump(1500)
+    ok("4.5.1 pick cancel: editor is back and visible", ed.winfo_exists() and ed.winfo_viewable() and ed.state() == "normal")
+    ok("4.5.1 pick cancel: main window back at the exact same size/position", root.geometry() == g0, (g0, root.geometry()))
+    ok("4.5.1 pick cancel: editor same size/position", ed.geometry() == eg0, (eg0, ed.geometry()))
+    ok("4.5.1 pick cancel: nothing was picked", not ed.snap_png)
+    # Pick again and cancel with Esc
+    ed.pick(); pump(500)
+    cds = [w for w in toplevels() if w.overrideredirect() and any(
+        "Cancel" in str(l.cget("text")) for l in widgets(w, tk.Label))]
+    if cds:
+        cds[0].event_generate("<Escape>"); pump(1500)
+    ok("4.5.1 pick Esc: countdown gone, editor back", not [w for w in toplevels() if w.overrideredirect()
+                                                          and w.winfo_viewable()] and ed.winfo_viewable())
+    # Pick that completes (1-second countdown), after using the dropdown again
+    real = app.pick_countdown
+    app.pick_countdown = lambda on_point, on_cancel=None, seconds=5: real(on_point, on_cancel, 1)
+    ac.get_cursor = lambda: (200, 150)
+    try:
+        ed.pick(); pump(3500)
+    finally:
+        app.pick_countdown = real
+    ok("4.5.1 pick done: editor back on top", ed.winfo_viewable() and ed.state() == "normal")
+    ok("4.5.1 pick done: main window unchanged", root.geometry() == g0, (g0, root.geometry()))
+    ok("4.5.1 pick done: a Large picture was saved", bool(ed.snap_png) and
+       ac.b64_to_img(ed.snap_png).size[0] in (260, min(260, root.winfo_screenwidth())))
+    # Check spot / Check now: hide, mark for the set time, restore exactly
+    app.settings["marker_seconds"] = 1
+    app.settings["show_similar"] = True
+    ed.preview_spot()
+    marks = []
+    t1 = time.time()
+    while not marks and time.time() - t1 < 4:
+        pump(50)
+        marks = [w for w in toplevels() if w.overrideredirect() and w.winfo_viewable()]
+    t0 = time.time()
+    ok("4.5.1 show spot: marker shown while the app is hidden", marks and not root.winfo_viewable(), len(marks))
+    while (ed.winfo_exists() and not ed.winfo_viewable()) and time.time() - t0 < 6:
+        pump(100)
+    ok("4.5.1 show spot: marker lasts the set 1 s (not 5 s)", time.time() - t0 < 3.5, round(time.time() - t0, 1))
+    pump(800)
+    ok("4.5.1 show spot: editor back on top afterwards", ed.winfo_viewable() and ed.state() == "normal")
+    ok("4.5.1 show spot: main window unchanged", root.geometry() == g0, (g0, root.geometry()))
+    if ed.watch_png or True:
+        ed.watch_png = ed.snap_png
+        ed.check_watch_now(); pump(400)
+        t0 = time.time()
+        while not ed.winfo_viewable() and time.time() - t0 < 6:
+            pump(100)
+        pump(800)
+        ok("4.5.1 check now: editor back, main window unchanged", ed.winfo_viewable() and root.geometry() == g0,
+           (g0, root.geometry()))
+    app.settings["marker_seconds"] = 5
+    app.settings["show_similar"] = False
+    btn(ed, "Cancel").invoke(); pump(200)
+    # flash_marker with outlines only
+    done = []
+    app.flash_marker(None, None, "outlines", lambda: done.append(1), seconds=1,
+                     others=[(50, 60, 100, 40, "exact 98%", True, True), (300, 60, 100, 40, "similar 70%", False, False)])
+    pump(200)
+    n_out = len([w for w in toplevels() if w.overrideredirect() and w.winfo_viewable()])
+    pump(1600)
+    ok("4.5.1 similar outlines appear together and close after the set time", n_out >= 3 and done, n_out)
+    # column auto-fit on the job list
+    t = app.tree
+    cols = ac._display_cols(t)
+    c0 = cols[0]
+    t.column(c0, width=40); pump(100)
+    x = int(t.column(c0, "width"))
+    ev = type("E", (), {"widget": t, "x": x + 1, "y": 8})()
+    region = t.identify_region(ev.x, ev.y)
+    r = ac._autofit_double(ev); pump(100)
+    w_fit = int(t.column(c0, "width"))
+    ok("4.5.1 double-click a column border fits the column", region == "separator" and r == "break" and w_fit > 40,
+       (region, r, w_fit))
+    ok("4.5.1 fitted width is remembered", (app.settings.get("col_widths") or {}).get(c0) == w_fit)
+    ev2 = type("E", (), {"widget": t, "x": 5, "y": 8})()
+    ok("4.5.1 double-click on a heading doesn't open anything", ac._autofit_double(ev2) == "break")
+    app.reset_col_widths(); pump(50)
+    ok("4.5.1 reset column widths", not app.settings.get("col_widths"))
+    # tray status
+    tip, lines = app.tray_status()
+    ok("4.5.1 tray tooltip starts with the app name and fits Windows' limit",
+       tip.startswith("Clickue") and len(tip) <= 127 and "AutoClicker" not in tip, tip)
+    for j in app.jobs[:3]:
+        j["enabled"] = True
+    tip2, lines2 = app.tray_status()
+    ok("4.5.1 tray status lists active jobs", "active" in tip2 or "PAUSED" in tip2, (tip2, lines2))
+    for j in app.jobs[:3]:
+        j["enabled"] = False
+    # preferences show the new options
+    app.open_settings(); pump(400)
+    sd = find_dialog(ac.SettingsDialog)
+    ok("4.5.1 preferences: marker time, similar pictures, tray status",
+       sd and all(k in sd.vars for k in ("marker_seconds", "show_similar", "tray_status")))
+    if sd:
+        btn(sd, "Cancel").invoke(); pump(100)
+
+
 for name, fn in (("main", t_main), ("add click", add_click_job), ("edit/rows", t_edit_and_rows),
                  ("watcher", add_watcher), ("settings", t_settings), ("menu/dialogs", t_menu_and_dialogs),
                  ("steps/hours", t_steps_and_hours), ("watcher extras", t_watcher_extras),
                  ("tests window", t_tests_window),
                  ("test dialog", t_test_dialog_from_main), ("export/import", t_export_import),
-                 ("geometry", t_remember_geometry), ("workflows 4.5", t_workflows_45)):
+                 ("geometry", t_remember_geometry), ("workflows 4.5", t_workflows_45),
+                 ("fixes 4.5.1", t_fixes_451)):
     step(name, fn)
     pump(200)
 

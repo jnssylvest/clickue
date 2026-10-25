@@ -1143,10 +1143,157 @@ def run_history():
     p.save("run-history.png")
 
 
+# ---------------------------------------------------------------- 4.5.1
+def exact_matching():
+    p = Pic(980, 400, "Only the exact picture (on by default)",
+            "The button you picked must be on screen. A similar-looking button is never clicked.")
+    p.text(32, 92, "Saved picture", 12, "bold", fill=MUTED)
+    sx, sy = 40, 120
+    p.rect(sx - 12, sy - 12, sx + 196, sy + 42, fill=WIN, outline=LINE, r=6)
+    b0 = button(p, sx, sy, "Save", size=12)
+    b1 = button(p, b0[2] + 8, sy, "Refresh", size=12)
+    capture(p, (sx - 8, sy - 8, sx + 192, sy + 38), ACCENT, pad=0)
+    crosshair(p, (b1[0] + b1[2]) / 2, (b1[1] + b1[3]) / 2, RED, 9)
+    cases = (("Same picture", "Clicked", True, "Refresh", True),
+             ("Same, other display scaling", "Clicked (checked again at its size)", True,
+              "Refresh", "big"),
+             ("A different button there", "Not clicked: \"Reload\" isn't \"Refresh\"", False,
+              "Reload", True),
+             ("Your button scrolled off-screen", "Not clicked: only a look-alike is visible",
+              False, "Refresh", False))
+    x = 270
+    for i, (t1, t2, good, label, where) in enumerate(cases):
+        cx = x + (i % 2) * 350
+        cy = 92 + (i // 2) * 140
+        p.text(cx, cy, t1, 12, "bold")
+        p.rect(cx, cy + 22, cx + 320, cy + 92, fill=WIN, outline=LINE, r=6)
+        if where is False:
+            bars(p, cx + 14, cy + 36, (200, 150), gap=18, h=8)
+            button(p, cx + 230, cy + 58, "Refresh", size=11, h=24, pad=8)
+            p.text(cx + 14, cy + 74, "(the toolbar is out of view)", 10, fill=MUTED)
+        elif where == "big":
+            bb0 = button(p, cx + 14, cy + 34, "Save", size=15, h=38)
+            button(p, bb0[2] + 10, cy + 34, label, size=15, h=38)
+        else:
+            bb0 = button(p, cx + 14, cy + 42, "Save", size=12)
+            button(p, bb0[2] + 8, cy + 42, label, size=12)
+        mark(p, cx + 10, cy + 112, good)
+        p.text(cx + 26, cy + 104, t2, 12, fill=GREEN if good else RED)
+    note_box(p, 32, 352, 916, 34, ACCENT)
+    p.text(46, 369, "Nothing to click is the safe outcome: the job waits and tries again. "
+                    "Untick \"Only the exact picture\" for the older, more tolerant matching.",
+           12, anchor="lm")
+    p.save("exact-matching.png")
+
+
+def similar_outlines():
+    p = Pic(980, 440, "Point out every similar picture (Preferences → Clicking)",
+            "Show spot and Check now can outline everything that looks like your picture.")
+    cx, cy = window(p, 32, 84, 640, 330, "Example App")
+    tb = [button(p, cx + 6, cy + 6, "Save", size=12)]
+    tb.append(button(p, tb[-1][2] + 8, cy + 6, "Refresh", size=12))
+    bars(p, cx + 6, cy + 70, (420, 380, 400, 300), gap=24, h=9)
+    r2 = button(p, cx + 300, cy + 176, "Reload", size=12)
+    r3 = button(p, cx + 40, cy + 200, "Refresh all", size=12)
+
+    def outline(box, col, label):
+        x0, y0, x1, y1 = box[0] - 5, box[1] - 5, box[2] + 5, box[3] + 5
+        p.rect(x0, y0, x1, y1, outline=col, width=2.5, r=3)
+        w = p.tw(label, 10, "bold") + 12
+        p.rect(x0, y0 - 18, x0 + w, y0, fill=col, r=2)
+        p.text(x0 + 6, y0 - 9, label, 10, "bold", fill="#111827", anchor="lm")
+    outline(tb[1], "#22c55e", "exact 100%")
+    crosshair(p, (tb[1][0] + tb[1][2]) / 2, (tb[1][1] + tb[1][3]) / 2, RED, 11)
+    outline(r2, "#9ca3af", "similar 74%")
+    outline(r3, "#9ca3af", "similar 68%")
+    p.rect(cx + 6, cy + 250, cx + 600, cy + 300, fill="#111827", r=6)
+    p.text(cx + 18, cy + 262, "Watcher  ·  found by exact picture 100%", 11, "bold", fill="#ffffff")
+    p.text(cx + 18, cy + 282, "Green = used · orange = same picture, not used · grey = similar, "
+                              "ignored", 10, fill="#cbd5e1")
+    ex = 700
+    y = 100
+    for col, t in (("#22c55e", "Green: the place that would be clicked."),
+                   ("#f59e0b", "Orange: the same picture somewhere else (not used)."),
+                   ("#9ca3af", "Grey: looks similar, but isn't your picture (ignored)."),
+                   (ACCENT, "Marks stay for 5 seconds; change it in Preferences → Clicking "
+                            "(1-120 s). Click a mark or press Esc to close sooner.")):
+        p.rect(ex, y + 2, ex + 14, y + 16, fill=col, r=3)
+        y = p.para(ex + 24, y, t, 12, 28) + 14
+    p.save("similar-pictures.png")
+
+
+def pick_cancel():
+    p = Pic(980, 300, "Pick on screen: Esc or Cancel",
+            "Point at the spot. Changed your mind? Press Esc or click Cancel - nothing changes.")
+    x0, y0 = 32, 96
+    p.rect(x0, y0, x0 + 560, y0 + 96, fill="#1f2937", outline="#3b82f6", width=1.5, r=4)
+    p.text(x0 + 20, y0 + 18, "Point at the spot to click…", 15, "bold", fill="#ffffff")
+    p.text(x0 + 20, y0 + 42, "Capturing in 3    (812, 344)", 15, "bold", fill="#ffffff")
+    p.text(x0 + 20, y0 + 72, "Drag this box to move it. It moves aside if your mouse rests "
+                             "near it. Esc cancels.", 10, fill="#9ca3af")
+    cb = (x0 + 420, y0 + 16, x0 + 545, y0 + 46)
+    p.rect(*cb, fill="#dc2626", r=3)
+    p.text((cb[0] + cb[2]) / 2, (cb[1] + cb[3]) / 2, "×  Cancel (Esc)", 12, "bold",
+           fill="#ffffff", anchor="mm")
+    cursor(p, cb[0] + 60, cb[1] + 18)
+    ex = 630
+    y = 100
+    for t in ("Esc works from anywhere, even if another window has the focus.",
+              "The countdown waits while the mouse is on Cancel, so it never picks the "
+              "button itself.",
+              "The same works in Draw box around picture and Draw area (or right-click).",
+              "After picking or cancelling, the editor comes back exactly where it was."):
+        p.circle(ex + 5, y + 8, 3, fill=ACCENT)
+        y = p.para(ex + 16, y, t, 12, 40) + 12
+    p.save("pick-cancel.png")
+
+
+def tray_status():
+    p = Pic(980, 380, "Job status on the tray icon",
+            "Point at Clickue's tray icon to see what your jobs are doing while it's minimized.")
+    tx, ty = 32, 96
+    p.rect(tx, ty, tx + 420, ty + 138, fill="#2b2b2b", r=6)
+    lines = ("Clickue: 3 active · 1 needs attention",
+             "▶ Running “Refresh dashboard” · step 2 of 4",
+             "⚠ Reconnect watcher: Picture missing",
+             "✓ Refresh dashboard: Running · next in 4m 10s",
+             "✓ Stay signed in: Watching · Not showing")
+    for i, l in enumerate(lines):
+        p.text(tx + 14, ty + 16 + i * 23, l, 12, "bold" if i == 0 else "regular",
+               fill="#ffffff")
+    # taskbar
+    p.rect(32, 250, 948, 290, fill="#1f2937", r=4)
+    for k in range(4):
+        p.rect(760 + k * 32, 260, 782 + k * 32, 280, fill="#374151", r=4)
+    p.circle(889, 270, 9, fill=ACCENT)
+    p.text(889, 270, "C", 10, "bold", fill="#ffffff", anchor="mm")
+    cursor(p, 886, 268)
+    p.arrow(452, 170, 870, 252, MUTED)
+    # menu
+    mx, my = 520, 84
+    p.rect(mx, my, mx + 210, my + 150, fill=WIN, outline=LINE, r=6)
+    for i, t in enumerate(("Show window", "Job status  ›", "Pause all", "Stop everything now",
+                           "Exit")):
+        if i == 1:
+            p.rect(mx + 4, my + 6 + i * 28, mx + 206, my + 30 + i * 28, fill="#dbeafe", r=4)
+        p.text(mx + 14, my + 18 + i * 28, t, 12, "medium", anchor="lm")
+    sx = mx + 214
+    p.rect(sx, my + 34, sx + 230, my + 130, fill=WIN, outline=LINE, r=6)
+    for i, t in enumerate(("⚠ Reconnect watcher: Picture missing", "✓ Refresh dashboard: Running",
+                           "✓ Stay signed in: Watching")):
+        p.text(sx + 12, my + 52 + i * 26, t, 11, anchor="lm")
+    p.text(32, 312, "Right-click the icon → Job status lists every active job. Turn it off in "
+                    "Preferences → General.", 12, fill=MUTED)
+    p.text(32, 334, "Order: problems first (failed, then needs attention), then working, "
+                    "then paused.", 12, fill=MUTED)
+    p.save("tray-status.png")
+
+
 if __name__ == "__main__":
     for fn in (main_window_layout, good_and_bad_spots, picture_sizes, schedule_timeline,
                active_hours, watcher_disappears, watcher_appears, strict_matching, search_area,
                flicker_protection, click_once, click_chain, multi_step_search, show_spot,
                remote_sessions, phone_alert, record_macro, type_vs_paste, conditional_workflow,
-               step_through, taking_turns, run_history):
+               step_through, taking_turns, run_history, exact_matching, similar_outlines,
+               pick_cancel, tray_status):
         fn()

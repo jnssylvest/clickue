@@ -75,7 +75,7 @@ ok("every guide picture is used", have <= used, have - used)
 # ---- version and changelog
 src = read("src/clickue.py")
 version = re.search(r'^VERSION = "([^"]+)"', src, re.M).group(1)
-top = re.search(r"^## (\d+\.\d+)", read("CHANGELOG.md"), re.M)
+top = re.search(r"^## (\d+\.\d+(?:\.\d+)?)", read("CHANGELOG.md"), re.M)
 ok("CHANGELOG starts with this version", top and top.group(1) == version, (top and top.group(1), version))
 ok("the guide names this version", f"Clickue {version}" in guide)
 

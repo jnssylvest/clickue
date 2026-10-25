@@ -1,5 +1,54 @@
 # Changelog
 
+## 4.5.1 - Exact picture matching, tray status and window fixes
+
+> Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken
+> during development, but AI-assisted development does not guarantee bug-free or secure
+> software. Review the source and use normal precautions. Test automations safely, protect
+> notification credentials, and avoid unattended use for consequential actions.
+
+**Fixed**
+- **A similar-looking picture could be clicked** when the picked spot wasn't on screen (for
+  example scrolled out of view), or when a different button looked alike. New **Only the exact
+  picture** option, **on by default** for all jobs and click steps (including existing ones):
+  the place must match the saved picture almost pixel for pixel; at another display scaling it
+  is scaled back and compared again, close-up and colours included. If the real spot isn't
+  there, nothing is clicked and the job retries as usual. Identical copies are only used at the
+  place you picked; otherwise nothing is clicked and the log says why. Untick it for the
+  previous, more tolerant matching. Watchers' watched pictures get the same extra check at
+  other display scalings.
+- **The job editor could disappear behind the main window** after Pick on screen, Show spot or
+  Check now (especially after using a dropdown such as Picture size). Clickue's windows now
+  come back on top, with the one you were using focused; dropdown lists are detached before
+  hiding so Windows can't keep the editor hidden.
+- **The main window could change size** after Check now or Show spot. Every window now comes
+  back at exactly the size, position and state (maximized or not) it had, and saved sizes are
+  only changed when a window no longer fits on the screen.
+- **The tray icon could show an old name.** Clickue now tells Windows its name and identity
+  (AppUserModelID), and the exe carries its own version details (name *Clickue*, version).
+
+**New**
+- **Esc or ✕ Cancel** on the Pick on screen countdown (Esc works from anywhere; right-click
+  also cancels). The countdown waits while the mouse is on Cancel. Draw box / Draw area got a
+  Cancel button and the same global Esc.
+- **Point out every similar picture** (Preferences → Clicking, off by default): Show spot and
+  Check now outline everything that looks like the picture: green = would be used, orange =
+  same picture elsewhere, grey = similar but ignored. Also shown when nothing is found.
+- **How long the Show spot / Check now marker stays** (Preferences → Clicking, 1–120 s, default
+  5 s as before). Esc or a click closes it sooner.
+- **Job status on the tray icon:** point at it for a summary (*3 active · all OK* / *1 needs
+  attention*), what's running and each active job's health, problems first. Right-click →
+  **Job status** lists every active job. Preferences → General can turn it off.
+- **Column widths like a spreadsheet:** double-click a column border to fit the column to its
+  contents (every table); the job list remembers fitted or dragged widths; ☰ Menu → **Reset
+  column widths**.
+
+**Docs:** guide sections 3, 4, 6, 10, 19, 20, 23 and 26 updated, with four new pictures.
+
+**Compatibility:** no change to the jobs file format. New job/step field `exact_match`
+(default on) and new settings (`marker_seconds`, `show_similar`, `tray_status`, `col_widths`)
+get their defaults automatically.
+
 ## 4.5 - Workflows, macro recording and security hardening
 
 > Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken

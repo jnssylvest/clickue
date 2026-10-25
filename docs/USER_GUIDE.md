@@ -52,8 +52,8 @@ Drag the divider between the list and Activity to give either more room.
 
 1. Click **＋ New click** (Ctrl+N) and give it a name.
 2. Click **◎ Pick on screen…**. The app hides and a countdown appears. Point at the button
-   within 5 seconds. If the countdown box is in the way, move your mouse towards it and it
-   jumps aside, or drag it.
+   within 5 seconds. If the countdown box is in the way, rest your mouse near it and it
+   jumps aside, or drag it. Changed your mind? Press **Esc** or click **✕ Cancel**.
 3. Under **Schedule**, set **Scheduled every** (e.g. 8 h).
 4. Leave **Add a random delay** on to vary the time (e.g. 10 s to 15 min after each scheduled
    time), or turn it off for exact timing.
@@ -98,7 +98,15 @@ When you pick a spot, Clickue saves three things and uses them in this order:
    contains** if the app's title changes (keep only the part that stays the same).
 3. **Fixed screen position.** The exact pixel. Can scale with the screen resolution.
 
-**Show spot** always shows where it would click *right now*, and how it found it.
+**Only the exact picture** (on by default) makes sure a similar-looking button is never
+clicked: if the one you picked isn't on screen, nothing is clicked and the job tries again.
+
+**Show spot** always shows where it would click *right now*, and how it found it. To see
+every similar picture too, turn on **Preferences → Clicking → Also point out every similar
+picture**; the same tab sets how long the marker stays (5 s by default).
+
+**Tip:** while Clickue is minimized, point at its **tray icon** to see whether your jobs are
+running fine; right-click it → **Job status** for every job.
 
 ## When it may run: hours and limits
 
@@ -284,8 +292,8 @@ To keep Clickue working while you're away:
 
 | Problem | Try |
 |---|---|
-| "Picture not found" | Re-pick with text or an icon near the spot, or use a Large picture. **Show spot** to check |
-| Clicks the wrong place | **Show spot**. Re-pick if the app's look changed. Make sure the target isn't covered |
+| "Picture not found" | Is the spot on screen? Re-pick with text or an icon near the spot, or use a Large picture. **Show spot** (with similar pictures outlined) to check |
+| Clicks the wrong place | Keep **Only the exact picture** ticked. **Show spot**. Re-pick if the app's look changed. Make sure the target isn't covered |
 | Watcher shows "Can't tell: Clickue window open" | Minimize Clickue or send it to the tray |
 | Watcher never clicks again | "Click only once" is waiting for the picture to come back; untick it to keep clicking |
 | Nothing happens while away | The screen was locked or disconnected; see [above](#locked-screens-and-remote-sessions) |

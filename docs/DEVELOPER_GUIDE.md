@@ -191,17 +191,63 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
 - Outside active hours: `hours_outside="wait"` moves `next_run` to `next_active_start()`
   (plus a random delay); `"skip"` jumps to the next slot.
 
-**Picture matching** (tuning constants near `MATCH_*` / `WATCH_*`)
-- `find_picture` tries scales `MATCH_SCALES` (a DPI ratio hint and the last seen scale go
-  first), keeps the top candidates per scale, and scores each on the **whole picture** and a
-  **60×34 close-up around the spot**. It needs `whole ≥ 0.65` and `close-up ≥ 0.62`.
+**Picture matching** (tuning constants near `MATCH_*` / `WATCH_*` / `EXACT_*`)
+- `picture_candidates` tries scales `MATCH_SCALES` (a DPI ratio hint and the last seen scale
+  go first), keeps the top candidates per scale, scores each on the **whole picture** and a
+  **60×34 close-up around the spot**, and returns one candidate per place. `find_picture`
+  (tolerant) needs `whole ≥ 0.65` and `close-up ≥ 0.62` (`is_match`).
+- **Exact matching (4.5.1, `exact_match`, default on for jobs and click steps).** The tolerant
+  thresholds let a different button in the same style pass (a *Reload* button scored 0.97 /
+  0.69 against a saved *Refresh*), and when the picked spot was off-screen, a look-alike was
+  clicked. `spot_report()` (used by `locate_spot`) therefore runs `verify_exact()` on every
+  tolerant candidate: at the same size both scores must be ≥ `EXACT_SAME_SIZE_MIN` (0.95); at
+  another scale the screen region is resized back to the template size, both are blurred
+  (3×3), and whole ≥ 0.88 and close-up ≥ 0.85 are required (measured: genuine 0.87–0.93,
+  changed text ≤ 0.80); then the colour check (`WATCH_COLOR_MAX`/`WATCH_LIGHT_MAX`). Several
+  exact copies: only the one within half a picture of the expected position (window-relative
+  when targeting a window) is used, otherwise nothing is clicked ("on screen N times"). Never
+  relax this without a test in `tests/test_click_spot.py` (it runs both modes).
+- `spot_report()` also returns `similar` boxes (screen coordinates, label, chosen, exact) for
+  the "point out every similar picture" overlay; `picture_on_screen(..., report=list)` does the
+  same for watched pictures.
 - `_match` **must** reject windows whose contrast is far below or above the template's
   (`sd < 0.5·σ` or `> 2·σ`). Without this, flat areas give false "perfect" matches. This was a
   real bug.
 - Look-alikes: among near-equal candidates, take the one nearest the saved position.
 - Watchers are stricter (`picture_on_screen`): at the drawn size both scores must be ≥ 0.93,
   and the Lab colour difference must be ≤ 15 (brightness ≤ 25). Grayscale-only matching once
-  counted a red "OFFLINE" badge as the green "CONNECTED" one.
+  counted a red "OFFLINE" badge as the green "CONNECTED" one. At other scales (4.5.1) the
+  candidate must also pass `verify_exact`.
+
+**Windows hiding and coming back (4.5.1)**
+- Never `withdraw()` / `deiconify()` app windows directly for picks and tests. Use
+  `app.hide_windows(wins)` → `saved`, then `app.show_windows(saved, focus=win)`; or
+  `app.hide_app(parent)` / `app.hide_all_windows()` which return `restore()`. They record each
+  window's state and exact geometry, restore the main window first, then raise and focus the
+  window the user was in (`bring_to_front`, re-checked twice).
+- `release_popdowns(win)` runs before hiding: on Windows a ttk Combobox's dropdown list stays
+  a transient (owned) window of the dialog after it was used, and hiding/showing the dialog with
+  it attached could leave the dialog hidden behind the main window (the "editor disappears
+  after choosing a Picture size" bug).
+- `fit_geometry` only shrinks or moves a saved size when it doesn't fit on the screen; it used
+  to subtract margins, which changed the main window's size after every test.
+- All picks use `app.pick_countdown(on_point, on_cancel)` (Esc from anywhere via
+  `key_down(VK_ESCAPE)`, a Cancel label, waits while the mouse is on Cancel).
+- `flash_marker(..., seconds=None, others=[...])`: duration from `marker_seconds`; outlines
+  for similar pictures.
+
+**Tray status (4.5.1)**
+- `tray_status()` builds the tooltip (≤ 127 characters, Windows' `szTip` limit; problems
+  first) and the full lines for the tray menu's dynamic **Job status** submenu;
+  `update_tray_status()` (from `ui_tick`) sets `tray.title` when it changes and calls
+  `update_menu()` at most every 5 s. `main()` sets an explicit AppUserModelID, and the exe
+  gets a version resource (`scripts/make_version_file.py`) so Windows shows "Clickue".
+
+**Tables**
+- `enable_column_fit(tree, on_change)` (every Treeview): a `ColumnFit` bind tag in front of
+  the widget's own tags handles double-clicks on a column separator (fit to contents) and on
+  headings, returning `"break"` so the row's double-click action doesn't run. The job list
+  saves widths in `settings["col_widths"]` (fitted or dragged columns become fixed width).
 - Before screenshots for click spots, `grab_screen()` moves the mouse away for 0.3 s to avoid
   hover effects. Watchers capture without moving the mouse.
 
@@ -336,10 +382,12 @@ pythonw src\clickue.py          rem or double-click scripts\Start Clickue.bat
 
 ## 7. Build
 
-- **Locally:** `scripts\Build Clickue EXE.bat` → `dist\Clickue.exe` (PyInstaller `--onefile
-  --noconsole --icon assets\clickue.ico --hidden-import pystray._win32`).
-- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.5`, run
-  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.5.exe`. The installer shows
+- **Locally:** `scripts\Build Clickue EXE.bat` → `dist\Clickue.exe` (runs
+  `scripts\make_version_file.py` for the exe's version details, then PyInstaller `--onefile
+  --noconsole --icon assets\clickue.ico --version-file build\version_info.txt
+  --hidden-import pystray._win32`).
+- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.5.1`, run
+  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.5.1.exe`. The installer shows
   `installer/before-install.txt` first; its uninstaller removes the HKCU Run value only when it
   points at `{app}`, and deletes `%APPDATA%\Clickue` only if the user says Yes (skipped when
   Clickue's own Uninstall passes `/KEEPDATA`).
@@ -355,7 +403,7 @@ Run from the repository root.
 |---|---|---|
 | `python tests/test_watchers.py` | watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries) | `RESULT 21/21` |
 | `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id, guide link + pictures | `RESULT 55/55` |
-| `python tests/test_click_spot.py` | click-spot matching at 3 picture sizes × 8 screens (100–175 % scaling, moved, look-alikes) | `0 of 24` failures |
+| `python tests/test_click_spot.py` | click-spot matching at 3 picture sizes × 8 screens (100–175 % scaling, moved, look-alikes), with exact matching and with tolerant matching | `0 of 48` failures |
 | `python tests/test_workflows.py` | 4.5: alert hardening (hosts, redirects, rate limit, redaction), secrets out of backups/exports, DPAPI flow (simulated), import validation, data-folder safety, variables, blocks, if/repeat/retries/groups/limits/cancel/pause, held-input release, dry run, the input queue (order, watchers keep checking, yielding, emergency stop), conflicts, recorder compression, paste/clipboard flow, video (lifecycle, no codec, disk full, capture failure, redaction), run history + video positions, failure screenshots, schema migration, adapters | `RESULT N/N` |
 | `python tests/check_release.py` | docs links/anchors/pictures, version = changelog, disclosure placement, planned features marked planned, no secrets or private details in public files, workflow least privilege + pinned actions, uninstall boundaries | `RESULT N/N` |
 | `python tests/gui_test.py` | drives every window and control of the real UI | `N/N checks passed, 0 errors` |
@@ -377,7 +425,7 @@ Run from the repository root.
 ## 9. Making a new version (checklist)
 
 1. Make the change in `src/clickue.py`, following the compatibility rules (section 4).
-2. Bump `VERSION = "x.y"` near the top of `src/clickue.py`.
+2. Bump `VERSION = "x.y"` (or `"x.y.z"` for a fix release) near the top of `src/clickue.py`.
 3. Add an entry at the top of `CHANGELOG.md`. Update `FEATURES.md`, `docs/GUIDE.md` (the
    complete guide: every feature, setting and default), `docs/USER_GUIDE.md` and `README.md`
    if the behaviour or UI changed. If a picture in the guide no longer matches, change its
@@ -395,7 +443,14 @@ Run from the repository root.
    - a job with screen video: red bar, Pause/Stop video, play it from the run history;
    - phone alerts to a real Discord webhook / Telegram bot; a wrong URL is refused;
    - installer: fresh install, upgrade over the previous version (before-upgrade backup),
-     uninstall keeping data, uninstall deleting data; portable zip; in-app Uninstall for both.
+     uninstall keeping data, uninstall deleting data; portable zip; in-app Uninstall for both;
+   - 4.5.1: pick a button, scroll it out of view with a similar button visible → Show spot
+     says not found (with similar pictures outlined when that's on), the job doesn't click;
+     choose Picture size Large, Pick on screen, Show spot and Check now in a watcher editor:
+     the editor comes back on top and the main window keeps its size (also when maximized);
+     Esc and Cancel during Pick on screen; marker time 2 s; hover the tray icon (status,
+     no old name) and right-click → Job status; double-click a job-list column border;
+     the exe's Properties → Details shows Clickue 4.5.1.
 
 ## 10. GitHub: repository, CI and releases
 

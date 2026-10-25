@@ -649,4 +649,55 @@ try:
 except ValueError:
     refused = True
 ok("adapters: wrong API version refused", refused)
+
+# ======================================================================== 4.5.1 tray menu, matching
+import types as _types
+class _MI:
+    def __init__(self, text, action=None, default=False, visible=True, **k):
+        self.text, self.action, self.visible = text, action, visible
+class _Menu:
+    SEPARATOR = _MI("-")
+    def __init__(self, *items):
+        self.items = items
+class _Icon:
+    made = []
+    def __init__(self, name, img, title, menu):
+        self.name, self.title, self.menu = name, title, menu
+        _Icon.made.append(self)
+    def run_detached(self):
+        pass
+    def stop(self):
+        pass
+fake = _types.SimpleNamespace(MenuItem=_MI, Menu=_Menu, Icon=_Icon)
+fake.Menu.SEPARATOR = _MI("-")
+real_tray, real_have = getattr(ac, "pystray", None), ac.HAVE_TRAY
+ac.pystray, ac.HAVE_TRAY = fake, True
+T = _types.SimpleNamespace(settings={"tray_status": True}, cmdq=_types.SimpleNamespace(put=lambda x: None),
+                           icon_img=None, log=lambda m: None, emergency_stop=lambda: None, tray=None,
+                           _tray_lines=["✓ A: Running", "⚠ B: Picture missing"])
+ac.App.start_tray(T)
+icon = T.tray
+sub = [i for i in icon.menu.items if getattr(i, "text", "") == "Job status"]
+ok("tray: icon titled Clickue with a Job status submenu", icon and icon.title == "Clickue" and sub
+   and [x.text for x in sub[0].action.items[0]()] == ["✓ A: Running", "⚠ B: Picture missing"])
+class _Bad(_Menu):
+    def __init__(self, *items):
+        if len(items) == 1 and callable(items[0]):
+            raise TypeError("no dynamic menus")
+        super().__init__(*items)
+fake.Menu = _Bad
+T.tray = None
+ac.App.start_tray(T)
+ok("tray: falls back to the plain menu if the status submenu can't be built",
+   T.tray is not None and not [i for i in T.tray.menu.items if getattr(i, "text", "") == "Job status"])
+ac.pystray, ac.HAVE_TRAY = real_tray, real_have
+
+ok("exact matching: on by default for jobs and imported click steps",
+   ac.new_job()["exact_match"] is True
+   and ac.sanitize_step({"type": "click", "x": 1, "y": 1})[0]["exact_match"] is True
+   and ac.sanitize_step({"type": "click", "x": 1, "y": 1, "exact_match": False})[0]["exact_match"] is False)
+ok("settings: 4.5.1 defaults", ac.DEFAULT_SETTINGS["marker_seconds"] == 5
+   and ac.DEFAULT_SETTINGS["show_similar"] is False and ac.DEFAULT_SETTINGS["tray_status"] is True)
+ok("saved window sizes are kept when they fit (no shrinking)",
+   ac.fit_geometry("1200x1000+10+20") == "1200x1000+10+20" or ac.virtual_screen()[3] < 1000)
 print(f"\nRESULT {sum(R)}/{len(R)}")

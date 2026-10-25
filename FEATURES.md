@@ -39,14 +39,20 @@ Everything below is available in Clickue 4.5 unless it's under
 
 - **Pick on screen.** A 5-second countdown, then the spot under your mouse is captured. The
   countdown box can be dragged anywhere, pauses while you drag it, and moves out of the way
-  by itself when your mouse comes near.
+  by itself when your mouse rests near it. **Esc** (from anywhere) or its **✕ Cancel** button
+  cancels without changing anything; afterwards the editor comes back exactly where it was.
 - **Find the spot by its picture.** A small picture around the spot is saved and searched
   for before every click:
   - multi-scale search (50 %–200 %) that handles different resolutions and 100–175 % display
     scaling, and remembers the scaling it last saw for faster checks
   - a whole-picture match plus a close-up match of the exact spot, so it can tell the right
     place from look-alikes
-  - when the picture appears more than once, it picks the copy closest to where it was saved
+  - **Only the exact picture** (on by default, per job and per click step): the place must be
+    the saved picture almost pixel for pixel (at another display scaling it's scaled back and
+    compared again, colours included). A similar-looking picture is never clicked, also when
+    the real one is off-screen; identical copies are only used at the place you picked
+  - with exact matching off (tolerant, the pre-4.5.1 behaviour): when the picture appears more
+    than once, it picks the copy closest to where it was saved
   - picture size Small / Medium / Large; warns if the spot is too plain to recognize
   - if it can't be found: **wait and retry** (default) or **click the saved position**
 - **Inside a window** (alternative). Remembers which window the spot is in and where inside
@@ -193,7 +199,10 @@ After its main click, any job can run **steps** in order, or a job can be **step
 
 All tests hide the whole app while they run, so nothing is in the way.
 - **Show spot.** Moves the mouse to where it would click and shows a pulsing crosshair, with
-  how it was found (e.g. "picture 81 % at 150 % size"). No click.
+  how it was found (e.g. "exact picture 93 % at 150 % size"). No click. Optionally outlines
+  **every similar picture** on screen at the same time (green = would be used, orange = same
+  picture elsewhere, grey = similar but ignored). The marker stays **5 s by default, 1–120 s**
+  as you choose in Preferences → Clicking (also for Check picture / Check now).
 - **Test click now.** Clicks once, without changing the schedule.
 - **Schedule test click.** Clicks once in X minutes (e.g. after you disconnect) and reports.
 - **Check picture.** Is the watched picture on screen (or in its area) right now?
@@ -264,7 +273,7 @@ All tests hide the whole app while they run, so nothing is in the way.
 
 - **Daily automatic backup** of all jobs, step groups and settings (keeps the newest 14,
   adjustable). Phone-alert credentials are never copied into backups.
-- A backup is saved before upgrading jobs from an older version (*before-upgrade-4.5*), before
+- A backup is saved before upgrading jobs from an older version (*before-upgrade-<version>*, e.g. *before-upgrade-4.5.1*), before
   an import that replaces your jobs, before a restore and before a fresh start.
 - **Backups window** to back up now, restore (replace or add) and open the folder. Your
   current jobs are backed up before any restore.
@@ -282,8 +291,12 @@ All tests hide the whole app while they run, so nothing is in the way.
 
 ## Window, tray & hotkeys
 
-- Minimize and/or close to the **system tray**; tray menu with Show, Pause all, Stop
-  everything now and Exit.
+- Minimize and/or close to the **system tray**; tray menu with Show, **Job status**, Pause all,
+  Stop everything now and Exit.
+- **Job status on the tray icon.** Point at the icon to see a summary (*3 active · all OK* or
+  *1 needs attention*), what's running now, and each active job's health, problems first.
+  The tray menu's **Job status** lists every active job. Can be turned off.
+- Windows shows the name **Clickue** for the tray icon, taskbar and the program file's details.
 - **Global hotkeys** that work while hidden, all changeable: pause/resume all (**Ctrl+Alt+P**),
   show/hide Clickue (**Ctrl+Alt+K**), emergency stop (**Ctrl+Alt+X**), start/stop recording
   (**Ctrl+Alt+R**), pause/resume recording (**Ctrl+Alt+U**).
@@ -303,7 +316,11 @@ All tests hide the whole app while they run, so nothing is in the way.
 - **Drag dividers** to resize the job list, the activity panel, and the tests and history
   areas.
 - Every window and dialog **remembers its size and position** (and whether it was maximized).
-  Sizes are kept on screen if the screen gets smaller.
+  When the app hides for a pick or a test, every window comes back exactly as it was, with the
+  window you were using on top. Sizes only change if a window no longer fits on the screen.
+- **Column widths:** drag a column border, or **double-click** it to fit the column to its
+  contents (like a spreadsheet), in every table. The job list remembers its widths;
+  ☰ Menu → Reset column widths.
 - Clear grid with column lines, status icons and colour coding.
 
 ## Install options

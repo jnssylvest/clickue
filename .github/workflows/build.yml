@@ -69,7 +69,9 @@ jobs:
           "version=$v" >> $env:GITHUB_OUTPUT
 
       - name: Build Clickue.exe
-        run: python -m PyInstaller --noconfirm --onefile --noconsole --name Clickue --icon assets/clickue.ico --hidden-import pystray._win32 src/clickue.py
+        run: |
+          python scripts/make_version_file.py
+          python -m PyInstaller --noconfirm --onefile --noconsole --name Clickue --icon assets/clickue.ico --version-file build/version_info.txt --hidden-import pystray._win32 src/clickue.py
 
       - name: Make portable zip
         shell: pwsh

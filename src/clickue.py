@@ -58,7 +58,7 @@ except Exception:
 APP_NAME = "Clickue"
 APP_ID = "Clickue"
 OLD_APP_ID = "ScheduledAutoClicker"      # previous name - data is migrated from here
-VERSION = "4.5"
+VERSION = "4.5.1"
 REPO_URL = "https://github.com/jnssylvest/clickue"
 GUIDE_URL = REPO_URL + "/blob/main/docs/GUIDE.md"      # the complete guide (☰ Menu)
 DISCLOSURE = ("Clickue is vibe-coded and was developed with substantial AI assistance. Caution "
@@ -164,6 +164,19 @@ def get_cursor():
     pt = wt.POINT()
     user32.GetCursorPos(ctypes.byref(pt))
     return (pt.x, pt.y)
+
+
+VK_ESCAPE = 0x1B
+
+
+def key_down(vk):
+    """Is this key held right now (anywhere, whichever window has focus)?"""
+    if not IS_WIN:
+        return False
+    try:
+        return bool(user32.GetAsyncKeyState(int(vk)) & 0x8000)
+    except Exception:
+        return False
 
 
 def screen_available():
@@ -281,11 +294,13 @@ def fit_geometry(geom, min_w=300, min_h=200):
         return ""
     w, h, x, y = (int(v) for v in m.groups())
     vx, vy, vw, vh = virtual_screen()
-    w = max(min_w, min(w, vw - 20))
-    h = max(min_h, min(h, vh - 60))
+    # 4.5.1: keep the size and position exactly as the user left them; only shrink or move
+    # a window that no longer fits on the screen(s) (e.g. a smaller remote-desktop screen)
+    w = max(min(min_w, vw), min(w, vw))
+    h = max(min(min_h, vh), min(h, vh))
     x = min(max(x, vx), vx + vw - w)
-    y = min(max(y, vy), vy + vh - h - 40)
-    return f"{w}x{h}+{x}+{max(vy, y)}"
+    y = min(max(y, vy), vy + vh - h)
+    return f"{w}x{h}+{x}+{y}"
 
 
 def describe_point(x, y):
@@ -460,11 +475,11 @@ def _match(S, t):
     return res
 
 
-def find_picture(screen_gray, tmpl_gray, spot, expected=None, scale_hint=None):
-    """Search a screenshot for the saved picture at several sizes.
+def picture_candidates(screen_gray, tmpl_gray, spot, scale_hint=None, limit=6):
+    """Every place on a screenshot that looks like the saved picture, at several sizes.
     Each candidate is checked twice: the whole picture, and a small close-up around the
-    spot itself (the close-up is what tells the right place from look-alikes).
-    Returns (score, x, y, scale, whole, closeup) in screenshot pixels, or None."""
+    spot itself. Returns a list of (score, x, y, scale, whole, closeup) in screenshot
+    pixels (x, y = the spot), best first, one per place."""
     H, W = screen_gray.shape[:2]
     th0, tw0 = tmpl_gray.shape[:2]
     cw, ch = min(tw0, 60), min(th0, 34)
@@ -486,7 +501,7 @@ def find_picture(screen_gray, tmpl_gray, spot, expected=None, scale_hint=None):
                                             interpolation=interp)
         res = _match(screen_gray, t)
         top = None
-        for _ in range(6):                       # a few best places at this size
+        for _ in range(limit):                   # a few best places at this size
             _, v, _, (lx, ly) = cv2.minMaxLoc(res)
             if top is None:
                 top = v
@@ -507,9 +522,25 @@ def find_picture(screen_gray, tmpl_gray, spot, expected=None, scale_hint=None):
                 c[3] == sc and c[4] >= MATCH_WHOLE_MIN + 0.1 and c[5] >= MATCH_CLOSEUP_MIN + 0.1
                 for c in cands):
             break                                # found at the size it was last seen
-    good = [c for c in cands if c[4] >= MATCH_WHOLE_MIN and c[5] >= MATCH_CLOSEUP_MIN]
+    # one candidate per place (the same place is often found at several sizes)
+    out = []
+    near = 0.4 * min(tw0, th0)
+    for c in sorted(cands, key=lambda c: (is_match(c), c[0]), reverse=True):
+        if all((c[1] - o[1]) ** 2 + (c[2] - o[2]) ** 2 > (near * max(c[3], o[3])) ** 2
+               for o in out):
+            out.append(c)
+    return out
+
+
+def find_picture(screen_gray, tmpl_gray, spot, expected=None, scale_hint=None):
+    """The best place for the saved picture (tolerant matching: similar pictures count).
+    Returns (score, x, y, scale, whole, closeup) in screenshot pixels, or None."""
+    cands = picture_candidates(screen_gray, tmpl_gray, spot, scale_hint)
+    if not cands:
+        return None
+    good = [c for c in cands if is_match(c)]
     if not good:
-        return max(cands, key=lambda c: c[0]) if cands else None
+        return max(cands, key=lambda c: c[0])
     best = max(c[0] for c in good)
     near = [c for c in good if c[0] >= best - 0.02]
     if expected and len(near) > 1:               # look-alikes: take the one nearest the saved spot
@@ -520,6 +551,54 @@ def find_picture(screen_gray, tmpl_gray, spot, expected=None, scale_hint=None):
 
 def is_match(r):
     return bool(r) and r[4] >= MATCH_WHOLE_MIN and r[5] >= MATCH_CLOSEUP_MIN
+
+
+# Exact matching (4.5.1): the place must be the same picture, not just a similar one. At the
+# size it was picked, the pixels must agree almost exactly; at another size (display scaling)
+# the place is scaled back to the picture's size and compared again, close-up included.
+EXACT_SAME_SIZE_MIN = 0.95   # whole picture and close-up, same size
+EXACT_SCALED_WHOLE_MIN = 0.88
+EXACT_SCALED_CLOSEUP_MIN = 0.85
+
+
+def verify_exact(tmpl_gray, tmpl_rgb, spot, screen_gray, screen_rgb, cand):
+    """Is the candidate place really the saved picture? Returns (ok, whole, closeup)."""
+    _, cx, cy, sc, whole0, close0 = cand
+    if abs(sc - 1) < 0.01:
+        ok = whole0 >= EXACT_SAME_SIZE_MIN and close0 >= EXACT_SAME_SIZE_MIN
+        whole, close = whole0, close0
+    else:
+        th, tw = tmpl_gray.shape[:2]
+        pad = 3
+        x0, y0 = cx - spot[0] * sc, cy - spot[1] * sc
+        X0, Y0 = int(round(x0)) - pad, int(round(y0)) - pad
+        X1, Y1 = int(round(x0 + tw * sc)) + pad, int(round(y0 + th * sc)) + pad
+        if X0 < 0 or Y0 < 0 or X1 > screen_gray.shape[1] or Y1 > screen_gray.shape[0]:
+            return False, 0.0, 0.0
+        reg = screen_gray[Y0:Y1, X0:X1]
+        reg = cv2.resize(reg, (max(1, round(reg.shape[1] / sc)), max(1, round(reg.shape[0] / sc))),
+                         interpolation=cv2.INTER_AREA if sc > 1 else cv2.INTER_LINEAR)
+        a = cv2.GaussianBlur(tmpl_gray, (3, 3), 0).astype(np.float32)
+        b = cv2.GaussianBlur(reg, (3, 3), 0).astype(np.float32)
+        if b.shape[0] < a.shape[0] or b.shape[1] < a.shape[1]:
+            return False, 0.0, 0.0
+        whole = float(np.nan_to_num(cv2.matchTemplate(b, a, cv2.TM_CCOEFF_NORMED)).max())
+        cw, ch = min(tw, 60), min(th, 34)
+        cx0 = int(min(max(spot[0] - cw // 2, 0), tw - cw))
+        cy0 = int(min(max(spot[1] - ch // 2, 0), th - ch))
+        core = a[cy0:cy0 + ch, cx0:cx0 + cw]
+        win = b[cy0:cy0 + ch + 2 * pad, cx0:cx0 + cw + 2 * pad]
+        close = -1.0
+        if win.shape[0] >= core.shape[0] and win.shape[1] >= core.shape[1] and core.std() > 0:
+            close = float(np.nan_to_num(cv2.matchTemplate(win, core, cv2.TM_CCOEFF_NORMED)).max())
+        ok = whole >= EXACT_SCALED_WHOLE_MIN and close >= EXACT_SCALED_CLOSEUP_MIN
+    if ok:
+        th, tw = tmpl_gray.shape[:2]
+        mx = cx - spot[0] * sc + tw * sc / 2     # centre of the picture on screen
+        my = cy - spot[1] * sc + th * sc / 2
+        chroma, light = color_difference(tmpl_rgb, screen_rgb, mx, my, sc)
+        ok = chroma <= WATCH_COLOR_MAX and light <= WATCH_LIGHT_MAX
+    return ok, whole, close
 
 
 def system_dpi():
@@ -537,9 +616,23 @@ def uses_picture(job):
 
 def locate_spot(job, activate=False, check_cover=True):
     """Where to click now. Returns (ok, x, y, message, how-it-was-found)."""
+    return spot_report(job, activate=activate, check_cover=check_cover)["result"]
+
+
+def spot_report(job, activate=False, check_cover=True):
+    """Find the job's (or step's) click spot. Returns a dict:
+    result   (ok, x, y, message, how) - what locate_spot returns
+    similar  [(x, y, w, h, note, chosen?, exact?)] every place that looks like the picture,
+             in screen pixels (x, y, w, h = the picture's box) - for "point out similar"
+    With exact matching (the default) only the picture itself counts: similar pictures are
+    never clicked, and if the exact picture is on screen more than once, the copy where the
+    spot was picked is used, or nothing is clicked when that can't be told."""
+    rep = {"similar": []}
     if not uses_picture(job):
         ok, x, y, msg = resolve_target(job, activate=activate, check_cover=check_cover)
-        return ok, x, y, msg, "saved position"
+        rep["result"] = (ok, x, y, msg, "saved position")
+        return rep
+    exact = bool(job.get("exact_match", True))
     region = None
     if job.get("target_mode") == "window" and job.get("window_title") and IS_WIN:
         h = find_window(job["window_title"], job.get("window_class", ""))
@@ -552,42 +645,95 @@ def locate_spot(job, activate=False, check_cover=True):
     try:
         shot, (vx, vy) = grab_screen()
     except Exception as e:
-        return False, 0, 0, f"couldn't capture the screen ({e})", ""
-    tmpl = cv2.cvtColor(np.asarray(b64_to_img(job["snap_png"])), cv2.COLOR_RGB2GRAY)
-    spot = job.get("snap_spot") or [tmpl.shape[1] // 2, tmpl.shape[0] // 2]
-    full = cv2.cvtColor(np.asarray(shot), cv2.COLOR_RGB2GRAY)
+        rep["result"] = (False, 0, 0, f"couldn't capture the screen ({e})", "")
+        return rep
+    t_rgb = np.ascontiguousarray(np.asarray(b64_to_img(job["snap_png"])))
+    tmpl = cv2.cvtColor(t_rgb, cv2.COLOR_RGB2GRAY)
+    th0, tw0 = tmpl.shape[:2]
+    spot = job.get("snap_spot") or [tw0 // 2, th0 // 2]
+    s_rgb = np.ascontiguousarray(np.asarray(shot))
+    full = cv2.cvtColor(s_rgb, cv2.COLOR_RGB2GRAY)
     tries = []
     if region:                                   # look inside the window first
         l, t, w, h = region
         x0, y0 = max(0, l - vx), max(0, t - vy)
         sub = full[y0:y0 + h, x0:x0 + w]
         if sub.size:
-            tries.append((sub, vx + x0, vy + y0))
-    tries.append((full, vx, vy))
+            tries.append((sub, s_rgb[y0:y0 + h, x0:x0 + w], vx + x0, vy + y0))
+    tries.append((full, s_rgb, vx, vy))
     ps_dpi, cur_dpi = job.get("pick_dpi"), system_dpi()
     hint = cur_dpi / ps_dpi if ps_dpi else None
-    found = None
-    for img, ox, oy in tries:
-        exp = (ex - ox, ey - oy) if eok else None
-        r = find_picture(img, tmpl, spot, exp, hint)
-        if r and (found is None or (is_match(r), r[0]) > (is_match(found), found[0])):
-            found = (r[0], round(r[1] + ox), round(r[2] + oy), r[3], r[4], r[5])
-        if is_match(found):
+    found, seen, note = None, [], ""
+    for img, rgb, ox, oy in tries:
+        cands = picture_candidates(img, tmpl, spot, hint)
+        for c in cands:
+            sx, sy = round(c[1] + ox), round(c[2] + oy)
+            if any(abs(sx - o[0]) < 4 and abs(sy - o[1]) < 4 for o in seen):
+                continue
+            ok_exact, w_, c_ = (verify_exact(tmpl, t_rgb, spot, img, rgb, c) if exact and
+                                is_match(c) else (False, c[4], c[5]))
+            seen.append([sx, sy, c, ok_exact])
+        if exact:
+            good = [o for o in seen if o[3]]
+            if len(good) > 1:
+                # the same picture more than once: use the copy where the spot was picked
+                tol = 0.5 * max(tw0, th0) * max(o[2][3] for o in good)
+                at = [o for o in good if eok and (o[0] - ex) ** 2 + (o[1] - ey) ** 2 <= tol ** 2]
+                if len(at) == 1:
+                    found = at[0]
+                else:
+                    found = None
+                    note = (f"the exact picture is on screen {len(good)} times and Clickue can't "
+                            f"tell which one you picked")
+            elif good:
+                found = good[0]
+        else:
+            r = find_picture(img, tmpl, spot, (ex - ox, ey - oy) if eok else None, hint)
+            if r and is_match(r):
+                rx, ry = round(r[1] + ox), round(r[2] + oy)
+                found = next((o for o in seen if abs(o[0] - rx) < 4 and abs(o[1] - ry) < 4),
+                             [rx, ry, r, False])
+        if found or note:
             break
-    if is_match(found):
-        score, x, y, sc = found[:4]
+    for o in seen:                               # what "point out similar pictures" shows
+        sx, sy, c, ok_exact = o
+        sc = c[3]
+        bx, by = round(sx - spot[0] * sc), round(sy - spot[1] * sc)
+        if not is_match(c) and max(c[4], c[5]) < 0.55:
+            continue
+        pct = f"{max(0.0, min(c[4], c[5])):.0%}"
+        if exact:
+            kind = "exact" if ok_exact else "similar"
+        else:
+            kind = "match" if is_match(c) else "similar"
+        rep["similar"].append((bx, by, round(tw0 * sc), round(th0 * sc), f"{kind} {pct}",
+                               o is found, ok_exact))
+    if found:
+        x, y, c = found[0], found[1], found[2]
+        sc = c[3]
         if check_cover and IS_WIN:
             w = window_at(x, y)
             if w and is_own_window(w):
-                return False, x, y, "the Clickue window is covering the spot", ""
-        how = f"picture {min(found[4], found[5]):.0%}" + (
+                rep["result"] = (False, x, y, "the Clickue window is covering the spot", "")
+                return rep
+        how = ("exact picture" if exact else "picture") + f" {min(c[4], c[5]):.0%}" + (
             "" if abs(sc - 1) < 0.01 else f" at {sc:.0%} size")
-        return True, x, y, "", how
-    best = f"{max(0.0, min(found[4], found[5])):.0%}" if found else "none"
+        rep["result"] = (True, x, y, "", how)
+        return rep
+    best = max((o[2] for o in seen), key=lambda c: min(c[4], c[5]), default=None)
+    best_t = f"{max(0.0, min(best[4], best[5])):.0%}" if best else "none"
+    if not note:
+        n_sim = sum(1 for o in seen if is_match(o[2]))
+        note = (f"couldn't find the exact picture on screen (best match {best_t}"
+                + (f"; {n_sim} similar place{'s' if n_sim != 1 else ''} ignored" if exact and n_sim
+                   else "") + ")") if exact else \
+            f"couldn't find the saved picture on screen (best match {best_t})"
     if job.get("image_fallback") == "position":
         ok, x, y, msg = resolve_target(job, activate=False, check_cover=check_cover)
-        return ok, x, y, msg, f"saved position (picture not found, best {best})"
-    return False, 0, 0, f"couldn't find the saved picture on screen (best match {best})", ""
+        rep["result"] = (ok, x, y, msg, f"saved position (picture not found, best {best_t})")
+        return rep
+    rep["result"] = (False, 0, 0, note, "")
+    return rep
 
 
 def color_difference(tmpl_rgb, screen_rgb, cx, cy, scale):
@@ -630,11 +776,14 @@ def job_area(job):
     return x, y, w, h
 
 
-def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None):
+def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None, report=None):
     """Is this exact picture on the screen (or inside `area`) right now?
     Stricter than finding a click spot: shape, colour and (at the original size) fine
     detail must all agree, so a similar-looking replacement doesn't count as "still there".
-    Returns (found, x, y, score, scale) - x, y is the picture's centre on screen."""
+    At another size the place is scaled back and compared again (4.5.1).
+    Returns (found, x, y, score, scale) - x, y is the picture's centre on screen.
+    If `report` is a list, every similar place is added to it as
+    (x, y, w, h, note, chosen?, exact?) in screen pixels."""
     if shot is None:
         shot = grab_screen(move_cursor=False)
     img, (vx, vy) = shot
@@ -649,21 +798,39 @@ def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None):
     s_rgb = np.ascontiguousarray(np.asarray(img))
     tmpl = cv2.cvtColor(t_rgb, cv2.COLOR_RGB2GRAY)
     full = cv2.cvtColor(s_rgb, cv2.COLOR_RGB2GRAY)
-    spot = (tmpl.shape[1] // 2, tmpl.shape[0] // 2)
-    r = find_picture(full, tmpl, spot, None, scale_hint)
-    if not r:
+    th0, tw0 = tmpl.shape[:2]
+    spot = (tw0 // 2, th0 // 2)
+    cands = picture_candidates(full, tmpl, spot, scale_hint)
+    if not cands:
         return False, 0, 0, 0.0, None
+    chosen, checked = None, []
+    for c in cands:
+        sc = c[3]
+        ok = is_match(c)
+        if ok and abs(sc - 1) < 0.01:
+            ok = c[4] >= WATCH_SAME_SIZE_MIN - 0.03 and c[5] >= WATCH_SAME_SIZE_MIN
+        elif ok:
+            ok = verify_exact(tmpl, t_rgb, spot, full, s_rgb, c)[0]
+        if ok:
+            chroma, light = color_difference(t_rgb, s_rgb, c[1], c[2], sc)
+            ok = chroma <= WATCH_COLOR_MAX and light <= WATCH_LIGHT_MAX
+        checked.append((c, ok))
+        if ok and chosen is None:
+            chosen = c
+    if report is not None:
+        for c, ok in checked:
+            if not is_match(c) and max(c[4], c[5]) < 0.55:
+                continue
+            sc = c[3]
+            report.append((round(c[1] - tw0 * sc / 2 + vx), round(c[2] - th0 * sc / 2 + vy),
+                           round(tw0 * sc), round(th0 * sc),
+                           f"{'exact' if ok else 'similar'} {max(0.0, min(c[4], c[5])):.0%}",
+                           c is chosen, ok))
+    r = chosen or max(cands, key=lambda c: (is_match(c), c[0]))
     score = max(0.0, min(r[4], r[5]))
-    sc = r[3]
-    ok = is_match(r)
-    if ok and abs(sc - 1) < 0.01:
-        ok = r[4] >= WATCH_SAME_SIZE_MIN - 0.03 and r[5] >= WATCH_SAME_SIZE_MIN
-    if ok:
-        chroma, light = color_difference(t_rgb, s_rgb, r[1], r[2], sc)
-        if chroma > WATCH_COLOR_MAX or light > WATCH_LIGHT_MAX:
-            ok = False
-            score = min(score, 0.5)
-    return ok, round(r[1] + vx), round(r[2] + vy), score, sc
+    if chosen is None and is_match(r):
+        score = min(score, 0.5)
+    return chosen is not None, round(r[1] + vx), round(r[2] + vy), score, r[3]
 
 
 def resolution_note(job):
@@ -966,6 +1133,115 @@ def close_on_click_outside(win, app, on_outside):
         except Exception:
             pass
     win.bind("<FocusOut>", focus_out, add="+")
+
+
+# ---- 4.5.1: double-click a column border to fit the column (like a spreadsheet)
+def column_fit_width(tree, col, pad=26, limit=900):
+    """Width that shows the column's heading and every cell's text in full."""
+    try:
+        st = ttk.Style(tree)
+        f_cell = tkfont.Font(font=st.lookup("Treeview", "font") or "TkDefaultFont")
+        f_head = tkfont.Font(font=st.lookup("Treeview.Heading", "font") or "TkHeadingFont")
+    except Exception:
+        f_cell = f_head = tkfont.nametofont("TkDefaultFont")
+    w = f_head.measure(str(tree.heading(col, "text") or ""))
+    stack = list(tree.get_children(""))
+    seen = 0
+    while stack and seen < 5000:
+        iid = stack.pop()
+        seen += 1
+        try:
+            w = max(w, f_cell.measure(str(tree.set(iid, col))))
+            stack.extend(tree.get_children(iid))
+        except Exception:
+            pass
+    try:
+        lo = int(tree.column(col, "minwidth"))
+    except Exception:
+        lo = 20
+    return int(min(limit, max(lo, w + pad)))
+
+
+def _display_cols(tree):
+    dc = tree["displaycolumns"]
+    if isinstance(dc, str):
+        dc = (dc,)
+    if not dc or dc[0] == "#all":
+        dc = tree["columns"]
+    return list(dc)
+
+
+def _autofit_double(e):
+    tree = e.widget
+    try:
+        region = tree.identify_region(e.x, e.y)
+    except Exception:
+        return None
+    if region == "separator":
+        try:
+            n = int(str(tree.identify_column(e.x - 4)).lstrip("#")) - 1
+            col = _display_cols(tree)[n]
+        except Exception:
+            return "break"
+        w = column_fit_width(tree, col)
+        tree.column(col, width=w, stretch=False)
+        cb = getattr(tree, "_autofit_cb", None)
+        if cb:
+            try:
+                cb(col, w)
+            except Exception:
+                pass
+        try:
+            tree.event_generate("<<ColumnFitted>>")
+        except Exception:
+            pass
+        return "break"
+    if region == "heading":
+        return "break"          # double-clicking a heading does nothing else
+    return None
+
+
+def _autofit_press(e):
+    tree = e.widget
+    try:
+        if tree.identify_region(e.x, e.y) == "separator":
+            n = int(str(tree.identify_column(e.x - 4)).lstrip("#")) - 1
+            tree._dragging_col = _display_cols(tree)[n]
+        else:
+            tree._dragging_col = None
+    except Exception:
+        tree._dragging_col = None
+
+
+def _autofit_release(e):
+    tree = e.widget
+    col = getattr(tree, "_dragging_col", None)
+    tree._dragging_col = None
+    cb = getattr(tree, "_autofit_cb", None)
+    if col and cb:
+        try:
+            w = int(tree.column(col, "width"))
+            tree.column(col, stretch=False)
+            cb(col, w)
+        except Exception:
+            pass
+
+
+def enable_column_fit(tree, on_change=None):
+    """Double-click the border between two column headings to size the column on its left
+    to its contents. `on_change(col, width)` is told about fitted or dragged widths."""
+    tree._autofit_cb = on_change
+    tags = tree.bindtags()
+    if "ColumnFit" not in tags:
+        tree.bindtags(("ColumnFit",) + tuple(tags))
+    try:
+        if not tree.bind_class("ColumnFit", "<Double-1>"):
+            tree.bind_class("ColumnFit", "<Double-1>", _autofit_double)
+            tree.bind_class("ColumnFit", "<ButtonPress-1>", _autofit_press)
+            tree.bind_class("ColumnFit", "<ButtonRelease-1>", _autofit_release)
+    except Exception:
+        pass
+    return tree
 
 
 # ---------------------------------------------------------------- helpers
@@ -1704,6 +1980,7 @@ def sanitize_step(st):
                  pick_dpi=_clamp_num(st.get("pick_dpi"), 48, 960, None) if st.get("pick_dpi") else None,
                  pick_screen=_clean_point(st.get("pick_screen")),
                  image_fallback="position" if st.get("image_fallback") == "position" else "wait",
+                 exact_match=bool(st.get("exact_match", True)),
                  target_mode="window" if st.get("target_mode") == "window" else "screen",
                  window_title=_clean_str(st.get("window_title"), 300),
                  window_class=_clean_str(st.get("window_class"), 200),
@@ -2356,7 +2633,9 @@ class PictureAdapter(TargetAdapter):
               if target.get("image_fallback") == "position"
               else "no fallback: if the picture isn't found, nothing is clicked")
         where = " inside the window" if target.get("target_mode") == "window" else ""
-        return f"Finds the saved picture{where}; {fb}"
+        what = ("the exact saved picture (similar ones are ignored)"
+                if target.get("exact_match", True) else "the saved picture or a similar one")
+        return f"Finds {what}{where}; {fb}"
 
     def locate(self, target, activate=False, check_cover=True):
         return locate_spot(target, activate=activate, check_cover=check_cover)
@@ -4079,6 +4358,11 @@ DEFAULT_SETTINGS = {
     "video_redact": [],             # screen areas always blacked out in videos [[x, y, w, h]]
     "diag_keep": 30,                # failure screenshots kept
     "warn_conflicts": True,
+    # ---- Clickue 4.5.1
+    "marker_seconds": 5,            # how long Show spot / Check now marks what it found
+    "show_similar": False,          # Show spot / Check now also outline every similar picture
+    "tray_status": True,            # tray icon tooltip and menu show the jobs' status
+    "col_widths": {},               # job list column widths the user set
 }
 
 
@@ -4144,6 +4428,7 @@ def new_job(n=1):
         "snap_spot": None,          # [x, y] of the spot inside that picture
         "snap_size": "Medium",
         "image_fallback": "wait",   # if not found: "wait" and retry, or click "position"
+        "exact_match": True,        # 4.5.1: only the picture itself, never a similar one
         "pick_dpi": None,           # display scaling when picked (96 = 100%)
         # ---- screen watcher (kind == "watch")
         "kind": "click",            # "click" = on a schedule, "watch" = when a picture disappears
@@ -5587,11 +5872,18 @@ class App:
                 ("Last result", 190, 110, "w"))
         self.tree = ttk.Treeview(tf, columns=cols, show="headings", height=4,
                                  selectmode="browse")
+        enable_column_fit(self.tree, self.col_width_changed)
         self.col_base = {c: w for c, (h, w, minw, anchor) in zip(cols, spec)}
         self._shown_cols = None
         for c, (h, w, minw, anchor) in zip(cols, spec):
             self.tree.heading(c, text=h, anchor=anchor)
             self.tree.column(c, width=w, minwidth=minw, stretch=True, anchor=anchor)
+        for c, w in (self.settings.get("col_widths") or {}).items():
+            if c in cols:
+                try:
+                    self.tree.column(c, width=max(30, min(1200, int(w))), stretch=False)
+                except Exception:
+                    pass
         tsb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
         self.grid_lines, self.grid_geom = [], []
 
@@ -5998,10 +6290,11 @@ class App:
                 return "👁  Watching", sched, "Seen " + seen_t, cd, "running"
         return "👁  Watching", sched, "Starting…", cd, "running"
 
-    def build_rows(self, now):
+    def build_rows(self, now, flt=None):
         rows = []
         paused = self.settings.get("paused")
-        flt = self.v_filter.get() if hasattr(self, "v_filter") else "all"
+        if flt is None:
+            flt = self.v_filter.get() if hasattr(self, "v_filter") else "all"
         for j in self.jobs:
             if flt == "watch" and not is_watch(j) or flt == "click" and is_watch(j):
                 continue
@@ -6101,6 +6394,21 @@ class App:
             if str(rb.cget("text")) != want_text:
                 rb.configure(text=want_text)
         self.draw_grid()
+
+    def col_width_changed(self, col, width):
+        """A job-list column was fitted (double-click on its border) or dragged: keep it."""
+        cw = dict(self.settings.get("col_widths") or {})
+        cw[col] = int(width)
+        self.settings["col_widths"] = cw
+        self.save()
+        self.root.after_idle(self.draw_grid)
+
+    def reset_col_widths(self):
+        self.settings["col_widths"] = {}
+        for c, w in self.col_base.items():
+            self.tree.column(c, width=w, stretch=True)
+        self.save()
+        self.root.after_idle(self.draw_grid)
 
     def on_tree_resize(self):
         """Hide the least important columns when the table gets narrow."""
@@ -6271,6 +6579,7 @@ class App:
                                    + f"Data: {DATA_DIR}   ·   Shortcuts: Ctrl+N new · Enter edit · "
                                      f"Space start/stop · P pause · Ctrl+T test · Del delete")
         self.update_run_bar()
+        self.update_tray_status()
         self.root.after(1000, self.ui_tick)
 
     def update_run_bar(self):
@@ -6552,27 +6861,144 @@ class App:
         self.refresh_tree()
 
     # ------------------------------------------------------------ tray / window
+    # ---- 4.5.1: job status on the tray icon
+    TRAY_TIP_MAX = 127          # Windows shows at most 127 characters in a tray tooltip
+
+    def tray_status(self, now=None):
+        """What the tray icon tells you when you hover over it.
+        Returns (tooltip, lines): a short tooltip (fits Windows' 127-character limit), and
+        one full line per active job for the tray menu's "Job status"."""
+        now = now or time.time()
+        with self.lock:
+            rows = self.build_rows(now, flt="all")
+            names = {j["id"]: j["name"] for j in self.jobs}
+        try:
+            running, waiting = self.queue_status()
+        except Exception:
+            running, waiting = "", []
+        sev = {"bad": 0, "warn": 1, "running": 2, "paused": 3}
+        icon = {"bad": "✖", "warn": "⚠", "running": "✓", "paused": "⏸"}
+        items = []
+        for iid, vals, state in rows:
+            if iid.startswith(("test:", "wtest:")) or state == "stopped":
+                continue
+            status, name, _pos, _btn, _sched, nxt, cd, _count, last = vals
+            word = status.split(maxsplit=1)[-1] if " " in status else status
+            if state == "running" and str(cd) not in ("—", ""):
+                detail = f"{nxt}" if str(nxt).startswith(("Seen", "Not showing")) else f"next in {cd}"
+            else:
+                detail = str(nxt) if nxt not in ("—", "") else ""
+            if state == "bad" and last and last != "—":
+                detail = str(last)
+            items.append((sev.get(state, 2), names.get(iid, name), word, detail, state))
+        items.sort(key=lambda t: t[0])
+        paused = self.settings.get("paused")
+        n = len(items)
+        n_bad = sum(1 for t in items if t[4] in ("bad", "warn"))
+        if not n:
+            head = f"{APP_NAME}: no jobs running"
+        elif paused:
+            head = f"{APP_NAME}: ALL PAUSED ({n} job{'s' if n != 1 else ''})"
+        else:
+            head = (f"{APP_NAME}: {n} active · " +
+                    ("all OK" if not n_bad else f"{n_bad} need{'s' if n_bad == 1 else ''} attention"))
+        def say(word, det):
+            if det and word.lower() in det.lower():
+                return det                     # "Missing" + "Picture missing" -> one of them
+            return f"{word} · {det}" if det else word
+        lines = [f"{icon.get(st, '•')} {name}: {say(word, det)}" for _, name, word, det, st in items]
+        tip = head
+        if running:
+            tip += "\n▶ " + short_title(running, 40)
+        shown = 0
+        for _, name, word, det, st in items:
+            line = (f"\n{icon.get(st, '•')} {short_title(name, 16)}: "
+                    + short_title(say(word, det if st in ("bad", "warn", "running") else ""), 34))
+            more = n - shown - 1
+            tail = f"\n+{more} more (right-click → Job status)" if more else ""
+            if len(tip) + len(line) + len(tail) > self.TRAY_TIP_MAX:
+                rest = n - shown
+                end = f"\n+{rest} more (right-click → Job status)"
+                if len(tip) + len(end) <= self.TRAY_TIP_MAX:
+                    tip += end
+                break
+            tip += line
+            shown += 1
+        if waiting:
+            lines.append("Waiting their turn: " + ", ".join(waiting[:6]))
+        if running:
+            lines.insert(0, "▶ " + running)
+        return tip[:self.TRAY_TIP_MAX], lines
+
+    def update_tray_status(self):
+        """Refresh the tray tooltip and the Job status menu (every couple of seconds)."""
+        if not self.tray:
+            return
+        now = time.time()
+        if now - getattr(self, "_tray_upd", 0) < 2:
+            return
+        self._tray_upd = now
+        try:
+            if self.settings.get("tray_status", True):
+                tip, lines = self.tray_status(now)
+            else:
+                tip, lines = APP_NAME, []
+        except Exception:
+            return
+        try:
+            if tip != getattr(self, "_tray_tip", None):
+                self._tray_tip = tip
+                self.tray.title = tip
+            if lines != getattr(self, "_tray_lines", None) and \
+                    now - getattr(self, "_tray_menu_upd", 0) >= 5:
+                self._tray_lines = lines
+                self._tray_menu_upd = now
+                self.tray.update_menu()
+        except Exception:
+            pass
+
     def make_icon(self):
         return make_logo(64)
 
     def start_tray(self):
         if not HAVE_TRAY:
             return
-        try:
-            menu = pystray.Menu(
-                pystray.MenuItem("Show window", lambda icon, item: self.cmdq.put("show"),
-                                 default=True),
-                pystray.MenuItem(
-                    lambda item: "Resume all" if self.settings.get("paused") else "Pause all",
-                    lambda icon, item: self.cmdq.put("pause")),
-                pystray.MenuItem("Stop everything now", lambda icon, item: self.emergency_stop()),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Exit", lambda icon, item: self.cmdq.put("exit")))
-            self.tray = pystray.Icon(APP_ID, self.icon_img, APP_NAME, menu)
-            self.tray.run_detached()
-        except Exception as e:
-            self.tray = None
-            self.log(f"Tray icon unavailable: {e}")
+
+        def status_items():
+            lines = getattr(self, "_tray_lines", None) or ["No jobs running"]
+            return [pystray.MenuItem(t, lambda icon, item: self.cmdq.put("show"))
+                    for t in lines[:25]]
+
+        def build(with_status):
+            items = [pystray.MenuItem("Show window", lambda icon, item: self.cmdq.put("show"),
+                                      default=True)]
+            if with_status:
+                items.append(pystray.MenuItem(
+                    "Job status", pystray.Menu(status_items),
+                    visible=lambda item: bool(self.settings.get("tray_status", True))))
+            items += [pystray.MenuItem(
+                          lambda item: "Resume all" if self.settings.get("paused") else "Pause all",
+                          lambda icon, item: self.cmdq.put("pause")),
+                      pystray.MenuItem("Stop everything now",
+                                       lambda icon, item: self.emergency_stop()),
+                      pystray.Menu.SEPARATOR,
+                      pystray.MenuItem("Exit", lambda icon, item: self.cmdq.put("exit"))]
+            return pystray.Menu(*items)
+
+        for with_status in (True, False):       # never lose the tray icon over the status menu
+            try:
+                self.tray = pystray.Icon(APP_ID, self.icon_img, APP_NAME, build(with_status))
+                self.tray.run_detached()
+                return
+            except Exception as e:
+                try:
+                    if self.tray:
+                        self.tray.stop()
+                except Exception:
+                    pass
+                self.tray = None
+                err = e
+        self.log(f"Tray icon unavailable: {err}")
 
     # ------------------------------------------------------------ hotkeys
     def start_hotkeys(self):
@@ -6859,31 +7285,21 @@ class App:
     # ------------------------------------------------------------ 4.5: windows, recording, debug
     def hide_all_windows(self, keep=None):
         """Hide every visible Clickue window (except `keep`). Returns restore()."""
-        wins = []
-        tops = [self.root] + [w for w in self.root.winfo_children() if isinstance(w, tk.Toplevel)]
-        for w in tops:
-            try:
-                if w is not keep and w.winfo_exists() and w.winfo_viewable():
-                    wins.append(w)
-            except Exception:
-                pass
-        for w in wins:
-            try:
-                w.withdraw()
-            except Exception:
-                pass
+        tops = [self.root] + [w for w in self.root.winfo_children() if isinstance(w, tk.Toplevel)
+                              and w is not keep]
+        try:
+            front = self.root.focus_get()
+            front = front.winfo_toplevel() if front is not None else None
+        except Exception:
+            front = None
+        saved = self.hide_windows(tops)
         self._spot_busy = True
+        if front is None or front is self.root or front is keep:
+            front = next((w for w, _, _ in reversed(saved) if w is not self.root), None)
 
         def restore():
-            for w in reversed(wins):
-                try:
-                    if w is self.root:
-                        self.restore_main()
-                    elif w.winfo_exists():
-                        w.deiconify()
-                except Exception:
-                    pass
-            self.root.after(600, lambda: setattr(self, "_spot_busy", False))
+            self.show_windows(saved, focus=front)
+            self.root.after(900, lambda: setattr(self, "_spot_busy", False))
         return restore
 
     def warn_conflicts(self, job):
@@ -7094,6 +7510,8 @@ class App:
         m.add_command(label="Backups…", command=lambda: BackupsDialog(self))
         m.add_command(label="Export click history (CSV)…", command=self.export_history)
         m.add_separator()
+        m.add_command(label="Reset column widths", command=self.reset_col_widths,
+                      state="normal" if self.settings.get("col_widths") else "disabled")
         m.add_command(label="Preferences…", accelerator="Ctrl+,", command=self.open_settings)
         m.add_command(label="Open data folder", command=self.open_data_folder)
         m.add_command(label="Open log file", command=self.open_log)
@@ -7151,28 +7569,62 @@ class App:
         messagebox.showinfo(APP_NAME, f"Saved {len(rows)} rows to:\n{path}",
                             parent=parent or self.root)
 
-    def pick_point(self, parent, on_done):
-        """Countdown, then capture the mouse position and a picture around it.
-        Calls on_done(x, y, snap_png, snap_spot). The whole app hides meanwhile."""
-        if getattr(self, "_spot_busy", False):
-            return
-        self._spot_busy = True
-        restore = self.hide_app(parent)
-        cd = tk.Toplevel(self.root, bg="#1f2937", highlightthickness=1,
+    def pick_countdown(self, on_point, on_cancel=None, seconds=5):
+        """The "Point at the spot" countdown box. After `seconds`, calls on_point(x, y) with
+        the mouse position. Esc (from any window) or the box's Cancel button calls
+        on_cancel() instead. The box moves aside when the mouse rests near it, can be
+        dragged, and never moves away while the mouse is on its Cancel button."""
+        bg, fg, mute = "#1f2937", "#ffffff", "#9ca3af"
+        cd = tk.Toplevel(self.root, bg=bg, highlightthickness=1,
                          highlightbackground="#3b82f6", highlightcolor="#3b82f6")
         cd.overrideredirect(True)
         cd.attributes("-topmost", True)
-        lbl = tk.Label(cd, font=(self.font_family, 13, "bold"), bg="#1f2937", fg="#ffffff",
-                       padx=20, pady=10, justify="left", anchor="w", cursor="fleur", bd=0)
-        lbl.pack(fill="x")
-        tip = tk.Label(cd, font=(self.font_family, 9), bg="#1f2937", fg="#9ca3af", padx=20,
+        top = tk.Frame(cd, bg=bg)
+        top.pack(fill="x")
+        lbl = tk.Label(top, font=(self.font_family, 13, "bold"), bg=bg, fg=fg, padx=20,
+                       pady=10, justify="left", anchor="w", cursor="fleur", bd=0)
+        lbl.pack(side="left", fill="x", expand=True)
+        cancel = tk.Label(top, text="✕  Cancel (Esc)", font=(self.font_family, 10, "bold"),
+                          bg="#374151", fg=fg, padx=12, pady=6, cursor="hand2", bd=0)
+        cancel.pack(side="right", padx=(0, 12), pady=8)
+        tip = tk.Label(cd, font=(self.font_family, 9), bg=bg, fg=mute, padx=20,
                        justify="left", anchor="w", cursor="fleur", bd=0,
                        text="Drag this box to move it (the countdown waits while you drag).\n"
-                            "It also moves out of the way when your mouse comes near.")
+                            "It moves aside if your mouse rests near it. Esc cancels.")
         tip.pack(fill="x", pady=(0, 10))
-        st = {"drag": None, "moved": False, "done": False}
+        st = {"drag": None, "moved": False, "done": False, "near_since": None}
         vx, vy, vw, vh = virtual_screen()
         cd.geometry(f"+{vx + 20}+{vy + 20}")
+
+        def over_cancel():
+            try:
+                mx, my = get_cursor() if IS_WIN else cd.winfo_pointerxy()
+                return (cancel.winfo_rootx() <= mx <= cancel.winfo_rootx() + cancel.winfo_width()
+                        and cancel.winfo_rooty() <= my <= cancel.winfo_rooty()
+                        + cancel.winfo_height())
+            except Exception:
+                return False
+
+        def finish(kind, x=0, y=0):
+            if st["done"]:
+                return
+            st["done"] = True
+            try:
+                cd.destroy()
+            except Exception:
+                pass
+            if kind == "cancel":
+                self.log("Pick cancelled")
+                if on_cancel:
+                    self.root.after(50, on_cancel)
+            else:
+                self.root.after(250, lambda: on_point(x, y))
+
+        cancel.bind("<Button-1>", lambda e: finish("cancel"))
+        cancel.bind("<Enter>", lambda e: cancel.configure(bg="#dc2626"))
+        cancel.bind("<Leave>", lambda e: cancel.configure(bg="#374151"))
+        cd.bind("<Escape>", lambda e: finish("cancel"))
+        cd.bind("<Button-3>", lambda e: finish("cancel"))
 
         def press(e):
             st["drag"] = (e.x_root - cd.winfo_rootx(), e.y_root - cd.winfo_rooty())
@@ -7184,33 +7636,43 @@ class App:
         def release(e):
             st["drag"], st["moved"] = None, True
 
-        for wdg in (lbl, tip):
+        for wdg in (lbl, tip, top):
             wdg.bind("<ButtonPress-1>", press)
             wdg.bind("<B1-Motion>", motion)
             wdg.bind("<ButtonRelease-1>", release)
 
-        def dodge():
+        def watch():
+            """Esc from anywhere; move aside when the mouse rests near the box."""
             if st["done"]:
                 return
-            if not st["drag"] and not st["moved"]:
+            if key_down(VK_ESCAPE):
+                finish("cancel")
+                return
+            if not st["drag"] and not st["moved"] and not over_cancel():
                 try:
                     mx, my = get_cursor()
                     bx, by, bw, bh = cd.winfo_rootx(), cd.winfo_rooty(), cd.winfo_width(), \
                         cd.winfo_height()
-                    if bx - 60 <= mx <= bx + bw + 60 and by - 60 <= my <= by + bh + 60:
-                        corners = [(vx + 20, vy + 20), (vx + vw - bw - 20, vy + 20),
-                                   (vx + 20, vy + vh - bh - 60),
-                                   (vx + vw - bw - 20, vy + vh - bh - 60)]
-                        c = max(corners, key=lambda c: (c[0] + bw / 2 - mx) ** 2 +
-                                (c[1] + bh / 2 - my) ** 2)
-                        cd.geometry(f"+{int(c[0])}+{int(c[1])}")
+                    if bx - 30 <= mx <= bx + bw + 30 and by - 30 <= my <= by + bh + 30:
+                        st["near_since"] = st["near_since"] or time.time()
+                        if time.time() - st["near_since"] >= 0.6:
+                            corners = [(vx + 20, vy + 20), (vx + vw - bw - 20, vy + 20),
+                                       (vx + 20, vy + vh - bh - 60),
+                                       (vx + vw - bw - 20, vy + vh - bh - 60)]
+                            c = max(corners, key=lambda c: (c[0] + bw / 2 - mx) ** 2 +
+                                    (c[1] + bh / 2 - my) ** 2)
+                            cd.geometry(f"+{int(c[0])}+{int(c[1])}")
+                            st["near_since"] = None
+                    else:
+                        st["near_since"] = None
                 except Exception:
                     pass
-            cd.after(80, dodge)
-        dodge()
+            cd.after(80, watch)
 
         def step(n):
-            if st["drag"]:
+            if st["done"]:
+                return
+            if st["drag"] or over_cancel():     # wait while dragging or about to cancel
                 cd.after(200, step, n)
                 return
             if n > 0:
@@ -7219,11 +7681,26 @@ class App:
                 cd.after(1000, step, n - 1)
                 return
             x, y = get_cursor()
-            st["done"] = True
-            cd.destroy()
-            self.root.after(250, lambda: finish(x, y))
+            finish("point", x, y)
 
-        def finish(x, y):
+        try:
+            cd.focus_force()
+        except Exception:
+            pass
+        watch()
+        step(seconds)
+        return cd
+
+    def pick_point(self, parent, on_done):
+        """Countdown, then capture the mouse position and a picture around it.
+        Calls on_done(x, y, snap_png, snap_spot). The whole app hides meanwhile; Esc or
+        Cancel brings it back without changing anything."""
+        if getattr(self, "_spot_busy", False):
+            return
+        self._spot_busy = True
+        restore = self.hide_app(parent)
+
+        def got(x, y):
             snap_png, spot = "", None
             if HAVE_CV:
                 try:
@@ -7233,7 +7710,7 @@ class App:
                     pass
             restore()
             on_done(x, y, snap_png, spot)
-        step(5)
+        self.pick_countdown(got, restore)
 
     def edit_job(self):
         j = self.selected_job()
@@ -7343,37 +7820,116 @@ class App:
         if j:
             self.show_spot_for(j)
 
-    def hide_app(self, parent=None):
-        """Hide every visible window of this app (so it's out of the way while testing).
-        Returns a function that brings them back the way they were."""
-        wins = []
-        for w in (parent, self.tests_win, self.root):
+    # ---- 4.5.1: hide windows and bring them back exactly as they were
+    @staticmethod
+    def release_popdowns(win):
+        """Detach the dropdown lists of every combobox in `win` from it. On Windows a used
+        dropdown list stays an "owned" window of the dialog, and hiding and showing the
+        dialog with it attached could leave the dialog hidden behind the main window."""
+        stack = [win]
+        while stack:
+            w = stack.pop()
             try:
-                if w is not None and w not in wins and w.winfo_exists() and w.winfo_viewable():
-                    wins.append(w)
+                kids = w.winfo_children()
+            except Exception:
+                continue
+            for k in kids:
+                stack.append(k)
+                if isinstance(k, ttk.Combobox):
+                    pd = str(k) + ".popdown"
+                    try:
+                        if int(k.tk.call("winfo", "exists", pd)):
+                            k.tk.call("wm", "withdraw", pd)
+                            k.tk.call("wm", "transient", pd, "")
+                    except Exception:
+                        pass
+
+    def hide_windows(self, wins):
+        """Hide these windows. Returns what's needed to bring them back exactly: each
+        window's state (normal / maximized) and its size and position."""
+        saved = []
+        for w in wins:
+            try:
+                if w is None or not w.winfo_exists() or not w.winfo_viewable():
+                    continue
+                st, g = w.state(), w.geometry()
+                self.release_popdowns(w)
+                w.withdraw()
+                saved.append((w, st, g))
             except Exception:
                 pass
-        for w in wins:
-            w.withdraw()
+        return saved
+
+    def show_windows(self, saved, focus=None):
+        """Bring back windows hidden by hide_windows(), at the same size, position and state,
+        main window first, then `focus` (or the last dialog) on top with the keyboard focus."""
+        order = sorted(saved, key=lambda t: t[0] is not self.root)
+        for w, st, g in order:
+            try:
+                if not w.winfo_exists():
+                    continue
+                w.deiconify()
+                if st == "zoomed":
+                    w.state("zoomed")
+                else:
+                    if w is self.root:
+                        w.state("normal")
+                    w.geometry(g)
+            except Exception:
+                pass
+        if focus is None:
+            others = [w for w, _, _ in saved if w is not self.root]
+            focus = others[0] if others else None
+        if focus is not None:
+            self.bring_to_front(focus)
+
+    def bring_to_front(self, win, _again=2):
+        """Show `win` on top of Clickue's other windows with the keyboard focus, and check
+        again shortly after (Windows sometimes re-orders windows after a restore)."""
+        try:
+            if not win.winfo_exists():
+                return
+            if win.state() in ("withdrawn", "iconic"):
+                win.deiconify()
+            if win is not self.root:
+                try:
+                    if self.main_visible() and not win.transient():
+                        win.transient(win.master)
+                except Exception:
+                    pass
+            win.lift()
+            win.attributes("-topmost", True)
+            win.after(150, lambda: win.winfo_exists() and win.attributes("-topmost", False))
+            win.focus_force()
+        except Exception:
+            return
+        if _again:
+            try:
+                win.after(350, lambda: self.bring_to_front(win, _again - 1))
+            except Exception:
+                pass
+
+    def hide_app(self, parent=None):
+        """Hide every visible window of this app (so it's out of the way while testing).
+        Returns a function that brings them back exactly the way they were."""
+        wins = [w for w in (parent, self.tests_win) if w is not None]
+        try:
+            # the window a dialog sits on (e.g. the job editor under a step editor)
+            m = getattr(parent, "master", None)
+            while m is not None and m is not self.root:
+                if isinstance(m, tk.Toplevel):
+                    wins.append(m)
+                m = getattr(m, "master", None)
+        except Exception:
+            pass
+        wins.append(self.root)
+        saved = self.hide_windows(wins)
+        top = parent if parent is not None else self.tests_win
 
         def restore():
-            for w in reversed(wins):
-                try:
-                    if w is self.root:
-                        self.restore_main()
-                    else:
-                        w.deiconify()
-                except Exception:
-                    pass
-            top = parent if parent is not None else self.tests_win
-            if top is not None:
-                try:
-                    top.lift()
-                    top.focus_force()
-                except Exception:
-                    pass
+            self.show_windows(saved, focus=top)
             # let focus settle before popups may close on "click outside" again
-            self.root.after(600, lambda: setattr(self, "_spot_busy", False))
+            self.root.after(900, lambda: setattr(self, "_spot_busy", False))
         return restore
 
     def show_spot_for(self, job, parent=None):
@@ -7392,10 +7948,25 @@ class App:
 
         def run():
             try:
-                res = locate_spot(job, activate=activate, check_cover=False)
+                rep = spot_report(job, activate=activate, check_cover=False)
             except Exception as e:
-                res = (False, 0, 0, f"error while looking ({e})", "")
-            ok, x, y, msg, how = res
+                rep = {"result": (False, 0, 0, f"error while looking ({e})", ""), "similar": []}
+            ok, x, y, msg, how = rep["result"]
+            others = rep.get("similar") if self.settings.get("show_similar") else []
+            if not ok and others:
+                # nothing to click, but show the look-alikes that were ignored
+                self.log(f"[{job['name']}] Show spot: {msg}")
+                self.record_test(job["name"], "Show spot", f"Not found: {msg}", "bad")
+
+                def after_marks():
+                    restore()
+                    messagebox.showwarning(APP_NAME, f"Can't show the spot: {msg}.\n\nThe "
+                                                     f"outlines showed the similar pictures it "
+                                                     f"found; none of them would be clicked.",
+                                           parent=owner)
+                self.flash_marker(None, None, f"{job['name']}  ·  not found: {msg}",
+                                  after_marks, others=others)
+                return
             if not ok:
                 restore()
                 self.log(f"[{job['name']}] Show spot: {msg}")
@@ -7414,7 +7985,7 @@ class App:
                     self.log(f"[{job['name']}] note: {note}.")
                     messagebox.showinfo(APP_NAME, f"Heads up: {note}.\n\nFix: re-pick the spot "
                                                   f"so a picture of it is saved.", parent=owner)
-            self.flash_marker(x, y, f"{job['name']}  ·  found by {how}", done)
+            self.flash_marker(x, y, f"{job['name']}  ·  found by {how}", done, others=others)
         self.root.after(400, run)
 
     def show_watch_for(self, job, parent=None):
@@ -7434,16 +8005,16 @@ class App:
         restore = self.hide_app(parent)
 
         def run():
+            similar = [] if self.settings.get("show_similar") else None
             try:
                 found, x, y, score, sc = picture_on_screen(job["watch_png"],
                                                            job.get("watch_scale"),
-                                                           area=job_area(job))
+                                                           area=job_area(job), report=similar)
             except Exception as e:
                 restore()
                 messagebox.showerror(APP_NAME, f"Couldn't check the screen:\n{e}", parent=owner)
                 return
             if not found:
-                restore()
                 self.log(f"[{job['name']}] check: watched picture NOT on screen "
                          f"(best {score:.0%})")
                 appears = job.get("watch_trigger") == "appears"
@@ -7452,11 +8023,23 @@ class App:
                                  f"Picture NOT {where} (best {score:.0%}) - the watcher "
                                  f"would {'not ' if appears else ''}click",
                                  "ok" if appears else "warn")
-                messagebox.showwarning(
-                    APP_NAME, f"The watched picture is NOT {where} right now "
-                              f"(best match {score:.0%}).\n\nIf this watcher were running, it "
-                              f"would {'NOT click (it waits for the picture to appear)' if appears else 'click'}.",
-                    parent=owner)
+
+                def tell():
+                    restore()
+                    messagebox.showwarning(
+                        APP_NAME, f"The watched picture is NOT {where} right now "
+                                  f"(best match {score:.0%})."
+                                  + ("\n\nThe outlines showed similar pictures; none of them "
+                                     "counts as the watched picture." if similar else "")
+                                  + f"\n\nIf this watcher were running, it would "
+                                  f"{'NOT click (it waits for the picture to appear)' if appears else 'click'}.",
+                        parent=owner)
+                if similar:
+                    self.flash_marker(None, None, f"{job['name']}  ·  watched picture NOT found "
+                                                  f"(similar places outlined)", tell,
+                                      others=similar)
+                else:
+                    tell()
                 return
             size = "" if not sc or abs(sc - 1) < 0.01 else f" at {sc:.0%} size"
             self.log(f"[{job['name']}] check: watched picture found at ({x}, {y}), "
@@ -7464,12 +8047,24 @@ class App:
             self.record_test(job["name"], "Check picture now",
                              f"Picture found at ({x}, {y}), {score:.0%}{size}", "ok")
             self.flash_marker(x, y, f"{job['name']}  ·  watched picture found "
-                                    f"({score:.0%}{size})", restore)
+                                    f"({score:.0%}{size})", restore, others=similar)
         self.root.after(400, run)
 
-    def flash_marker(self, x, y, caption="", on_done=None, seconds=5):
-        """Red crosshair on (x, y) plus a small caption bar. Click either one, or press
-        Esc, to close early."""
+    def marker_seconds(self):
+        """How long Show spot / Check now keep their marks on screen (Preferences)."""
+        try:
+            return int(min(120, max(1, int(self.settings.get("marker_seconds", 5)))))
+        except Exception:
+            return 5
+
+    def flash_marker(self, x, y, caption="", on_done=None, seconds=None, others=None):
+        """Red crosshair on (x, y) plus a small caption bar, for `seconds` (default: the
+        Preferences setting). `others` = [(x, y, w, h, note, chosen?, exact?)] boxes to
+        outline at the same time (similar pictures): green = what would be used, orange =
+        exact copies not used, grey = similar but ignored. x may be None (outlines only).
+        Click any of them, or press Esc, to close early."""
+        if seconds is None:
+            seconds = self.marker_seconds()
         size, key = 64, "#ff00fe"
         wins = []
         finished = []
@@ -7498,25 +8093,48 @@ class App:
             except Exception:
                 pass
 
-        m = tk.Toplevel(self.root)
-        wins.append(m)
-        m.overrideredirect(True)
-        m.attributes("-topmost", True)
-        c = tk.Canvas(m, width=size, height=size, bg=key, highlightthickness=0)
-        c.pack()
-        if IS_WIN:
-            m.attributes("-transparentcolor", key)
-        h = size / 2
-        ring = c.create_oval(6, 6, size - 6, size - 6, outline="#ff2d2d", width=3)
-        c.create_oval(h - 3, h - 3, h + 3, h + 3, fill="#ff2d2d", outline="")
-        for a, b in ((0, h - 10), (h + 10, size)):
-            c.create_line(h, a, h, b, fill="#ff2d2d", width=2)
-            c.create_line(a, h, b, h, fill="#ff2d2d", width=2)
-        m.geometry(f"{size}x{size}+{x - size // 2}+{y - size // 2}")
-        place_exact(m, x - size // 2, y - size // 2)
-        c.bind("<Button-1>", close)
+        for (bx, by, bw, bh, note, chosen, exact) in (others or [])[:20]:
+            color = "#22c55e" if chosen else ("#f59e0b" if exact else "#9ca3af")
+            o = tk.Toplevel(self.root)
+            wins.append(o)
+            o.overrideredirect(True)
+            o.attributes("-topmost", True)
+            lh = 18
+            W, H = max(bw, 70) + 4, bh + lh + 4
+            oc = tk.Canvas(o, width=W, height=H, bg=key, highlightthickness=0)
+            oc.pack()
+            if IS_WIN:
+                o.attributes("-transparentcolor", key)
+            oc.create_rectangle(1, lh + 1, bw + 2, lh + bh + 2, outline=color, width=2)
+            oc.create_rectangle(1, 0, min(W - 1, 8 + 7 * len(note)), lh, fill=color, outline="")
+            oc.create_text(5, lh // 2, text=note, anchor="w", fill="#111827",
+                           font=(self.font_family, 8, "bold"))
+            o.geometry(f"{W}x{H}+{bx - 2}+{by - lh - 2}")
+            place_exact(o, bx - 2, by - lh - 2)
+            oc.bind("<Button-1>", close)
+
+        m = c = ring = None
+        if x is not None:
+            m = tk.Toplevel(self.root)
+            wins.append(m)
+            m.overrideredirect(True)
+            m.attributes("-topmost", True)
+            c = tk.Canvas(m, width=size, height=size, bg=key, highlightthickness=0)
+            c.pack()
+            if IS_WIN:
+                m.attributes("-transparentcolor", key)
+            h = size / 2
+            ring = c.create_oval(6, 6, size - 6, size - 6, outline="#ff2d2d", width=3)
+            c.create_oval(h - 3, h - 3, h + 3, h + 3, fill="#ff2d2d", outline="")
+            for a, b in ((0, h - 10), (h + 10, size)):
+                c.create_line(h, a, h, b, fill="#ff2d2d", width=2)
+                c.create_line(a, h, b, h, fill="#ff2d2d", width=2)
+            m.geometry(f"{size}x{size}+{x - size // 2}+{y - size // 2}")
+            place_exact(m, x - size // 2, y - size // 2)
+            c.bind("<Button-1>", close)
 
         left = [seconds]
+        lbl = None
         if caption:
             cap = tk.Toplevel(self.root, bg="#111827")
             wins.append(cap)
@@ -7526,32 +8144,43 @@ class App:
                            font=(self.font_family, 10), justify="left")
             lbl.pack()
             lbl.bind("<Button-1>", close)
+            legend = ("\nGreen = what would be used · orange = same picture, not used · "
+                      "grey = similar, ignored" if others else "")
 
             def cap_text():
-                return f"{caption}\nClick here or press Esc to close  ({left[0]}s)"
+                return (f"{caption}{legend}\nClick here or press Esc to close  ({left[0]}s)")
             lbl.configure(text=cap_text())
             cap.update_idletasks()
             cw, chh = cap.winfo_reqwidth(), cap.winfo_reqheight()
             sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-            cx = min(max(0, x - cw // 2), max(0, sw - cw))
-            cy = y + size // 2 + 8
-            if cy + chh > sh - 40:
-                cy = y - size // 2 - 8 - chh
+            if x is None:
+                cx, cy = max(0, (sw - cw) // 2), 40
+            else:
+                cx = min(max(0, x - cw // 2), max(0, sw - cw))
+                cy = y + size // 2 + 8
+                if cy + chh > sh - 40:
+                    cy = y - size // 2 - 8 - chh
             cap.geometry(f"+{cx}+{cy}")
             place_exact(cap, cx, cy)
         for w in wins:
             w.bind("<Escape>", close)
         try:
-            m.focus_force()
+            (wins[0] if wins else self.root).focus_force()
         except Exception:
             pass
+        if not wins:
+            self.root.after(10, close)
+            return
 
         def tick(n=0):
             if finished:
                 return
+            if IS_WIN and key_down(VK_ESCAPE):
+                close()
+                return
             if n and n % 3 == 0:
                 left[0] -= 1
-                if caption:
+                if lbl is not None:
                     try:
                         lbl.configure(text=cap_text())
                     except Exception:
@@ -7559,11 +8188,12 @@ class App:
             if left[0] <= 0:
                 close()
                 return
-            try:
-                c.itemconfigure(ring, width=3 if n % 2 == 0 else 5)
-            except Exception:
-                return
-            m.after(333, tick, n + 1)
+            if c is not None:
+                try:
+                    c.itemconfigure(ring, width=3 if n % 2 == 0 else 5)
+                except Exception:
+                    return
+            wins[0].after(333, tick, n + 1)
         tick()
 
     def test_click(self, job=None, parent=None):
@@ -8008,6 +8638,7 @@ class StepsEditor:
         tf.pack(fill="x", pady=(6, 6))
         self.tree = ttk.Treeview(tf, columns=("n", "at", "what", "detail"), show="headings",
                                  height=7, selectmode="extended")
+        enable_column_fit(self.tree)
         for c, h, w, st in (("n", "#", 40, False), ("at", "At", 56, False),
                             ("what", "Step", 150, False), ("detail", "Details", 380, True)):
             self.tree.heading(c, text=h, anchor="w")
@@ -8311,6 +8942,10 @@ class JobEditor(Dialog):
         ttk.Combobox(r, values=tuple(SNAP_SIZES), state="readonly", width=8,
                      textvariable=self.v_snap_size).pack(side="left", padx=6)
         ttk.Label(r, text="(used the next time you pick)", style="Muted.TLabel").pack(side="left")
+        self.v_exact = tk.BooleanVar(value=bool(job.get("exact_match", True)))
+        ttk.Checkbutton(opts, text="Only the exact picture  (never click a similar-looking "
+                                   "one; recommended)", variable=self.v_exact).pack(
+            anchor="w", pady=(6, 0))
         r = ttk.Frame(opts)
         r.pack(anchor="w", pady=(6, 0))
         ttk.Label(r, text="If the picture can't be found").pack(side="left")
@@ -8812,21 +9447,15 @@ class JobEditor(Dialog):
                                              "Start Clickue.bat installs them.", parent=self)
             return
         self._hold += 1
-        self.withdraw()
-        root_was_visible = self.app.main_visible()
-        self.app.root.withdraw()
-        self.after(450, lambda: self._draw_overlay(root_was_visible, mode))
+        saved = self.app.hide_windows([self, self.app.tests_win, self.app.root])
+        self.after(450, lambda: self._draw_overlay(saved, mode))
 
-    def _draw_overlay(self, root_was_visible, mode="picture"):
+    def _draw_overlay(self, saved, mode="picture"):
         app = self.app
 
         def restore():
-            if root_was_visible:
-                app.restore_main()
-            self.deiconify()
-            self.lift()
-            self.focus_force()
-            self.after(600, lambda: setattr(self, "_hold", max(0, self._hold - 1)))
+            app.show_windows(saved, focus=self)
+            self.after(900, lambda: setattr(self, "_hold", max(0, self._hold - 1)))
 
         try:
             shot, (vx, vy) = grab_screen(move_cursor=False)
@@ -8947,6 +9576,11 @@ class JobEditor(Dialog):
                                               "distinctive part is faster.", parent=self)
 
         def cancel(e=None):
+            try:
+                if not ov.winfo_exists():
+                    return
+            except Exception:
+                return
             ov.destroy()
             self._ov_imgs = []
             restore()
@@ -8956,6 +9590,25 @@ class JobEditor(Dialog):
         cv.bind("<ButtonRelease-1>", up)
         cv.bind("<Button-3>", cancel)
         ov.bind("<Escape>", cancel)
+        # a visible Cancel button next to the instructions (4.5.1)
+        cbtn = tk.Label(cv, text="✕  Cancel (Esc)", font=(app.font_family, 10, "bold"),
+                        bg="#374151", fg="#ffffff", padx=12, pady=6, cursor="hand2", bd=0)
+        cbtn.bind("<Button-1>", cancel)
+        cbtn.bind("<Enter>", lambda e: cbtn.configure(bg="#dc2626"))
+        cbtn.bind("<Leave>", lambda e: cbtn.configure(bg="#374151"))
+        cv.create_window(bx[2] + 30, 34, window=cbtn, anchor="w")
+
+        def esc_watch():
+            try:
+                if not ov.winfo_exists():
+                    return
+            except Exception:
+                return
+            if key_down(VK_ESCAPE):
+                cancel()
+                return
+            ov.after(80, esc_watch)
+        esc_watch()
         ov.focus_force()
 
     # ---- helpers
@@ -9081,84 +9734,14 @@ class JobEditor(Dialog):
         self.set_rows_enabled((self.w_cool,), bool(self.v_wcool.get()))
 
     def pick(self):
+        if getattr(self.app, "_spot_busy", False):
+            return
         self._hold += 1
-        self.withdraw()
-        root_was_visible = self.app.main_visible()
-        self.app.root.withdraw()
-        cd = tk.Toplevel(self.app.root, bg="#1f2937", highlightthickness=1,
-                         highlightbackground="#3b82f6", highlightcolor="#3b82f6")
-        cd.overrideredirect(True)
-        cd.attributes("-topmost", True)
-        lbl = tk.Label(cd, font=(self.app.font_family, 13, "bold"), bg="#1f2937", fg="#ffffff",
-                       padx=20, pady=10, justify="left", anchor="w", cursor="fleur", bd=0)
-        lbl.pack(fill="x")
-        tip = tk.Label(cd, font=(self.app.font_family, 9), bg="#1f2937", fg="#9ca3af",
-                       padx=20, pady=0, justify="left", anchor="w", cursor="fleur", bd=0,
-                       text="Drag this box to move it (the countdown waits while you drag).\n"
-                            "It also moves out of the way when your mouse comes near.")
-        tip.pack(fill="x", pady=(0, 10))
-        st = {"drag": None, "user_moved": False, "done": False}
-        vx, vy, vw, vh = virtual_screen()
+        saved = self.app.hide_windows([self, self.app.tests_win, self.app.root])
 
-        def place(px, py):
-            cd.geometry(f"+{int(px)}+{int(py)}")
-
-        place(vx + 20, vy + 20)
-
-        def press(e):
-            st["drag"] = (e.x_root - cd.winfo_rootx(), e.y_root - cd.winfo_rooty())
-
-        def motion(e):
-            if st["drag"]:
-                place(e.x_root - st["drag"][0], e.y_root - st["drag"][1])
-
-        def release(e):
-            st["drag"] = None
-            st["user_moved"] = True
-
-        for wdg in (lbl, tip):
-            wdg.bind("<ButtonPress-1>", press)
-            wdg.bind("<B1-Motion>", motion)
-            wdg.bind("<ButtonRelease-1>", release)
-
-        def dodge():
-            """If the mouse gets close (and the user isn't dragging), jump to the corner
-            farthest from the mouse."""
-            if st["done"]:
-                return
-            if not st["drag"] and not st["user_moved"]:
-                try:
-                    mx, my = get_cursor()
-                    bx, by = cd.winfo_rootx(), cd.winfo_rooty()
-                    bw, bh = cd.winfo_width(), cd.winfo_height()
-                    pad = 60
-                    if bx - pad <= mx <= bx + bw + pad and by - pad <= my <= by + bh + pad:
-                        corners = [(vx + 20, vy + 20), (vx + vw - bw - 20, vy + 20),
-                                   (vx + 20, vy + vh - bh - 60),
-                                   (vx + vw - bw - 20, vy + vh - bh - 60)]
-                        cx, cy = max(corners, key=lambda c: (c[0] + bw / 2 - mx) ** 2
-                                     + (c[1] + bh / 2 - my) ** 2)
-                        place(cx, cy)
-                except Exception:
-                    pass
-            cd.after(80, dodge)
-        dodge()
-
-        def step(n):
-            if st["drag"]:                     # paused while the box is being dragged
-                cd.after(200, step, n)
-                return
-            if n > 0:
-                x, y = get_cursor()
-                lbl.configure(text=f"Point at the spot to click…\n"
-                                   f"Capturing in {n}    ({x}, {y})")
-                cd.after(1000, step, n - 1)
-                return
-            x, y = get_cursor()
-            st["done"] = True
-            cd.destroy()
-            self.app.root.update()
-            self.app.root.after(250, lambda: finish(x, y))
+        def back():
+            self.app.show_windows(saved, focus=self)
+            self.after(900, lambda: setattr(self, "_hold", max(0, self._hold - 1)))
 
         def finish(x, y):
             info = describe_point(x, y)
@@ -9192,17 +9775,12 @@ class JobEditor(Dialog):
             self.mode_changed()
             self.update_info(x, y)
             self.update_thumb()
-            if root_was_visible:
-                self.app.restore_main()
-            self.deiconify()
-            self.lift()
-            self.focus_force()
-            self.after(600, lambda: setattr(self, "_hold", max(0, self._hold - 1)))
+            back()
             if warn:
                 messagebox.showwarning(APP_NAME, warn, parent=self)
             self.app.log(f"Picked ({x}, {y})" + (f" inside “{short_title(info['window_title'])}”"
                                                  if info else ""))
-        step(5)
+        self.app.pick_countdown(finish, back)
 
     def collect(self):
         """Read the form; returns a dict of job fields, or None after showing an error."""
@@ -9301,6 +9879,7 @@ class JobEditor(Dialog):
         d["client_w"], d["client_h"] = self.client_size
         d["pick_screen"] = self.pick_screen
         d["use_image"] = bool(self.v_use_img.get())
+        d["exact_match"] = bool(self.v_exact.get())
         d["snap_png"] = self.snap_png
         d["snap_spot"] = self.snap_spot
         d["pick_dpi"] = self.pick_dpi
@@ -9589,6 +10168,7 @@ class TestsWindow(tk.Toplevel):
         cols = ("time", "job", "test", "result")
         self.hist = ttk.Treeview(hf, columns=cols, show="headings", height=6,
                                  selectmode="browse")
+        enable_column_fit(self.hist)
         self.hist_base = {"time": 120, "job": 130, "test": 150, "result": 320}
         for c, h in (("time", "Time"), ("job", "Job"), ("test", "Test"), ("result", "Result")):
             self.hist.heading(c, text=h, anchor="w")
@@ -10027,6 +10607,11 @@ class StepDialog(Dialog):
                                      "never move)")):
             ttk.Radiobutton(fr, text=text, value=val, variable=self.v_find,
                             command=self.update_click_info).pack(anchor="w", padx=(12, 0))
+            if val == "picture":
+                self.v_step_exact = tk.BooleanVar(value=bool(self.step.get("exact_match", True)))
+                ttk.Checkbutton(fr, text="Only the exact picture (never a similar-looking one)",
+                                variable=self.v_step_exact,
+                                command=self.update_click_info).pack(anchor="w", padx=(36, 0))
             if val == "window":
                 wr = ttk.Frame(fr, padding=(36, 2, 0, 2))
                 wr.pack(anchor="w")
@@ -10561,6 +11146,8 @@ class StepDialog(Dialog):
             self.click_info.configure(text="Click “Pick on screen”, then point at the spot "
                                            "within 5 seconds (a picture of it is saved too).")
         tgt = {"use_image": mode == "picture" and bool(self.step.get("snap_png")),
+               "exact_match": bool(self.v_step_exact.get()) if hasattr(self, "v_step_exact")
+               else True,
                "snap_png": self.step.get("snap_png", ""), "target_mode": mode,
                "window_title": self.v_wtitle.get(), "x": self.v_x.get(), "y": self.v_y.get()}
         if mode == "picture" and not self.step.get("snap_png"):
@@ -10674,6 +11261,7 @@ class StepDialog(Dialog):
                           pick_dpi=self.step.get("pick_dpi"),
                           pick_screen=self.step.get("pick_screen"),
                           image_fallback="wait",
+                          exact_match=bool(self.v_step_exact.get()),
                           target_mode="window" if mode == "window" else "screen",
                           window_title=self.v_wtitle.get().strip() if mode == "window" else "",
                           window_class=self.step.get("window_class", "") if mode == "window" else "",
@@ -10833,6 +11421,7 @@ class DryRunDialog(Dialog):
         tf = ttk.Frame(f, style="Card.TFrame", padding=1)
         tf.pack(fill="both", expand=True, pady=(8, 0))
         tr = ttk.Treeview(tf, columns=("n", "what", "result"), show="headings", height=12)
+        enable_column_fit(tr)
         for c, h, w, st in (("n", "#", 70, False), ("what", "Step", 150, False),
                             ("result", "What would happen", 470, True)):
             tr.heading(c, text=h, anchor="w")
@@ -11191,6 +11780,7 @@ class GroupsDialog(Dialog):
         tf.pack(fill="both", expand=True, pady=(8, 0))
         self.tree = ttk.Treeview(tf, columns=("name", "steps", "used"), show="headings",
                                  height=8, selectmode="browse")
+        enable_column_fit(self.tree)
         for c, h, w in (("name", "Name", 260), ("steps", "Steps", 70), ("used", "Used by", 200)):
             self.tree.heading(c, text=h, anchor="w")
             self.tree.column(c, width=w, anchor="w")
@@ -11322,6 +11912,7 @@ class RunHistoryDialog(Dialog):
         tf.pack(fill="both", expand=True, pady=(8, 0))
         self.runs = ttk.Treeview(tf, columns=("time", "job", "len", "result", "video"),
                                  show="headings", height=8, selectmode="browse")
+        enable_column_fit(self.runs)
         for c, h, w, stv in (("time", "Started", 140, False), ("job", "Job", 160, False),
                              ("len", "Took", 60, False), ("result", "Result", 260, True),
                              ("video", "Video", 60, False)):
@@ -11335,6 +11926,7 @@ class RunHistoryDialog(Dialog):
         tf2.pack(fill="both", expand=True)
         self.acts = ttk.Treeview(tf2, columns=("at", "pos", "step", "action", "result"),
                                  show="headings", height=8, selectmode="browse")
+        enable_column_fit(self.acts)
         for c, h, w, stv in (("at", "After", 60, False), ("pos", "Video", 60, False),
                              ("step", "#", 60, False), ("action", "Action", 300, True),
                              ("result", "Result", 200, True)):
@@ -11528,6 +12120,7 @@ class BackupsDialog(Dialog):
         tf.pack(fill="both", expand=True, pady=(8, 0))
         self.tree = ttk.Treeview(tf, columns=("when", "kind", "jobs"), show="headings", height=8,
                                  selectmode="browse")
+        enable_column_fit(self.tree)
         for c, h, w in (("when", "Saved", 220), ("kind", "Type", 140), ("jobs", "Jobs", 80)):
             self.tree.heading(c, text=h, anchor="w")
             self.tree.column(c, width=w, anchor="w", stretch=(c == "when"))
@@ -11615,6 +12208,7 @@ class StatsDialog(Dialog):
         tf.pack(fill="both", expand=True, pady=(4, 0))
         tr = ttk.Treeview(tf, columns=("time", "kind", "result", "detail"), show="headings",
                           height=8)
+        enable_column_fit(tr)
         for c, h, w in (("time", "Time", 150), ("kind", "Type", 90), ("result", "Result", 80),
                         ("detail", "Details", 260)):
             tr.heading(c, text=h, anchor="w")
@@ -11640,9 +12234,11 @@ class HelpDialog(Dialog):
         super().__init__(app, "Help & shortcuts")
         f = self.body
         sections = (
-            ("Scheduled clicks", "＋ New click → Pick on screen (point within 5 s) → set how often "
-             "and an optional random delay → Save. A picture of the spot is saved, so it's found "
-             "even if windows move or the screen size changes."),
+            ("Scheduled clicks", "＋ New click → Pick on screen (point within 5 s; Esc or Cancel "
+             "stops it) → set how often and an optional random delay → Save. A picture of the "
+             "spot is saved, so it's found even if windows move or the screen size changes. "
+             "With “Only the exact picture” (on by default) a similar-looking spot is never "
+             "clicked."),
             ("Screen watchers", "👁 New watcher → Draw box around the picture → choose to click "
              "when it disappears or appears → pick the button (or click the picture itself) → "
              "Save. Optionally search only an area, and add active hours."),
@@ -11662,7 +12258,10 @@ class HelpDialog(Dialog):
              "their turn (shown above the job list). Watchers keep watching meanwhile. "
              f"Emergency stop: {app.settings.get('hk_stop') or '(set a hotkey)'}."),
             ("Tests", "🧪 Tests opens a popup with Show spot, Test click, Check picture, Dry run "
-             "and scheduled tests. The whole app hides while a test runs."),
+             "and scheduled tests. The whole app hides while a test runs. Preferences → "
+             "Clicking sets how long the marker stays and can outline every similar picture."),
+            ("Tray icon", "Point at Clickue's tray icon to see whether your jobs are running fine; "
+             "right-click it → Job status for every job."),
             ("Locked screen", "Windows blocks clicks and screenshots while locked or "
              "disconnected. Hand the session to the console when leaving RDP, and lock your own "
              "PC instead of the VM."),
@@ -11782,6 +12381,8 @@ class SettingsDialog(Dialog):
         check(p, "start_minimized", "Start minimized")
         check(p, "start_with_windows", "Start automatically when I sign in to Windows", IS_WIN)
         check(p, "keep_awake", "Keep the PC and display awake")
+        check(p, "tray_status", "Show the jobs' status when I point at the tray icon (and in "
+                                "its right-click menu → Job status)", HAVE_TRAY)
         if not HAVE_TRAY:
             note(p, "Tray features need the pystray and pillow packages. Start Clickue.bat "
                     "installs them.", "Warn.TLabel")
@@ -11797,6 +12398,14 @@ class SettingsDialog(Dialog):
         check(p, "warn_conflicts", "Warn me when two running jobs use the same window or spot")
         note(p, "Only one job clicks or types at a time (Windows has one mouse and one keyboard "
                 "focus); the others wait their turn. Watchers keep watching meanwhile.")
+        ttk.Label(p, text="Checking a spot (Show spot, Check now)", style="Section.TLabel").pack(
+            anchor="w", pady=(10, 0))
+        spin(p, "marker_seconds", "Keep the marker on screen for", 1, 120, "sec  (default 5)")
+        check(p, "show_similar", "Also point out every similar picture on the screen at the "
+                                 "same time", HAVE_CV)
+        note(p, "Green = the place that would be used, orange = the same picture somewhere "
+                "else (not used), grey = similar but not the same (ignored). Useful to see "
+                "why a spot is or isn't found.")
 
         # Watchers
         p = self.pages["watchers"]
@@ -12094,6 +12703,14 @@ def main():
     if "--make-icon" in sys.argv:
         write_icon_file(sys.argv[sys.argv.index("--make-icon") + 1])
         return
+    if IS_WIN:
+        # Tell Windows this is "Clickue" (taskbar, tray settings, notifications), not the
+        # program that runs it (python.exe) or an older name it may remember.
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                ctypes.c_wchar_p(APP_ID + "." + APP_NAME))
+        except Exception:
+            pass
     root = tk.Tk()
     if IS_WIN:
         _MUTEX = kernel32.CreateMutexW(None, False, "Local\\" + APP_ID + "_single_instance")
