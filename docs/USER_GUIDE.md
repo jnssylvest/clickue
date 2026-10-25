@@ -1,6 +1,12 @@
 # Clickue quick start guide
 
-← [README](../README.md) · [All features](../FEATURES.md) · [**Complete guide**](GUIDE.md)
+← [README](../README.md) · [All features](../FEATURES.md) · [**Complete guide**](GUIDE.md) · [Security](../SECURITY.md)
+
+> [!IMPORTANT]
+> Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken
+> during development, but AI-assisted development does not guarantee bug-free or secure
+> software. Review the source and use normal precautions. Test automations safely, protect
+> notification credentials, and avoid unattended use for consequential actions.
 
 > [!TIP]
 > This page is the short version. The [**complete guide**](GUIDE.md) explains every feature in
@@ -12,14 +18,15 @@
 3. [Your first screen watcher](#your-first-screen-watcher)
 4. [Where to click: picture, window or position](#where-to-click-picture-window-or-position)
 5. [When it may run: hours and limits](#when-it-may-run-hours-and-limits)
-6. [More steps after the click](#more-steps-after-the-click)
-7. [Testing a job](#testing-a-job)
-8. [Pausing, stopping and hotkeys](#pausing-stopping-and-hotkeys)
-9. [Phone alerts](#phone-alerts)
-10. [History, stats and backups](#history-stats-and-backups)
-11. [Preferences](#preferences)
-12. [Locked screens and remote sessions](#locked-screens-and-remote-sessions)
-13. [Troubleshooting](#troubleshooting)
+6. [Steps after the click](#steps-after-the-click)
+7. [Recording a macro](#recording-a-macro)
+8. [Testing a job](#testing-a-job)
+9. [Pausing, stopping and hotkeys](#pausing-stopping-and-hotkeys)
+10. [Phone alerts](#phone-alerts)
+11. [History, run history, videos and backups](#history-run-history-videos-and-backups)
+12. [Preferences](#preferences)
+13. [Locked screens and remote sessions](#locked-screens-and-remote-sessions)
+14. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -28,13 +35,16 @@
 - **Summary cards** (top): the next click and countdown, active jobs, clicks today, and whether
   the screen is available. Collapse them with **▴ Summary**.
 - **Toolbar:** New click, New watcher, Edit, Duplicate, Delete, Start/Stop, Pause, Pause all,
-  Tests, Import, Export. Buttons that don't fit go into **More ▾**.
+  Tests, Record, Import, Export. Buttons that don't fit go into **More ▾**.
+- **Running bar:** while a job runs (or others wait their turn), a bar above the list shows
+  which, with **Stop this run**.
 - **Job list:** one row per job, with status, target, schedule, next click, a countdown, clicks
   and last result. Double-click to edit; right-click for everything else. Use the filter above
   it to show all jobs, only scheduled clicks or only watchers.
 - **Activity:** a live, colour-coded log. Filter it to *Clicks* or *Problems*.
-- **☰ Menu:** import/export, backups, click-history export, preferences, data folder, log,
-  the complete guide (online), help, about, uninstall, exit.
+- **☰ Menu:** record a macro, step groups, run history & videos, stop everything now,
+  import/export, backups, click-history export, preferences, data folder, log, the complete
+  guide (online), help, about, uninstall, exit.
 
 Drag the divider between the list and Activity to give either more room.
 
@@ -103,22 +113,35 @@ In any job's editor, under **When it may run**:
 
 A job that reaches a limit stops, shows *Finished*, and can send a phone alert.
 
-## More steps after the click
+## Steps after the click
 
-Under **More steps after the click**, add any number of steps that run, in order, right after
-the main click:
+Under **Steps**, add steps that run in order right after the main click. Untick **Start with a
+click on this spot** for a job that only runs its steps. **＋ Add step ▾** offers:
 
 | Step | What it does |
 |---|---|
-| **Click a spot** | Pick on screen; found by its picture; any button, single or double |
+| **Click a spot** | Pick on screen; found by its picture (checked), inside a window, or at a fixed position |
 | **Wait** | e.g. 3 s, or a random 3–5 s |
 | **Wait for a picture** | Waits until a picture **appears** (optionally **clicks it**) or **goes away**, up to a time limit; then stops the chain or continues |
-| **Type text** | Types into whatever has focus. Any characters; a new line presses Enter |
+| **Type text** | Presses one key per character into whatever has focus; a new line presses Enter |
+| **Paste text** | Puts the text on the clipboard, presses Ctrl+V, puts your clipboard back. Best for long, multi-line or any-language text |
 | **Press keys** | e.g. `Enter`, `Tab`, `Ctrl+S`, `Alt+F4`, `Ctrl+Shift+S`, `F5`, arrows |
+| **If … Otherwise … End** | Runs steps only when a picture is (not) showing, a window is (not) open, or a variable has a value |
+| **Repeat … End** | N times, or until a condition is true (always with limits) |
+| **Set a variable** | E.g. a counter; use it as `{count}` in text. Built in: `{date}`, `{time}`, `{loop}`… |
+| **Use a step group** | Steps saved once (☰ Menu → Step groups) and reused in many jobs |
+| **Scroll, Drag, Move the mouse, Mouse button down/up, Hold a key** | For recorded or hand-made routines |
+
+Every step can **retry** a few times, and either **stop** the run or **continue** if it still
+fails. Mark steps that send, delete or buy as **⚠ careful**.
+
+**Type or paste?** Both go to whatever has keyboard focus, so add a **Click a spot** on the
+field first. Paste is faster and exact; Type works where pasting is blocked. Tick **Secret** for
+passwords: they're encrypted with your Windows account and never exported or logged.
 
 Example: *click the search box → type a name → press Enter → wait 2 s → click the first
-result.* If a step fails (e.g. its spot can't be found), the remaining steps are skipped and
-it's reported in Activity and the click history.
+result.* If a step fails (e.g. its spot can't be found), the run stops (unless that step is
+set to continue) and it's reported in Activity, the click history and the run history.
 
 ### Click chains: react to each click
 
@@ -133,8 +156,22 @@ and time is wasted. **Wait for a picture** waits for the actual result instead:
 
 Draw each picture while that screen is showing (open the app to that state first). Start the
 chain on a schedule, or make the job a **screen watcher** so the chain starts when something
-changes. While a chain waits, other jobs wait their turn, since the mouse can only do one
-thing at a time. Keep the time limits sensible.
+changes. Only one job clicks at a time: while a chain waits, other jobs wait their turn
+(watchers keep watching). Keep the time limits sensible.
+
+## Recording a macro
+
+1. Click **⏺ Record** (or press **Ctrl+Alt+R** anywhere) → **Start recording**.
+2. Do the routine once. A red bar shows that you're recording (**Pause**, **Stop**, **✕**
+   cancel).
+3. **Stop**: the steps open in a new job (not started yet). Remove what you don't need, give
+   clicks without a picture one (**Picture of this spot now**), and replace guessed waits with
+   **Wait for a picture**.
+4. **Dry run**, then **Step through…**, then set a schedule and **Save**.
+
+> [!WARNING]
+> Everything you type while recording is recorded, including passwords. Add passwords
+> afterwards as a **Secret** paste step.
 
 ## Testing a job
 
@@ -152,13 +189,24 @@ The whole app hides during each test and comes back with the result.
 
 Every result goes into the **Test history** (this job or all jobs). Click a line for details.
 
+For jobs with steps, the editor has two more buttons:
+
+- **Dry run** goes through every step without clicking or typing and lists what would happen
+  (is each target there? is each condition true?).
+- **Step through…** runs the job for real, one step at a time, showing what comes next, why
+  that target was chosen, and where it will click. It always stops before **⚠ careful** steps.
+
 ## Pausing, stopping and hotkeys
 
 - **Pause** (or **P**): keeps the job's schedule but doesn't click until you resume. A click
   that came due while paused is skipped, not fired the moment you resume.
 - **Stop**: turns the job off and clears its schedule.
-- **Pause all** (Ctrl+P, the tray menu, or **Ctrl+Alt+P** from anywhere).
-- **Show / hide Clickue** from anywhere: **Ctrl+Alt+K**.
+- **Pause all** (Ctrl+P, the tray menu, or **Ctrl+Alt+P** from anywhere). A job in the middle
+  of its steps pauses before its next step.
+- **Emergency stop** from anywhere: **Ctrl+Alt+X**. Ends the running job, drops queued clicks,
+  lets go of held keys and buttons, and pauses everything.
+- **Show / hide Clickue** from anywhere: **Ctrl+Alt+K**. Recording: **Ctrl+Alt+R** start/stop,
+  **Ctrl+Alt+U** pause/resume.
 - Change or turn off the global hotkeys in **Preferences → Hotkeys**.
 
 ## Phone alerts
@@ -171,20 +219,30 @@ Every result goes into the **Test history** (this job or all jobs). Click a line
   bot any message, then get your **chat id** (for example from @userinfobot) and paste it.
 
 Choose which events send alerts and click **Send a test alert**. Alerts need internet access
-from the computer running Clickue. Keep the webhook URL and bot token private.
+from the computer running Clickue, and go only to Discord or Telegram over HTTPS. Keep the
+webhook URL and bot token private: Clickue masks them, keeps them out of logs, backups and
+exports, and can encrypt them with your Windows account (**Protect them with my Windows
+account**).
 
-## History, stats and backups
+## History, run history, videos and backups
 
 - **Stats:** right-click a job → **Stats & click history…** shows totals, today, the last 7
   days, problems and recent activity. You can export that job's history.
 - **Export click history (CSV):** ☰ Menu. Opens in Excel or Google Sheets.
+- **Run history:** ☰ Menu → **Run history & videos…** lists every run and its steps (never the
+  text typed or pasted). Searchable.
+- **Screen videos (optional, off by default):** turn them on in **Preferences → Recording &
+  video**, then tick **Record the screen while it runs** in a job's **Run options**. Videos are
+  only made while that job runs, with a red indicator, stay on your computer, and are deleted
+  after 14 days or 5 GB (adjustable). Play one from any step in the run history.
 - **Backups:** ☰ Menu → **Backups…**. One is made automatically every day (keeps 14). **Back
   up now**, or **Restore…** to replace or add jobs (your current jobs are backed up first).
 - **Undo delete:** right after deleting, click **Undo** or press Ctrl+Z.
-- **Import / Export** jobs to share them between computers.
+- **Import / Export** jobs to share them between computers. Imported jobs are checked and
+  arrive **stopped**; review them first. Secret text isn't exported.
 - **Reinstalling:** your jobs are kept in your user folder. After a fresh install, Clickue asks
   whether to keep them or start fresh (it saves a backup first). When uninstalling, choose
-  whether to delete your data as well.
+  whether to delete your data as well (both Windows' uninstaller and ☰ Menu → Uninstall ask).
 
 ## Preferences
 
@@ -193,10 +251,11 @@ from the computer running Clickue. Keep the webhook URL and bot token private.
 | Tab | Settings |
 |---|---|
 | General | Tray behaviour, notifications, start with Windows, start minimized, keep awake |
-| Clicking | Retry time when the screen is unavailable, wait-for-idle, put mouse back |
+| Clicking | Retry time when the screen is unavailable, wait-for-idle, put mouse back, conflict warnings |
 | Watchers | Default check interval and confirmation count for new watchers |
-| Hotkeys | Global hotkeys on/off and their key combinations |
-| Phone alerts | Discord / Telegram, which events, test alert |
+| Hotkeys | Global hotkeys on/off and their key combinations (pause all, show/hide, emergency stop, recording) |
+| Phone alerts | Discord / Telegram, which events, test alert, protect with your Windows account |
+| Recording & video | Recorder options; screen videos (on/off, quality, folder, clean-up, hidden areas, black out while typing); run history; failure screenshots |
 | Appearance | Light / dark / system theme, summary cards |
 | Data & backups | Daily backups and how many to keep, click history on/off, log size, data folder, uninstall |
 
@@ -232,6 +291,10 @@ To keep Clickue working while you're away:
 | Nothing happens while away | The screen was locked or disconnected; see [above](#locked-screens-and-remote-sessions) |
 | A hotkey doesn't work | Another program uses it; choose a different one in Preferences → Hotkeys (see the log) |
 | Alerts don't arrive | **Send a test alert**; check the URL / token / chat id and internet access |
+| A recorded macro misses its targets | Open the click steps → **Picture of this spot now**; replace waits with **Wait for a picture**; **Step through** |
+| Paste puts nothing | Click the field first; try **Shift+Insert** or a longer **Wait after pasting**; some fields block pasting (use Type) |
+| A job waits a long time | Another job is running (see the bar above the list). Only one job uses the mouse at a time |
+| Something went wrong | **Ctrl+Alt+X** stops everything |
 | Want to start over | ☰ Menu → **Backups…** to restore, or **Uninstall…** |
 
 Still stuck? Open an issue with the relevant lines from the log (☰ Menu → **Open log file**),

@@ -2,27 +2,39 @@
 
 Everything a developer (or an AI coding session) needs to understand, rebuild, change, test
 and release Clickue. User-facing docs: [README](../README.md) · [FEATURES](../FEATURES.md) ·
-[USER_GUIDE](USER_GUIDE.md) (quick start) · [GUIDE](GUIDE.md) (complete guide, every feature).
+[USER_GUIDE](USER_GUIDE.md) (quick start) · [GUIDE](GUIDE.md) (complete guide, every feature) ·
+[SECURITY](../SECURITY.md).
+
+> **Disclosure.** Clickue is vibe-coded and was developed with substantial AI assistance. Keep
+> the disclosure (see [SECURITY.md](../SECURITY.md)) in every public surface where people decide
+> to download or rely on Clickue: README, GUIDE, USER_GUIDE, the in-app Help/About (`DISCLOSURE`
+> in `src/clickue.py`), the installer notice (`installer/before-install.txt`) and the release
+> notes (`.github/workflows/build.yml`). `tests/check_release.py` checks this.
 
 ## 1. What Clickue is (one paragraph)
 
 A Windows tray app (Python 3 + Tkinter) that performs **scheduled clicks** (interval +
-optional random delay) and runs **screen watchers** (click when a saved picture disappears or
-appears). Click spots are found by **picture matching** (OpenCV multi-scale template matching),
-so they survive moved windows, resolution changes and DPI scaling (e.g. RDP vs. VM console).
-Extras: active hours, run limits, multi-step jobs (click/wait/type/keys), global hotkeys,
-Discord/Telegram alerts, daily backups, undo, click history + CSV, a Tests window, portable
-mode, installer. Formerly named *Scheduled AutoClicker*.
+optional random delay), runs **screen watchers** (click when a saved picture disappears or
+appears) and records **macros**. Click spots are found by **picture matching** (OpenCV
+multi-scale template matching), so they survive moved windows, resolution changes and DPI
+scaling. Jobs run **steps** through a small **workflow engine** (click / wait / wait for picture
+/ type / paste / keys / scroll / drag / If / Repeat / variables / step groups) with retries and
+limits, through **one input queue**. Extras: active hours, run limits, global hotkeys including
+an emergency stop, Discord/Telegram alerts (hardened), daily backups, undo, click history +
+CSV, run history + optional local screen video, Dry run / Step through, a Tests window,
+portable mode, installer. Formerly named *Scheduled AutoClicker*.
 
 ## 2. Repository layout
 
 ```
-src/clickue.py            the whole app (single file, ~6,700 lines)
+src/clickue.py            the whole app (single file, ~11,000 lines)
 assets/                   clickue.ico, logo.png, logo-128.png (all generated from make_logo())
 installer/clickue.iss     Inno Setup 6 script (per-user or all-users install)
 installer/portable.txt    marker file shipped in the portable zip
 scripts/*.bat             run from source / build the exe locally (Windows)
-tests/                    headless logic tests + a GUI test (see section 8)
+tests/                    headless logic tests, release checks, a GUI test (see section 8)
+SECURITY.md               disclosure, what was reviewed, reporting, remaining risks
+installer/before-install.txt  notice shown by the installer (and READ-ME-FIRST in the zip)
 .github/workflows/build.yml   Windows build + automatic GitHub Release
 docs/                     GUIDE.md (complete guide), USER_GUIDE.md (quick start), this file,
                           images/guide/ (example pictures for GUIDE.md)
@@ -35,10 +47,12 @@ README.md FEATURES.md CHANGELOG.md LICENSE (MIT) requirements.txt
 - **Windows 10/11, 64-bit** for real use. Clicking, screen capture, hotkeys, tray, start-with-
   Windows and the DPI/window APIs are Win32 via `ctypes` (`user32`, `kernel32`, `shcore`,
   `dwmapi`) and `winreg`.
-- Python **3.10+** (CI builds with 3.12). Packages (`requirements.txt`): `pillow`
-  (screenshots via `ImageGrab`, images), `pystray` (tray), `opencv-python-headless` + `numpy`
-  (picture matching). Each is optional at import time: flags `HAVE_PIL`, `HAVE_TRAY`, `HAVE_CV`
-  disable features gracefully.
+- Python **3.10+** (CI builds with 3.12). Packages (`requirements.txt`, minimums include
+  security fixes): `pillow` (screenshots via `ImageGrab`, images), `pystray` (tray),
+  `opencv-python-headless` + `numpy` (picture matching, and screen video via
+  `cv2.VideoWriter`, so video adds no dependency). Each is optional at import time: flags
+  `HAVE_PIL`, `HAVE_TRAY`, `HAVE_CV` disable features gracefully. `HAVE_DPAPI` (Windows
+  `crypt32`) enables protected secrets.
 - On non-Windows (`IS_WIN = False`) the UI opens for preview and tests, but nothing clicks and
   `screen_available()` is always False.
 - Command line: `--minimized` (start hidden), `--make-icon PATH` (write the .ico and exit).
@@ -52,30 +66,48 @@ README.md FEATURES.md CHANGELOG.md LICENSE (MIT) requirements.txt
 | Window targets | `describe_point`, `find_window`, `bring_to_front`, `resolve_target` (screen / inside-a-window modes) |
 | Picture matching | `capture_snapshot`, `_match`, `find_picture`, `is_match`, `locate_spot` (click targets), `picture_on_screen` (watchers: stricter, plus `color_difference`), `job_area` |
 | UI helpers | `make_logo`, `write_icon_file`, `migrate_old_data`, `set_run_at_startup`, popup click-outside helpers (`_held`, `ui_held`, `dropdown_open`, `pointer_over`, `close_on_click_outside`), formatting, `read_json`/`write_json` (atomic) |
-| Clickue extras | active hours (`in_active_hours`, `next_active_start`, `describe_hours`), keyboard (`parse_combo`, `send_text` via SendInput unicode, `press_keys`), alerts (`send_alert`), history CSV (`append_history`, `read_history`, `trim_history`, `job_stats`), backups (`make_backup`, `list_backups`, `prune_backups`), hotkeys (`parse_hotkey`, `HotkeyThread` = RegisterHotKey + GetMessage loop) |
+| Clickue extras | active hours (`in_active_hours`, `next_active_start`, `describe_hours`), keyboard (`parse_combo`, `send_text` via SendInput unicode, `press_keys`), alerts (`check_discord_url`, `check_telegram`, `redact`, `_http_post`, `_alert_allowed`, `send_alert`), history CSV (`append_history`, `read_history`, `trim_history`, `job_stats`), backups (`make_backup`, `list_backups`, `prune_backups`) |
+| 4.5 section | data helpers (`data_path`, `is_clickue_data_dir`), DPAPI (`protect_text`, `unprotect_text`), validation (`sanitize_step`, `sanitize_steps`, `sanitize_job`, `sanitize_groups`, `load_import_file`, `clean_png`, `strip_secret_text`, `risky_step_summary`), variables (`builtin_vars`, `expand_vars`, `compare_values`), clipboard (`clipboard_snapshot`, `clipboard_set_text`, `clipboard_restore`, `paste_text`), `InputGuard`/`HELD` (held keys/buttons, `release_all`), `move_mouse`, `scroll_wheel`, blocks (`parse_blocks`, `step_depths`), **target adapters** (`TargetAdapter`, `register_adapter`, `PictureAdapter`, `WindowAdapter`, `ScreenPositionAdapter`, `adapter_for`, `check_condition`), `describe_step`/`describe_cond`, conflicts (`job_targets`, `find_conflicts`), recorder (`vk_name`, `vk_char`, `rdp`, `compress_recording`, `MacroRecorder`, `finish_recording`), run history (`append_runlog`, `read_runlog`, `trim_runlog`), video (`VIDEO_PRESETS`, `video_folder`, `prune_files`, `RunVideo`), engine (`WorkflowRun`, `StopRun`, `StepFailed`), queue (`ExecutionWorker`, `LocalDesktopWorker`, `ActionQueue`) |
+| Hotkeys | `parse_hotkey`, `HotkeyThread` = RegisterHotKey + GetMessage loop |
 | Data model | `DEFAULT_SETTINGS`, `new_job()`, `new_watch()`, `is_watch()`, colour palettes `LIGHT`/`DARK` |
-| `App` | everything stateful: load/save, scheduler thread, watcher engine, `perform`/`run_steps`/`execute`, UI build + theming, job list rows, tray, hotkeys, backups, undo, tests window plumbing, uninstall |
-| Dialogs | `Dialog` (base: resizable, scrollable body, pinned footer, remembers geometry, click-outside closes unless unsaved), `JobEditor` (clicks and watchers), `TestDialog`, `WatchTestDialog`, `StepDialog`, `BackupsDialog`, `StatsDialog`, `HelpDialog`, `AboutDialog`, `SettingsDialog` (= tabbed Preferences), `TestsWindow` (floating Toplevel) |
+| `App` | everything stateful: load/save, scheduler (monitor) thread, input thread (`input_loop`, `run_item`, `queue_or_run`, `yield_to_others`), watcher engine, `perform`/`run_steps`/`run_workflow`/`dry_run_steps`/`execute`, run bookkeeping (`begin_run`, `end_run`, `failure_screenshot`, `prune_media`), `emergency_stop`, recording (`start_recording`, `stop_recording`), step-through (`start_debug`), UI build + theming, run bar, job list rows, tray, hotkeys, backups, undo, tests window plumbing, uninstall |
+| Dialogs | `Dialog` (base: resizable, scrollable body, pinned footer, remembers geometry, click-outside closes unless unsaved), `StepsEditor` (the timeline, used by `JobEditor` and `GroupEditDialog`), `TextPrompt`, `JobEditor` (clicks and watchers), `TestDialog`, `WatchTestDialog`, `StepDialog` (every step type), `DryRunDialog`, `StepDebugger` + `DebugWindow`, `RecordDialog`, `RecordingIndicator`, `GroupsDialog`, `GroupEditDialog`, `RunHistoryDialog`, `VideoPlayer`, `BackupsDialog`, `StatsDialog`, `HelpDialog`, `AboutDialog`, `SettingsDialog` (= tabbed Preferences), `TestsWindow` (floating Toplevel) |
 | `main()` | single-instance mutexes (new + old name), `App(root)`, `mainloop()` |
 
 ### Threads
 - **UI thread:** Tk mainloop. `ui_tick()` runs every 1 s (log queue, rows, cards, buttons,
   `own_visible`); `poll_cmds()` every 200 ms drains `cmdq` (tray/hotkey commands: `show`,
   `pause`, `toggle_window`, `exit`).
-- **Scheduler thread:** `scheduler_loop()` wakes every 1 s, collects due work under
-  `self.lock` (an RLock), then runs it: `execute(job, "scheduled"|"test"|"manual")`,
-  `watch_check`, `watch_click`, `watch_test`. Long waits inside multi-step jobs block this
-  thread (acceptable; steps are short).
-- **Hotkey thread**, **tray** (pystray `run_detached`), and short-lived threads for alerts and
-  "Test click now". **Never touch Tk widgets from non-UI threads.** Use `self.log()` (a queue)
-  or `cmdq`.
+- **Scheduler (monitor) thread:** `scheduler_loop()` wakes every 1 s, collects due work under
+  `self.lock` (an RLock). It runs `watch_check` itself (only looks at the screen, never sends
+  input) and hands every action that needs the mouse/keyboard to the **input queue**
+  (`queue_or_run`): `execute(job, "scheduled"|"test")`, `watch_click`, `watch_test`. It also
+  logs when a queued action has waited > 10 s (`note_waiting`).
+- **Input thread:** `input_loop()` takes one `ActionQueue` item at a time (priority, then first
+  come) and runs it (`run_item`). This is the **only** thread that clicks or types in the real
+  app; "Test click now" and Step through go through it too (priority high). `run_cancel` (an
+  Event) is checked by the engine between steps and during waits; `emergency_stop()` sets it,
+  clears the queue, releases held input and pauses all. `yield_to_others` lets a waiting job
+  run one other queued item inline (opt-in per job, depth 1, never while input is held).
+  Without the input thread (the headless tests), `queue_or_run` runs the action directly.
+- **Recorder threads** (while recording): a low-level hook thread (`WH_MOUSE_LL` +
+  `WH_KEYBOARD_LL` with its own message loop; callbacks only append to a list) and a picture
+  thread that crops a small screenshot around each mouse-down. **Video thread** (while a run is
+  recorded): `RunVideo._loop` grabs frames at the preset rate and checks free space.
+- **Hotkey thread**, **tray** (pystray `run_detached`), and short-lived threads for alerts.
+  **Never touch Tk widgets from non-UI threads.** Use `self.log()` (a queue) or `cmdq`
+  (`poll_cmds` runs callables put on it, on the UI thread).
 
 ### Data files (in `DATA_DIR`)
 `settings.json`, `jobs.json` (`{"app","version","jobs":[...]}`), `test_history.json`,
 `click_history.csv` (capped at 50,000 rows), `clickue.log` (+ `.1`, `.2`, RotatingFileHandler),
-`backups/YYYY-MM-DD_HHMMSS_<tag>.json` (tags: `auto`, `manual`, `before-restore`).
+`backups/YYYY-MM-DD_HHMMSS_<tag>.json` (tags: `auto`, `manual`, `before-restore`,
+`before-import`, `before-fresh-start`, `before-upgrade-<version>`), `run_history.csv` (capped at
+50,000 rows; never typed text), `recordings/clickue_run_<stamp>_<job>.mp4|avi` (unless
+`video_dir` is set), `diagnostics/clickue_fail_<stamp>_<job>.png`.
+`jobs.json` is `{"app","version","schema":2,"jobs":[...],"groups":[...]}`.
 All JSON is written atomically (`.tmp` + `os.replace`). A corrupt file is copied to
-`.corrupt` and defaults are used.
+`.corrupt` and defaults are used. Backups never contain `SECRET_KEYS` (alert credentials).
 
 ### Job model (`new_job()`)
 A job is a plain dict. **Settings fields** are saved and exported; **runtime fields** (listed in
@@ -94,10 +126,28 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
 - Rules: `hours_on, hours_from, hours_to, hours_days [0=Mon..6=Sun], hours_outside
   ("wait"|"skip"), limit_clicks_on, limit_clicks, limit_until_on, limit_until
   ("YYYY-MM-DD HH:MM")`; runtime `run_clicks`
-- Steps: `steps: [{type:"click", x, y, use_image, snap_png, snap_spot, button, clicks, ...} |
-  {type:"wait", min, max} | {type:"type", text} | {type:"key", keys} |
-  {type:"waitpic", png, until ("appears"|"disappears"), click_it, button, clicks, timeout (s),
-  on_timeout ("stop"|"continue")}]`
+- 4.5: `main_click` (False = steps only), `priority` ("high"|"normal"|"low"), `let_others_run`,
+  `record_video`, `fail_shot`, `saved_vars` ({name: value} remembered between runs),
+  `run_limit_s` (default 6 h, max 24 h)
+- Steps (`sanitize_step` is the authoritative schema; unknown fields are dropped on import).
+  Every step except else/end may have `label`, `retries` (0-10), `retry_wait` (s),
+  `on_fail` ("stop"|"continue"), `careful`; recorded steps also keep `rec_t` (s).
+  `{type:"click", x, y, button, clicks, use_image, snap_png, snap_spot, pick_dpi, pick_screen,
+  image_fallback, target_mode ("screen"|"window"), window_title, window_class, rel_x, rel_y,
+  client_w, client_h, bring_to_front}` ·
+  `{type:"wait", min, max}` (ints or floats) ·
+  `{type:"waitpic", png, until, click_it, button, clicks, timeout, on_timeout, area}` ·
+  `{type:"type"|"paste", text, use_vars, secret, text_enc ("dpapi:…" when secret)}` + paste:
+  `restore_clipboard, paste_keys ("Ctrl+V"|"Shift+Insert"|"Ctrl+Shift+V"), settle` ·
+  `{type:"key", keys, times}` · `{type:"move", path:[[t,x,y],…]}` ·
+  `{type:"drag", button, path}` · `{type:"mouse", button, action ("down"|"up"), x?, y?}` ·
+  `{type:"scroll", x?, y?, amount (notches, − = down/left), horizontal}` ·
+  `{type:"keyhold", keys, action}` · `{type:"if", cond}` · `{type:"else"}` · `{type:"end"}` ·
+  `{type:"repeat", mode ("times"|"until"), times, max_times, max_seconds, cond?}` ·
+  `{type:"set", var, op ("set"|"add"|"sub"), value, persist}` · `{type:"group", group_id}`.
+  `cond`: `{kind:"picture", png, state ("shown"|"gone"), area, wait}` |
+  `{kind:"window", title, state ("open"|"closed"), wait}` | `{kind:"var", var, op, value}`.
+- Step groups (top level of jobs.json): `{id, name, steps}` (no `group` steps inside)
 - Tests: runtime `test_at, test_deadline, wtest_at, wtest_deadline, wtest_click`
 
 ### Compatibility rules (don't break users' data)
@@ -110,7 +160,14 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
 4. `load()` only keeps settings keys that exist in `DEFAULT_SETTINGS`.
 5. Keep `migrate_old_data()` (copies `%APPDATA%\ScheduledAutoClicker` once, leaving it as a
    backup) and the old-name mutex check in `main()`.
-6. **Startup prompts (in `App.__init__`, before `load()` builds the UI):**
+6. **Schema 2 (4.5).** Old files have no `schema`; `load()` sets `schema_upgrade`, and
+   `App.__init__` saves a `before-upgrade-<version>` backup before the first save in the new
+   format. Old jobs keep their behaviour: missing keys default to it (`main_click` True,
+   `use_vars` False so braces are typed literally, etc.). Never change what an existing field
+   means.
+7. **Imports and restores are untrusted:** always go through `load_import_file` /
+   `sanitize_job`; imported jobs are disabled. Never execute anything from a jobs file.
+8. **Startup prompts (in `App.__init__`, before `load()` builds the UI):**
    - If `DATA_DIR` doesn't exist yet and the old folder has jobs (`count_saved_jobs`), ask
      *"Import them?"*. Never import silently. Saying No still creates `DATA_DIR`, so it isn't
      asked again.
@@ -160,14 +217,89 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
 - "Click the picture itself" re-finds the picture at click time; if it has vanished, nothing is
   clicked.
 
+**Workflow engine (`WorkflowRun`)**
+- `parse_blocks` turns the flat step list into if/else/repeat nodes (max nesting 8); invalid
+  blocks are refused before anything runs (and the editor won't save them).
+- Modes: `run`, `debug` (a `StepDebugger` is asked before each step; `before_main` before the
+  job's own click) and `dry` (no input: targets located with `check_cover=False`, conditions
+  checked once, loops shown once, waits skipped, text only counted).
+- `check_stop()` between steps and in every wait: Clickue closing, `run_cancel`, the run time
+  limit, and Pause all (releases held input, waits, doesn't count paused time). Hard cap
+  `MAX_EXECUTED_STEPS` (200,000).
+- Each step: retries (`retries`/`retry_wait`), then `on_fail`; `waitpic` keeps its own
+  `on_timeout`. Unexpected exceptions in a step become a failed step, never a crashed thread.
+  Messages keep the old format (`step N: …`, `step N (click): …`).
+- `finally`: `HELD.release_all()`, video un-hide, persisted variables saved to the job.
+- Text: `text_of()` decrypts secrets / fills variables / enforces limits; Type/Paste set
+  `app.video_hide_until` so the video blacks out; messages never contain the text.
+- Groups: by id, depth ≤ 4, a group can't run itself.
+
+**Target adapters (`ADAPTER_API_VERSION = 1`)**
+- The engine never finds targets itself: `adapter_for(target)` returns the first registered
+  adapter whose `handles(target)` is true and that is `available()`. Built in: `picture`,
+  `window`, `screen` (the fallback). Conditions use `check_condition(cond)` → the adapter with
+  `id == cond["kind"]` → `check(cond)`.
+- To add one (e.g. OCR, UI Automation): subclass `TargetAdapter` **in `src/clickue.py`**, set
+  `api`, `id`, `label`, `needs` (packages), implement `available`, `handles`, `describe`
+  (how it finds the target and what happens if it isn't found), `locate` (must not click;
+  return `(ok, x, y, msg, how)`), and `check` (for conditions; must not send input), then
+  `register_adapter(MyAdapter())` before the screen-position adapter. Add its fields to
+  `sanitize_step`/`clean_cond`, its UI to `StepDialog`, tests, docs, and its packages to
+  `requirements.txt` and both packages.
+- Adapters are code that ships with Clickue. There's deliberately **no** plugin loader: no code
+  is loaded from files, the data folder or the internet. A future opt-in local plugin system
+  would need explicit user approval per plugin (hash-pinned), a visible list, and no automatic
+  download.
+- Rule: never fall back to an unverified coordinate unless the user chose it
+  (`image_fallback="position"`), and say so in `how`.
+
+**Input queue and workers**
+- `ActionQueue` (one per `ExecutionWorker`) de-duplicates (one action per job and kind),
+  orders by priority then arrival, and exposes `running` / `waiting()` for the run bar.
+- `ExecutionWorker` (api 1): `LocalDesktopWorker` (`isolated = False`) is the only one. Only
+  workers with `isolated = True` (separate desktops/VMs, each with its own queue, status and
+  screen) may ever run in parallel. Never simulate several cursors on one desktop.
+- `find_conflicts` warns (on save) about running jobs that share a window title or a 40-px
+  fixed-spot cell.
+
+**Recorder (`MacroRecorder`, `compress_recording`)**
+- Hook callbacks drop injected events (`LLMHF_INJECTED`, `LLKHF_INJECTED`), throttle moves
+  (15 ms / 4 px), stop at `MAX_EVENTS` (300,000). Pause shifts the clock so pauses vanish.
+- `compress_recording` is pure (tested headlessly): drops events inside `exclude` rectangles
+  (the red bar), orphan key-ups (start hotkey) and unreleased key-downs (stop hotkey); clicks
+  (≤ 4 px, ≤ 0.6 s), double clicks (≤ 0.5 s apart), holds, drags (RDP-simplified path), moves
+  (≥ 24 px, simplified), wheel aggregation, text (with Backspace editing; `vk_char` uses
+  `ToUnicodeEx` with the foreground layout), key combos, modifier taps, modifier-held clicks
+  (`keyhold`), waits ≥ 0.25 s. `finish_recording` trims leading waits and trailing moves.
+
+**Paste / clipboard**
+- Snapshot every HGLOBAL clipboard format (not GDI handles: bitmaps/metafiles/palettes are
+  usually also offered as DIB), set CF_UNICODETEXT plus the documented
+  `ExcludeClipboardContentFromMonitorProcessing` / `CanIncludeInClipboardHistory=0` /
+  `CanUploadToCloudClipboard=0` formats, press the keys, wait `settle`, restore. Report
+  partial restores honestly; never leave pasted text on the clipboard when restoring.
+
+**Video (`RunVideo`)**
+- `cv2.VideoWriter` with `mp4v` (.mp4), falling back to `MJPG` (.avi); frame size fixed at
+  start (even numbers); redaction rectangles and "hidden" frames applied before writing; free
+  space checked at start (1 GB) and every 5 s (300 MB). Any failure sets `status="stopped"` and
+  ends only the video. `position()` = frames / fps, logged with each step.
+
+**Alerts (security)**
+- Only `check_discord_url`-valid Discord webhooks and `api.telegram.org`; `_http_post` uses
+  HTTPS with the default SSL context, no redirect handler, 10 s timeout, 64 KB response cap;
+  `_alert_allowed` rate limit; errors pass through `redact`. `App.log` redacts the configured
+  secrets from every line.
+
 **Click chains (`waitpic` steps, `App.wait_for_picture`)**
 - Polls `picture_on_screen()` every `STEP_POLL_S` (1 s), up to `timeout` (capped by
   `STEP_MAX_WAIT_S` = 1 h), remembering the last seen scale. When the condition is met it
   optionally clicks the found centre. A message starting with `timeout` plus
   `on_timeout="continue"` continues the chain; anything else stops it (the click itself still
   counts as OK and the reason is logged).
-- Runs on the scheduler thread, so **other jobs wait while a chain waits**. This is
-  intentional, because two jobs can't use the mouse at once. Keep timeouts sensible.
+- Runs on the input thread, so **other actions wait while a chain waits** (watchers keep
+  checking on the monitor thread). This is intentional, because two jobs can't use the mouse
+  at once. `tick()` is called during the wait (stop checks, optional yielding).
 - `App.draw_capture(parent, prompt, on_done)` is the reusable "drag a box" screen used by the
   step editor (the watcher editor keeps its own `_draw_overlay`).
 
@@ -206,8 +338,11 @@ pythonw src\clickue.py          rem or double-click scripts\Start Clickue.bat
 
 - **Locally:** `scripts\Build Clickue EXE.bat` → `dist\Clickue.exe` (PyInstaller `--onefile
   --noconsole --icon assets\clickue.ico --hidden-import pystray._win32`).
-- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.1`, run
-  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.1.exe`.
+- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.5`, run
+  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.5.exe`. The installer shows
+  `installer/before-install.txt` first; its uninstaller removes the HKCU Run value only when it
+  points at `{app}`, and deletes `%APPDATA%\Clickue` only if the user says Yes (skipped when
+  Clickue's own Uninstall passes `/KEEPDATA`).
 - **Icon/logo:** generated by `make_logo()`. After changing it, regenerate the assets with
   `python src\clickue.py --make-icon assets\clickue.ico`, and save PNGs with
   `make_logo(256)` / `make_logo(128)`.
@@ -221,12 +356,17 @@ Run from the repository root.
 | `python tests/test_watchers.py` | watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries) | `RESULT 21/21` |
 | `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id, guide link + pictures | `RESULT 55/55` |
 | `python tests/test_click_spot.py` | click-spot matching at 3 picture sizes × 8 screens (100–175 % scaling, moved, look-alikes) | `0 of 24` failures |
+| `python tests/test_workflows.py` | 4.5: alert hardening (hosts, redirects, rate limit, redaction), secrets out of backups/exports, DPAPI flow (simulated), import validation, data-folder safety, variables, blocks, if/repeat/retries/groups/limits/cancel/pause, held-input release, dry run, the input queue (order, watchers keep checking, yielding, emergency stop), conflicts, recorder compression, paste/clipboard flow, video (lifecycle, no codec, disk full, capture failure, redaction), run history + video positions, failure screenshots, schema migration, adapters | `RESULT N/N` |
+| `python tests/check_release.py` | docs links/anchors/pictures, version = changelog, disclosure placement, planned features marked planned, no secrets or private details in public files, workflow least privilege + pinned actions, uninstall boundaries | `RESULT N/N` |
 | `python tests/gui_test.py` | drives every window and control of the real UI | `N/N checks passed, 0 errors` |
 | `python tests/gui_screenshots.py` | saves screenshots to `tests/screenshots/` | `done` |
 
-- The three `test_*.py` files are **headless**: `tests/sim_helpers.py` stubs out `tkinter`,
-  loads `src/clickue.py`, and draws fake app screens with PIL (needs any TrueType font). They
-  run on Linux or Windows and replace screen capture and clicking with fakes.
+- The `test_*.py` files are **headless**: `tests/sim_helpers.py` stubs out `tkinter`, loads
+  `src/clickue.py`, sets `IS_WIN = False` (so nothing real is clicked, even on Windows CI), and
+  draws fake app screens with PIL (needs any TrueType font). They replace screen capture,
+  clicking, typing and the clipboard with fakes. Real-desktop behaviour (hooks, SendInput,
+  clipboard, DPAPI, installer) must be checked by hand on Windows: see the manual checks in
+  section 9.
 - The GUI tests need a Python **with tkinter** and a display. On Linux, use `Xvfb :99` and
   `DISPLAY=:99`; the screenshot script grabs from `:99`. On a headless Linux box where the
   system Python lacks tkinter, `uv python install 3.13` provides one, using the system
@@ -244,20 +384,38 @@ Run from the repository root.
    function in `scripts/make_guide_images.py` and run `python scripts/make_guide_images.py`.
 4. Run the tests (section 8).
 5. Commit and push to `main`. That's all: the workflow builds and publishes the release.
+6. **Manual checks on a real Windows desktop** (the automated tests fake input):
+   - record a short macro (click, double click, drag, scroll, typing with Backspace, Ctrl+S,
+     Shift+click), stop, check the steps, Dry run, Step through, run it;
+   - Paste text with several lines and non-English characters into Notepad; check the
+     previous clipboard (text and a copied picture) comes back, and Win+V doesn't list it;
+   - a Secret paste step; export and check the text isn't in the file;
+   - Emergency stop during a long Wait and during a drag (no stuck mouse button or key);
+   - two jobs due at once: the run bar shows one running and one waiting;
+   - a job with screen video: red bar, Pause/Stop video, play it from the run history;
+   - phone alerts to a real Discord webhook / Telegram bot; a wrong URL is refused;
+   - installer: fresh install, upgrade over the previous version (before-upgrade backup),
+     uninstall keeping data, uninstall deleting data; portable zip; in-app Uninstall for both.
 
 ## 10. GitHub: repository, CI and releases
 
 - Repository: `https://github.com/jnssylvest/clickue` (default branch `main`, MIT license).
 - `.github/workflows/build.yml` runs on **windows-latest** for every push and pull request:
+  0. permissions: the workflow is `contents: read`; only the separate `release` job (pushes to
+     `main` / `v*` tags, never PRs) gets `contents: write` + `discussions: write`. Actions are
+     pinned to commit SHAs (update them deliberately); checkout uses
+     `persist-credentials: false`.
   1. install requirements + PyInstaller
   2. smoke test: `py_compile`, import every module (asserts `HAVE_CV`, `HAVE_TRAY`,
-     `HAVE_PIL`), render the logo
+     `HAVE_PIL`, `HAVE_DPAPI`), render the logo
+  2b. headless tests + `tests/check_release.py`; `pip-audit -r requirements.txt` and
+     `bandit -r src` (high severity) fail the build
   3. read `VERSION` from `src/clickue.py`
   4. PyInstaller → `dist/Clickue.exe`
-  5. portable zip: `Clickue.exe` + `installer/portable.txt` + README + LICENSE →
-     `Clickue-Portable-<ver>.zip`
+  5. portable zip: `Clickue.exe` + `installer/portable.txt` + README + LICENSE +
+     `READ-ME-FIRST.txt` (= `installer/before-install.txt`) → `Clickue-Portable-<ver>.zip`
   6. Inno Setup (installed via choco if missing) → `Clickue-Setup-<ver>.exe`
-  7. upload as build artifacts
+  7. `SHA256SUMS.txt`, then upload as build artifacts (14 days)
   8. **on pushes to `main` (or `v*` tags): create or update the GitHub Release `v<VERSION>`**
      with both files (softprops/action-gh-release, `tag_name` + `target_commitish`). The
      workflow creates the tag itself. A **new** release also posts an announcement in
@@ -278,7 +436,20 @@ Run from the repository root.
   `gh api repos/jnssylvest/clickue/releases`.
 - Commit messages from AI sessions end with the attribution lines the session provides.
 
-## 11. Known limitations / ideas
+## 11. Security notes
+
+See [SECURITY.md](../SECURITY.md) for the review and remaining risks. Rules for changes:
+- No `eval`/`exec`/`pickle`/`shell=True`; subprocesses only with fixed, validated arguments.
+- No new network destinations, no telemetry. Alerts stay limited to the two services.
+- Secrets (`SECRET_KEYS`, secret step text) never go into logs, history, run history, backups,
+  exports, error messages or screenshots/videos.
+- Anything read from a file the user didn't create in this app is untrusted: validate it.
+- Recursive deletes only after `is_clickue_data_dir`; clean-ups only via `prune_files` with a
+  strict name pattern.
+- Every new loop/wait needs a limit and must call `check_stop()`/`tick()`; anything that holds
+  input must use `HELD`.
+
+## 12. Known limitations / ideas
 
 - Windows forbids clicking or capturing a locked screen or a disconnected RDP session. This is
   documented, not fixable.
@@ -288,5 +459,6 @@ Run from the repository root.
 - Planned: a rewrite in Rust (smallest and fastest) or C#/.NET (easiest to maintain) for lower
   memory use and size. Port the behaviour in section 5 exactly, and reuse `tests/` scenarios
   as the acceptance spec.
-- Possible features: more step types (scroll, drag), job groups, per-job notes, import from
-  other macro tools.
+- Planned: OCR text targets, Windows UI Automation targets, browser element targets (adapters),
+  isolated execution workers (separate desktops/VMs), an opt-in local plugin mechanism.
+- Possible features: job folders, per-job notes, import from other macro tools.

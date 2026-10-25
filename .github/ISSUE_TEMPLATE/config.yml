@@ -6,3 +6,6 @@ contact_links:
   - name: 📖 Complete guide
     url: https://github.com/jnssylvest/clickue/blob/main/docs/GUIDE.md
     about: Every feature explained with examples and pictures, plus troubleshooting and FAQ.
+  - name: 🔒 Report a security problem privately
+    url: https://github.com/jnssylvest/clickue/blob/main/SECURITY.md
+    about: Please don't post security problems in public issues.

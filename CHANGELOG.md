@@ -1,5 +1,64 @@
 # Changelog
 
+## 4.5 - Workflows, macro recording and security hardening
+
+> Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken
+> during development, but AI-assisted development does not guarantee bug-free or secure
+> software. Review the source and use normal precautions. Test automations safely, protect
+> notification credentials, and avoid unattended use for consequential actions.
+
+**New**
+- **Record a macro** (⏺ Record, Ctrl+Alt+R): clicks, double clicks, drags, scrolling, mouse
+  movement (simplified), typing (Backspace fixes the text), key combinations, Shift/Ctrl-held
+  clicks and pauses become editable steps; optional picture of each clicked spot. Red recording
+  bar with Pause / Stop / Cancel and hotkeys.
+- **Timeline editor** for steps: add after the selection, duplicate, move several, indented
+  blocks, make waits shorter/longer, remove short waits or mouse moves, step names, "At" times.
+- **Paste text** step (clipboard + Ctrl+V / Shift+Insert / Ctrl+Shift+V) that puts your
+  clipboard back and keeps pasted text out of Windows clipboard history; **Type text** stays.
+- **Workflows:** If / Otherwise / End (picture, window or variable), Repeat N times or until a
+  condition (always limited), **variables** (`{date}`, `{time}`, `{loop}`… and your own, optionally
+  remembered between runs), reusable **step groups**, per-step **retries** and **stop or
+  continue if it fails**, plus Scroll, Drag, Move, Mouse button down/up and Hold key steps.
+- **Steps-only jobs** (no main click), e.g. for recordings or watchers that run steps.
+- **Dry run** of a job's steps (no clicks) and **Step through** (one step at a time, with why
+  each target was chosen and ⚠ careful steps).
+- **One input queue:** jobs take turns using the mouse and keyboard while **watchers keep
+  watching**; a bar shows the running job and who's waiting; **priorities**, optional "let other
+  jobs click in between", and warnings when two running jobs use the same window or spot.
+- **Emergency stop** (Ctrl+Alt+X, ☰ Menu, tray): ends the running job, drops queued clicks,
+  releases held keys and buttons, pauses everything. Pause all now also pauses a running job
+  between steps.
+- **Run history** (searchable; never contains typed text) and optional local **screen video of
+  runs** (off by default, per job, visible indicator, presets, hidden areas, blacked out while
+  typing, size/age clean-up, disk-space checks, built-in player from any step). Optional
+  **failure screenshots**.
+- **Who Clickue helps** / industries and workflows in the README and guide; guide updated for
+  every new feature, with new pictures.
+
+**Security and safety**
+- Phone alerts only go to Discord webhooks / api.telegram.org over HTTPS with certificate
+  checks; redirects aren't followed; short timeouts, response limit and rate limit. URLs and
+  tokens are validated, masked, redacted from logs, **removed from backups** and never exported;
+  optional encryption with your Windows account (DPAPI).
+- Imports are validated (size, schema, types, ranges, pictures, steps) and arrive **stopped**,
+  with a summary of keyboard steps; restores are validated too. **Secret** Type/Paste text is
+  encrypted, hidden and never exported or logged.
+- Held keys/buttons are always released; every wait, loop and run has a limit; a test click
+  can no longer send input at the same time as a scheduled job.
+- Uninstall asks to keep or delete your data, only deletes a verified Clickue data folder, uses
+  Windows' uninstaller for installed copies, and the installer's uninstaller now also removes
+  the start-with-Windows entry Clickue created. The installer shows a short notice first.
+- Build: least-privilege workflow (write access only for the release job), actions pinned to
+  commits, tests + `pip-audit` + `bandit` before building, SHA-256 checksums with each release.
+  Dependency minimums raised past known vulnerabilities (Pillow ≥ 12.3.0).
+- New **SECURITY.md** and the AI-assistance disclosure in the README, guides, app, installer and
+  release notes.
+
+**Compatibility:** jobs from 4.4 and earlier keep working; a *before-upgrade-4.5* backup is saved
+before they're stored in the new format (`schema: 2`). Not yet available (planned): OCR text
+targets, Windows UI Automation, browser elements, isolated parallel workers.
+
 ## 4.4 - The complete guide
 - New **[complete guide](docs/GUIDE.md)**: every feature, setting and default explained, with
   scenarios, six step-by-step recipes, troubleshooting, an FAQ and 16 example pictures.

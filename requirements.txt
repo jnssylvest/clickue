@@ -1,4 +1,6 @@
-pillow>=10.0
+# Minimum versions include known security fixes (Pillow 12.3.0: CVE-2026-59204;
+# opencv 4.8.1.78: bundled libwebp CVE-2023-4863). CI checks them with pip-audit.
+pillow>=12.3.0
 pystray>=0.19
-opencv-python-headless>=4.8
+opencv-python-headless>=4.8.1.78
 numpy>=1.24

@@ -8,6 +8,7 @@ tk=sys.modules["tkinter"]; tk.Toplevel=object; tk.ttk=sys.modules["tkinter.ttk"]
 tk.messagebox=sys.modules["tkinter.messagebox"]; tk.filedialog=sys.modules["tkinter.filedialog"]
 import importlib.util
 spec=importlib.util.spec_from_file_location("ac",SRC); ac=importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+ac.IS_WIN=False  # the tests fake the screen, mouse and keyboard on every OS (also on Windows CI)
 from PIL import Image, ImageDraw, ImageFont
 def _font_path():
     for p in ("DejaVuSans.ttf", "arial.ttf", "C:/Windows/Fonts/arial.ttf",

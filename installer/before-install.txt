@@ -1,0 +1,27 @@
+Clickue - please read before installing
+=======================================
+
+Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken
+during development, but AI-assisted development does not guarantee bug-free or secure
+software. Review the source and use normal precautions. Test automations safely, protect
+notification credentials, and avoid unattended use for consequential actions.
+
+What Clickue does
+- It clicks, types and presses keys in other programs on this computer, on a schedule or
+  when something appears or disappears on screen. Test every job (Tests -> Dry run, Step
+  through) before leaving it running.
+- Everything stays on this computer. The only network use is the optional phone alerts
+  (Discord / Telegram) that you set up yourself.
+- Windows has one mouse and one keyboard: Clickue runs one job at a time and can't click
+  while the screen is locked or a remote session is disconnected.
+- Emergency stop: Ctrl+Alt+X (changeable) stops the running job, lets go of held keys and
+  pauses everything.
+
+Use it responsibly: follow your workplace's rules and the terms of the programs and sites
+you automate. Clickue is not for games, scraping, or getting around CAPTCHAs or other
+security checks.
+
+Uninstalling: Settings -> Apps -> Clickue, or Clickue's own Menu -> Uninstall. You choose
+whether your jobs and other data are kept or deleted.
+
+Source code, guide and security notes: https://github.com/jnssylvest/clickue

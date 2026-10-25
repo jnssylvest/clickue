@@ -1,23 +1,37 @@
 # Clickue: complete feature list
 
 ← Back to the [README](README.md) · Every feature explained with examples and pictures in the
-[**complete guide**](docs/GUIDE.md) · [Quick start](docs/USER_GUIDE.md)
+[**complete guide**](docs/GUIDE.md) · [Quick start](docs/USER_GUIDE.md) · [Security](SECURITY.md)
+
+> [!IMPORTANT]
+> Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken
+> during development, but AI-assisted development does not guarantee bug-free or secure
+> software. Review the source and use normal precautions. Test automations safely, protect
+> notification credentials, and avoid unattended use for consequential actions.
+> See [SECURITY.md](SECURITY.md).
+
+Everything below is available in Clickue 4.5 unless it's under
+[Planned](#planned-not-in-this-version).
 
 ## Contents
 - [Finding the right spot](#finding-the-right-spot)
 - [Scheduled clicks](#scheduled-clicks)
 - [Screen watchers](#screen-watchers)
 - [Rules for any job](#rules-for-any-job)
-- [Multi-step jobs & click chains](#multi-step-jobs--click-chains)
+- [Steps & workflows](#steps--workflows)
+- [Recording macros](#recording-macros)
+- [One job at a time](#one-job-at-a-time)
 - [Safety](#safety)
 - [Tests](#tests)
 - [Notifications & phone alerts](#notifications--phone-alerts)
 - [Managing jobs](#managing-jobs)
 - [History, stats & logs](#history-stats--logs)
+- [Screen video & run history](#screen-video--run-history)
 - [Backups & data](#backups--data)
 - [Window, tray & hotkeys](#window-tray--hotkeys)
 - [Appearance & layout](#appearance--layout)
 - [Install options](#install-options)
+- [Planned (not in this version)](#planned-not-in-this-version)
 
 ---
 
@@ -86,24 +100,83 @@
 - **Stop at** a date and time.
 - When a limit is reached the job stops, shows *Finished* and can send an alert.
 
-## Multi-step jobs & click chains
+## Steps & workflows
 
-After its main click, any job can run more steps in order:
-- **Click a spot**, picked on screen and found by its picture; any button, single or double
-- **Wait** a fixed time or a random range
-- **Wait for a picture** to **appear** (then optionally **click it** where it appeared, with any
-  button, single or double) or to **go away**. It looks about once a second, up to a time limit
-  (1 s–1 h); if nothing happens it **stops the chain** or **continues anyway**. This turns a
-  job into a **click chain** that reacts to each click's result.
-- **Type text** of any characters, including other languages and symbols; new lines press Enter
-- **Press keys**, e.g. `Enter`, `Tab`, `Esc`, `Ctrl+S`, `Alt+F4`, `Ctrl+Shift+S`, arrows, F1–F12
-- Add, edit, reorder and remove steps. If a step fails, the rest are skipped and it's
-  reported.
-- Start a chain on a schedule, or from a screen watcher (the chain starts when the watched
-  picture appears or disappears).
+After its main click, any job can run **steps** in order, or a job can be **steps only**
+(untick *Start with a click on this spot*). Steps are edited on a **timeline**:
+- **Click a spot**, found **by its picture** (checked before clicking), **inside a window**, or
+  at a **fixed position** (not verified); any button, single or double. **Picture of this spot
+  now** and **Use the window at this spot** turn a fixed position into a checked target. The
+  editor says how each target is found and what happens if it isn't (it never silently falls
+  back to an unchecked position)
+- **Wait** a fixed time or a random range (decimals allowed)
+- **Wait for a picture** to **appear** (then optionally **click it**) or **go away**, up to a
+  time limit (1 s–1 h), then **stop the chain** or **continue anyway**: a **click chain** that
+  reacts to each click's result
+- **Type text**: one key per character, any language and symbols; new lines press Enter (up to
+  20,000 characters)
+- **Paste text**: clipboard + Ctrl+V (or Shift+Insert / Ctrl+Shift+V) for long, multi-line,
+  any-language text (up to 200,000 characters); **puts your clipboard back** afterwards, keeps
+  pasted text out of Windows clipboard history and cloud sync, and says honestly when a
+  clipboard format couldn't be restored
+- **Secret** text for Type / Paste: encrypted with your Windows account (DPAPI), hidden in the
+  timeline, never logged or exported, blacked out in videos
+- **Variables**: `{date}`, `{time}`, `{datetime}`, `{year}`…`{weekday}`, `{job}`, `{run}`, `{loop}`
+  and your own, filled into Type / Paste text when ticked
+- **Set a variable** (set / add / subtract), optionally **remembered for the next run** (counters)
+- **If … Otherwise … End** on a picture showing / not showing, a window open / not open, or a
+  variable (`==`, `!=`, `<`, `>`, `<=`, `>=`, `contains`), optionally waiting for it
+- **Repeat … End**: N times (up to 10,000), or **until** a condition, always with a maximum
+  number of times and seconds
+- **Step groups**: save steps once, use them in many jobs (☰ Menu → Step groups); no nesting,
+  so they can't call themselves
+- **Press keys** (with *× N*), **Scroll**, **Drag**, **Move the mouse**, **Mouse button down /
+  up**, **Hold a key down / let go** (e.g. Shift+click)
+- Per step: a **name**, **retries** with a wait in between, **stop or continue if it fails**, and
+  **⚠ careful** (Step through always stops there)
+- Timeline: add after the selected step, edit, duplicate, remove, move (several at once),
+  indented blocks with a clear message when they don't match, make all waits shorter / longer,
+  remove short waits or mouse movements, save selected steps as a group
+- Limits that can't be switched off: a time limit per run (default 6 h, up to 24 h), at most
+  200,000 steps per run, limits on every wait and loop; held keys and buttons are always
+  released when a run ends
+- Start a workflow on a schedule, or from a screen watcher
+
+## Recording macros
+
+- **⏺ Record** (toolbar, ☰ Menu or **Ctrl+Alt+R** from anywhere) records your mouse and
+  keyboard; a red bar shows the time, clicks and keys, with **Pause**, **Stop** and **Cancel**
+  (hotkeys too)
+- Records clicks (left / right / middle), double clicks, long presses, drags (with their path),
+  mouse movement (simplified), scrolling, typed text (Backspace fixes the text), keys and
+  combinations, Shift/Ctrl held during clicks, and pauses as editable waits
+- Optionally saves a small **picture of each clicked spot**, so recorded clicks find their
+  target later even if it moves
+- Never records Clickue's own windows, its own input, or the start/stop hotkeys; works across
+  multiple monitors (including negative coordinates)
+- Compact: long mouse movements are reduced to the points that matter; up to 300,000 raw
+  events per recording
+- The result opens as a new, **stopped**, steps-only job to check and edit
+- Warns that typed passwords would be recorded
+
+## One job at a time
+
+- All clicks and keystrokes go through **one queue**: Windows has one mouse and keyboard focus,
+  so jobs never click over each other (Clickue doesn't fake several mice)
+- **Watchers keep watching** while another job runs
+- A bar above the job list shows the **running job** (with its step) and who's **waiting their
+  turn**, with **Stop this run**; the log notes long waits
+- **Priority** per job (High / Normal / Low); test clicks you start go first
+- **Let other jobs click in between** while a job's steps are only waiting (opt-in)
+- **Warnings** when two running jobs use the same window or the same fixed spot
+- Designed so isolated workers (separate desktops / VMs) can be added later (planned)
 
 ## Safety
 
+- **Emergency stop** (**Ctrl+Alt+X**, ☰ Menu, tray): ends the running job, drops queued
+  clicks, lets go of held keys and buttons, cancels a recording, pauses everything.
+- **Pause all** also pauses a running job between its steps.
+- Held keys and mouse buttons are always released when a run ends and when Clickue exits.
 - **Waits for idle.** Won't move the mouse until you've stopped using the mouse and keyboard
   for N seconds (default 5).
 - **Puts the mouse back** where it was after clicking (optional).
@@ -128,6 +201,11 @@ All tests hide the whole app while they run, so nothing is in the way.
   would click now. No click.
 - **Schedule watcher test.** Runs the watcher check later in the background; optionally
   really clicks.
+- **Dry run of steps** (job editor, right-click menu): checks every step's target and condition
+  against the screen as it is now and lists what would happen. Never clicks or types.
+- **Step through:** runs a job for real, one step at a time, showing the next step, why its
+  target was chosen and where it will click; run to the end (still stopping at ⚠ careful steps)
+  or stop.
 - Pending tests show as purple rows with a countdown. **Test history** for this job or all
   jobs, with full details.
 
@@ -139,6 +217,10 @@ All tests hide the whole app while they run, so nothing is in the way.
   scheduled test results.
 - **Send a test alert** button. Alerts are sent in the background and never slow down
   clicking.
+- Hardened: only discord.com webhooks and api.telegram.org, HTTPS with certificate checks, no
+  redirects, short timeouts, a small response limit, and a rate limit (one per 2 s and 60 an
+  hour per service). Credentials are masked, validated when saved, redacted from logs, kept out
+  of backups and exports, and can be **encrypted with your Windows account**.
 
 ## Managing jobs
 
@@ -146,7 +228,10 @@ All tests hide the whole app while they run, so nothing is in the way.
   / Screen watchers.
 - Add, edit (double-click), duplicate, delete with **undo** (Ctrl+Z), start/stop, pause/resume.
 - Right-click any job for every action.
-- **Import / export** jobs to a file (add to or replace current jobs).
+- **Import / export** jobs (and the step groups they use) to a file. Imports are checked and
+  cleaned (size and version limits, field types and ranges, pictures, steps), report what was
+  fixed and which steps send keyboard input, and arrive **stopped**. Exports never contain
+  secret text or alert credentials.
 - Unsaved-changes protection in editors.
 
 ## History, stats & logs
@@ -159,9 +244,28 @@ All tests hide the whole app while they run, so nothing is in the way.
 - **Activity** panel, colour-coded, filterable by Everything / Clicks / Problems.
 - Log file with a size limit and 2 older copies kept; the history is capped at 50,000 rows.
 
+## Screen video & run history
+
+- **Run history** (☰ Menu → Run history & videos): every run with its steps, results and timing;
+  searchable, filter to failed runs; never contains typed or pasted text
+- Optional **screen video of runs** (off by default; per job): only while the job runs, with a
+  red indicator (pause / stop the video), saved locally as MP4 (or AVI), never uploaded
+- Quality presets **Compact / Standard / High** with their size trade-off; choose the folder
+- Each step in the run history is linked to its **position in the video**; **Play video from
+  this step** opens a built-in player there
+- **Hidden areas** always blacked out; video blacked out while text is typed or pasted
+- Clean-up by age (default 14 days) and total size (default 5 GB); only Clickue's own video
+  files are deleted
+- Won't start with less than 1 GB free; stops (the job carries on) below 300 MB or on errors
+- Optional **failure screenshot** when a job's steps fail (hidden areas blacked out; newest 30
+  kept)
+
 ## Backups & data
 
-- **Daily automatic backup** of all jobs and settings (keeps the newest 14, adjustable).
+- **Daily automatic backup** of all jobs, step groups and settings (keeps the newest 14,
+  adjustable). Phone-alert credentials are never copied into backups.
+- A backup is saved before upgrading jobs from an older version (*before-upgrade-4.5*), before
+  an import that replaces your jobs, before a restore and before a fresh start.
 - **Backups window** to back up now, restore (replace or add) and open the folder. Your
   current jobs are backed up before any restore.
 - Everything is stored in `%APPDATA%\Clickue` and survives reinstalling or moving the
@@ -171,13 +275,18 @@ All tests hide the whole app while they run, so nothing is in the way.
 - **Reinstalling:** if jobs from before are found after a fresh install, Clickue asks whether
   to keep them or start fresh (they're backed up first). The uninstaller asks whether to remove
   your data too.
-- **Uninstall** from inside the app, with an optional backup of your jobs to Documents first.
+- **Uninstall** from inside the app: removes the program (via Windows' uninstaller when
+  installed) and the start-with-Windows entry, and **asks** whether to keep or delete your data
+  (with an optional copy of your jobs in Documents). It only deletes a folder after checking
+  it's really Clickue's data folder.
 
 ## Window, tray & hotkeys
 
-- Minimize and/or close to the **system tray**; tray menu with Show, Pause all and Exit.
-- **Global hotkeys** that work while hidden: pause/resume all (default **Ctrl+Alt+P**),
-  show/hide Clickue (default **Ctrl+Alt+K**), both changeable.
+- Minimize and/or close to the **system tray**; tray menu with Show, Pause all, Stop
+  everything now and Exit.
+- **Global hotkeys** that work while hidden, all changeable: pause/resume all (**Ctrl+Alt+P**),
+  show/hide Clickue (**Ctrl+Alt+K**), emergency stop (**Ctrl+Alt+X**), start/stop recording
+  (**Ctrl+Alt+R**), pause/resume recording (**Ctrl+Alt+U**).
 - Start with Windows and start minimized (optional).
 - Keyboard shortcuts: Ctrl+N new click, Ctrl+Shift+N new watcher, Enter edit, Space
   start/stop, P pause job, Ctrl+P pause all, Ctrl+T tests, Ctrl+Z undo, Ctrl+, preferences,
@@ -203,4 +312,19 @@ All tests hide the whole app while they run, so nothing is in the way.
   keeps their own jobs and settings.
 - **Portable.** Unzip and run. A `portable.txt` file next to `Clickue.exe` keeps all data in
   a `ClickueData` folder beside it.
-- **From source.** Python 3 with pillow, pystray, opencv-python-headless and numpy.
+- **From source.** Python 3.10+ with pillow, pystray, opencv-python-headless and numpy (no
+  other packages; screen video uses OpenCV, which is already needed for picture matching).
+- All three run the same program with the same features. Windows 10/11 only.
+- The installer shows a short notice before installing; its uninstaller removes the program,
+  shortcuts and its start-with-Windows entry, and asks before deleting your data.
+- Releases come with SHA-256 checksums.
+
+## Planned (not in this version)
+
+These are **not** available yet:
+- Finding **text on screen (OCR)** as a target or condition
+- **Windows UI Automation** (clicking controls by name)
+- **Browser element** targeting through a browser integration
+- Running jobs side by side on **isolated desktops / virtual machines** (separate workers)
+- Opt-in, locally installed add-ons for other target types (today, target adapters are built
+  into Clickue; see the [developer guide](docs/DEVELOPER_GUIDE.md))

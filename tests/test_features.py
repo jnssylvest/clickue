@@ -169,19 +169,19 @@ A.undo_stack.append((w, 0, True)); A.jobs = [g]; A.show_undo_bar = lambda: None
 A.undo_delete()
 ok("undo delete restores the job", A.jobs[0] is w and w["enabled"])
 
-# ---------------------------------------------------------------- alerts (no network: fake urlopen)
-import urllib.request
+# ---------------------------------------------------------------- alerts (no network: fake POST)
 sent = []
-class FakeResp:
-    def read(self): return b"ok"
-urllib.request.urlopen = lambda req, timeout=0: (sent.append(req if isinstance(req, str) else req.full_url), FakeResp())[1]
-res = ac.send_alert({"alert_discord": "https://discord.example/webhook", "alert_tg_token": "T", "alert_tg_chat": "1"}, "hello")
+ac._http_post = lambda url, body, ctype: (sent.append(url), 200)[1]
+HOOK = "https://discord.com/api/webhooks/123456789012/abcdefghijklmnopqrstuvwxyz_ABCDEF-123"
+TOKEN = "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ_0123456"
+res = ac.send_alert({"alert_discord": HOOK, "alert_tg_token": TOKEN, "alert_tg_chat": "1"}, "hello")
 ok("alerts: Discord + Telegram sent", [r[0] for r in res] == ["Discord", "Telegram"] and all(r[1] for r in res), res)
 ok("alerts: nothing configured -> clear message", ac.send_alert({}, "x")[0][2] == "no service set up")
-A.settings.update(alerts_on=True, alert_discord="https://discord.example/webhook",
+A.settings.update(alerts_on=True, alert_discord=HOOK, alert_tg_token="", alert_tg_chat="",
                   alert_events={"watch": True, "problem": False})
-sent.clear(); A.notify("watch fired", "watch"); A.notify("problem", "problem"); time.sleep(0.5)
+ac._ALERT_SENT.clear(); sent.clear(); A.notify("watch fired", "watch"); A.notify("problem", "problem"); time.sleep(0.5)
 ok("alerts: only chosen events are sent", len(sent) == 1, sent)
+A.settings.update(alerts_on=False)
 
 # ---------------------------------------------------------------- migration from the old name
 old = tempfile.mkdtemp(); new = os.path.join(tempfile.mkdtemp(), "Clickue")

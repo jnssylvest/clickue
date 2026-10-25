@@ -21,6 +21,7 @@ import logging
 import os
 import queue
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -38,6 +39,7 @@ from tkinter import ttk, messagebox, filedialog
 
 try:
     from PIL import Image, ImageDraw, ImageTk, ImageGrab
+    Image.MAX_IMAGE_PIXELS = 60_000_000      # refuse "decompression bomb" pictures in imports
     HAVE_PIL = True
 except Exception:
     HAVE_PIL = False
@@ -56,9 +58,14 @@ except Exception:
 APP_NAME = "Clickue"
 APP_ID = "Clickue"
 OLD_APP_ID = "ScheduledAutoClicker"      # previous name - data is migrated from here
-VERSION = "4.4"
+VERSION = "4.5"
 REPO_URL = "https://github.com/jnssylvest/clickue"
 GUIDE_URL = REPO_URL + "/blob/main/docs/GUIDE.md"      # the complete guide (☰ Menu)
+DISCLOSURE = ("Clickue is vibe-coded and was developed with substantial AI assistance. Caution "
+              "was taken during development, but AI-assisted development does not guarantee "
+              "bug-free or secure software. Review the source and use normal precautions. Test "
+              "automations safely, protect notification credentials, and avoid unattended use "
+              "for consequential actions.")
 
 IS_WIN = sys.platform == "win32"
 FROZEN = getattr(sys, "frozen", False)
@@ -679,6 +686,9 @@ def describe_watch(j):
 
 
 def target_text(j):
+    if not j.get("main_click", True):
+        n = len(j.get("steps") or [])
+        return f"☰ {n} step{'s' if n != 1 else ''} only"
     if uses_picture(j):
         where = (f" · {short_title(j['window_title'], 14)}"
                  if j.get("target_mode") == "window" and j.get("window_title") else "")
@@ -875,7 +885,7 @@ for _n in ("showinfo", "showwarning", "showerror", "askyesno", "askyesnocancel",
            "askokcancel"):
     if hasattr(messagebox, _n):
         setattr(messagebox, _n, _held(getattr(messagebox, _n)))
-for _n in ("asksaveasfilename", "askopenfilename"):
+for _n in ("asksaveasfilename", "askopenfilename", "askdirectory"):
     if hasattr(filedialog, _n):
         setattr(filedialog, _n, _held(getattr(filedialog, _n)))
 
@@ -1100,7 +1110,9 @@ VK_NAMES = {
     "space": 0x20, "backspace": 0x08, "delete": 0x2E, "del": 0x2E, "insert": 0x2D,
     "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
     "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
-    **{f"f{i}": 0x6F + i for i in range(1, 13)},
+    "printscreen": 0x2C, "pause": 0x13, "capslock": 0x14, "menu": 0x5D, "apps": 0x5D,
+    **{f"f{i}": 0x6F + i for i in range(1, 25)},
+    **{f"num{i}": 0x60 + i for i in range(10)},
 }
 EXTENDED_VKS = {0x2E, 0x2D, 0x24, 0x23, 0x21, 0x22, 0x26, 0x28, 0x25, 0x27}
 MODIFIER_VKS = {0x11, 0x10, 0x12, 0x5B}
@@ -1115,12 +1127,16 @@ def parse_combo(text):
         p = part.lower()
         if p in VK_NAMES:
             keys.append(VK_NAMES[p])
-        elif len(p) == 1 and (p.isalpha() or p.isdigit()):
+        elif len(p) == 1 and (p.isascii() and (p.isalpha() or p.isdigit())):
             keys.append(ord(p.upper()))
+        elif re.fullmatch(r"0x[0-9a-f]{2}", p) and 0 < int(p, 16) < 0xFF:
+            keys.append(int(p, 16))
         else:
             raise ValueError(f"unknown key “{part}”")
     if not keys:
         raise ValueError("no key given")
+    if len(keys) > 6:
+        raise ValueError("too many keys at once")
     return keys
 
 
@@ -1198,32 +1214,140 @@ ALERT_EVENTS = (("watch", "A watcher clicked"), ("problem", "A click was missed 
                 ("test", "Scheduled test results"))
 
 
-def send_alert(settings, text):
-    """Send text to the configured services. Returns a list of (service, ok, message)."""
+# Security: alerts may only go to these hosts, over HTTPS with certificate checks, without
+# following redirects, with short timeouts and a small response limit. There is no way to
+# post to any other address.
+DISCORD_HOSTS = ("discord.com", "discordapp.com", "ptb.discord.com", "canary.discord.com")
+TELEGRAM_HOST = "api.telegram.org"
+ALERT_TIMEOUT_S = 10
+ALERT_MAX_RESPONSE = 64 * 1024
+ALERT_MIN_GAP_S = 2.0               # per service, between two alerts
+ALERT_MAX_PER_HOUR = 60             # per service; more are dropped (and logged once)
+SECRET_KEYS = ("alert_discord", "alert_tg_token", "alert_tg_chat")
+_DISCORD_PATH_RE = re.compile(r"^/api/webhooks/\d{5,25}/[A-Za-z0-9_\-]{20,120}$")
+_TG_TOKEN_RE = re.compile(r"^\d{3,15}:[A-Za-z0-9_\-]{20,64}$")
+_TG_CHAT_RE = re.compile(r"^(-?\d{1,20}|@[A-Za-z][A-Za-z0-9_]{3,63})$")
+_ALERT_LOCK = threading.Lock()
+_ALLOW_PLAIN_HTTP_FOR_TESTS = False       # only the tests' local redirect check sets this
+_ALERT_SENT = {}                    # service -> list of send times (last hour)
+
+
+def check_discord_url(url):
+    """(ok, reason). Only https://discord.com/api/webhooks/<id>/<token> style URLs."""
+    from urllib.parse import urlsplit
+    try:
+        u = urlsplit(url.strip())
+    except Exception:
+        return False, "not a valid web address"
+    if u.scheme != "https":
+        return False, "must start with https://"
+    if (u.hostname or "").lower() not in DISCORD_HOSTS or u.port not in (None, 443):
+        return False, "must be a discord.com webhook address"
+    if u.username or u.password or u.fragment:
+        return False, "must be a plain Discord webhook address"
+    if not _DISCORD_PATH_RE.match(u.path):
+        return False, "doesn't look like a Discord webhook (…/api/webhooks/…)"
+    return True, ""
+
+
+def check_telegram(token, chat):
+    if not _TG_TOKEN_RE.match(token or ""):
+        return False, "the bot token doesn't look right (it looks like 123456:ABC…)"
+    if not _TG_CHAT_RE.match(chat or ""):
+        return False, "the chat id must be a number (or @channelname)"
+    return True, ""
+
+
+def redact(text, secrets=()):
+    """Remove secrets (webhook tokens, bot tokens, given values) from text for logs/errors."""
+    text = str(text)
+    for s in secrets:
+        s = str(s or "").strip()
+        if len(s) >= 6:
+            text = text.replace(s, "[hidden]")
+    text = re.sub(r"(api/webhooks/\d+/)[A-Za-z0-9_\-]+", r"\1[hidden]", text)
+    text = re.sub(r"bot\d{3,15}:[A-Za-z0-9_\-]{20,64}", "bot[hidden]", text)
+    text = re.sub(r"\b\d{3,15}:[A-Za-z0-9_\-]{30,64}\b", "[hidden]", text)
+    return text
+
+
+def _http_post(url, body, content_type):
+    """POST over HTTPS with certificate checks; no redirects; bounded time and response.
+    Returns the HTTP status. Raises on errors. (Replaced by a fake in the tests.)"""
+    import ssl
     import urllib.request
+    if not (url.startswith("https://") or (_ALLOW_PLAIN_HTTP_FOR_TESTS and
+                                           url.startswith("http://127.0.0.1:"))):
+        raise ValueError("only https addresses are allowed")
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None                       # a 3xx becomes an error instead of being followed
+
+    ctx = ssl.create_default_context()        # verifies certificates and host names
+    opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=ctx))
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Content-Type": content_type, "User-Agent": f"{APP_NAME}/{VERSION}"})
+    with opener.open(req, timeout=ALERT_TIMEOUT_S) as r:
+        r.read(ALERT_MAX_RESPONSE)
+        return r.status
+
+
+def _alert_allowed(service, now=None):
+    now = now or time.time()
+    with _ALERT_LOCK:
+        sent = [t for t in _ALERT_SENT.get(service, []) if now - t < 3600]
+        if sent and now - sent[-1] < ALERT_MIN_GAP_S:
+            _ALERT_SENT[service] = sent
+            return False, "too soon after the previous alert"
+        if len(sent) >= ALERT_MAX_PER_HOUR:
+            _ALERT_SENT[service] = sent
+            return False, f"more than {ALERT_MAX_PER_HOUR} alerts in an hour"
+        sent.append(now)
+        _ALERT_SENT[service] = sent
+        return True, ""
+
+
+def send_alert(settings, text, limit=True):
+    """Send text to the configured services. Returns a list of (service, ok, message).
+    Messages never contain the webhook URL or bot token."""
     import urllib.parse
     results = []
     msg = f"{APP_NAME}: {text}"
+    secrets = [settings.get(k) for k in SECRET_KEYS]
     url = (settings.get("alert_discord") or "").strip()
     if url:
-        try:
-            req = urllib.request.Request(url, data=json.dumps({"content": msg[:1900]}).encode(),
-                                         headers={"Content-Type": "application/json",
-                                                  "User-Agent": f"{APP_NAME}/{VERSION}"})
-            urllib.request.urlopen(req, timeout=12).read()
-            results.append(("Discord", True, "sent"))
-        except Exception as e:
-            results.append(("Discord", False, str(e)[:200]))
+        good, why = check_discord_url(url)
+        allowed, why2 = _alert_allowed("Discord") if (good and limit) else (good, why)
+        if not good:
+            results.append(("Discord", False, why))
+        elif not allowed:
+            results.append(("Discord", False, "skipped: " + why2))
+        else:
+            try:
+                _http_post(url, json.dumps({"content": msg[:1900],
+                                            "allowed_mentions": {"parse": []}}).encode(),
+                           "application/json")
+                results.append(("Discord", True, "sent"))
+            except Exception as e:
+                results.append(("Discord", False, redact(str(e), secrets)[:200]))
     tok = (settings.get("alert_tg_token") or "").strip()
     chat = (settings.get("alert_tg_chat") or "").strip()
-    if tok and chat:
-        try:
-            q = urllib.parse.urlencode({"chat_id": chat, "text": msg[:3900]})
-            urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/sendMessage?{q}",
-                                   timeout=12).read()
-            results.append(("Telegram", True, "sent"))
-        except Exception as e:
-            results.append(("Telegram", False, str(e)[:200]))
+    if tok or chat:
+        good, why = check_telegram(tok, chat)
+        allowed, why2 = _alert_allowed("Telegram") if (good and limit) else (good, why)
+        if not good:
+            results.append(("Telegram", False, why))
+        elif not allowed:
+            results.append(("Telegram", False, "skipped: " + why2))
+        else:
+            try:
+                body = urllib.parse.urlencode({"chat_id": chat, "text": msg[:3900]}).encode()
+                _http_post(f"https://{TELEGRAM_HOST}/bot{tok}/sendMessage", body,
+                           "application/x-www-form-urlencoded")
+                results.append(("Telegram", True, "sent"))
+            except Exception as e:
+                results.append(("Telegram", False, redact(str(e), secrets)[:200]))
     if not results:
         results.append(("Alerts", False, "no service set up"))
     return results
@@ -1298,14 +1422,16 @@ def job_stats(rows, name):
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
 
 
-def make_backup(jobs, settings, tag="auto"):
+def make_backup(jobs, settings, tag="auto", groups=None):
+    """Save jobs (and settings, without alert credentials) to the backups folder."""
     os.makedirs(BACKUP_DIR, exist_ok=True)
     skip = set(RUNTIME_KEYS) | {"last_result", "last_run"}
-    data = {"app": APP_ID, "version": VERSION, "kind": "backup", "tag": tag,
-            "created": datetime.now().isoformat(timespec="seconds"),
+    data = {"app": APP_ID, "version": VERSION, "schema": SCHEMA_VERSION, "kind": "backup",
+            "tag": tag, "created": datetime.now().isoformat(timespec="seconds"),
             "jobs": [{k: v for k, v in j.items() if k not in skip} for j in jobs],
+            "groups": list(groups or []),
             "settings": {k: v for k, v in settings.items()
-                         if k not in ("main_geom", "tests_geom", "dlg_geom")}}
+                         if k not in ("main_geom", "tests_geom", "dlg_geom") + SECRET_KEYS}}
     path = os.path.join(BACKUP_DIR, f"{datetime.now():%Y-%m-%d_%H%M%S}_{tag}.json")
     write_json(path, data)
     return path
@@ -1336,6 +1462,2496 @@ def prune_backups(keep):
             os.remove(b["path"])
         except Exception:
             pass
+
+
+# ======================================================================== Clickue 4.5
+# ---- data folder helpers --------------------------------------------------------------------
+SCHEMA_VERSION = 2          # jobs.json / exports: 1 = up to 4.4, 2 = 4.5 (groups, new steps)
+
+
+def data_path(*parts):
+    """A path inside the data folder (computed when called, so tests can move DATA_DIR)."""
+    return os.path.join(DATA_DIR, *parts)
+
+
+def is_clickue_data_dir(path):
+    """True only for a folder that is plainly Clickue's own data folder. Used before any
+    recursive delete, so a wrong or tampered path can never remove something else."""
+    try:
+        p = os.path.abspath(path)
+    except Exception:
+        return False
+    if os.path.basename(p) not in (APP_ID, "ClickueData", "." + APP_ID):
+        return False
+    home = os.path.abspath(os.path.expanduser("~"))
+    drive_root = os.path.abspath(os.path.splitdrive(p)[0] + os.sep)
+    if p in (home, drive_root, os.path.abspath(os.sep)) or len(p.rstrip("\\/")) < 6:
+        return False
+    if not os.path.isdir(p) or os.path.islink(p):
+        return False
+    try:
+        names = set(os.listdir(p))
+    except Exception:
+        return False
+    return not names or bool(names & {"settings.json", "jobs.json", "clickue.log", "backups",
+                                     "test_history.json", "click_history.csv"})
+
+
+# ---- protected secrets (Windows DPAPI, opt-in) ----------------------------------------------
+if IS_WIN:
+    class _DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+    try:
+        crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+        crypt32.CryptProtectData.argtypes = [
+            ctypes.POINTER(_DATA_BLOB), wt.LPCWSTR, ctypes.POINTER(_DATA_BLOB), ctypes.c_void_p,
+            ctypes.c_void_p, wt.DWORD, ctypes.POINTER(_DATA_BLOB)]
+        crypt32.CryptProtectData.restype = wt.BOOL
+        crypt32.CryptUnprotectData.argtypes = [
+            ctypes.POINTER(_DATA_BLOB), ctypes.c_void_p, ctypes.POINTER(_DATA_BLOB),
+            ctypes.c_void_p, ctypes.c_void_p, wt.DWORD, ctypes.POINTER(_DATA_BLOB)]
+        crypt32.CryptUnprotectData.restype = wt.BOOL
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        kernel32.LocalFree.restype = ctypes.c_void_p
+        HAVE_DPAPI = True
+    except Exception:
+        HAVE_DPAPI = False
+else:
+    HAVE_DPAPI = False
+
+_DPAPI_ENTROPY = b"Clickue protected text v1"
+
+
+def _blob(data):
+    buf = ctypes.create_string_buffer(data, len(data))
+    return _DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))), buf
+
+
+def protect_text(text):
+    """Encrypt text for this Windows user account (DPAPI). Returns 'dpapi:<base64>'."""
+    if not HAVE_DPAPI:
+        raise RuntimeError("protected storage needs Windows")
+    data_in, b1 = _blob(str(text).encode("utf-8"))
+    ent, b2 = _blob(_DPAPI_ENTROPY)
+    out = _DATA_BLOB()
+    if not crypt32.CryptProtectData(ctypes.byref(data_in), "Clickue", ctypes.byref(ent), None,
+                                    None, 0x1, ctypes.byref(out)):      # UI_FORBIDDEN
+        raise RuntimeError("Windows couldn't protect the text")
+    try:
+        raw = ctypes.string_at(out.pbData, out.cbData)
+    finally:
+        kernel32.LocalFree(ctypes.cast(out.pbData, ctypes.c_void_p))
+    return "dpapi:" + base64.b64encode(raw).decode("ascii")
+
+
+def unprotect_text(value):
+    """Decrypt a 'dpapi:' value. Raises ValueError when it can't be read here (another
+    Windows account or computer)."""
+    if not str(value).startswith("dpapi:"):
+        return str(value)
+    if not HAVE_DPAPI:
+        raise ValueError("protected text can only be read on Windows")
+    try:
+        raw = base64.b64decode(str(value)[6:])
+    except Exception:
+        raise ValueError("protected text is damaged")
+    data_in, b1 = _blob(raw)
+    ent, b2 = _blob(_DPAPI_ENTROPY)
+    out = _DATA_BLOB()
+    if not crypt32.CryptUnprotectData(ctypes.byref(data_in), None, ctypes.byref(ent), None,
+                                      None, 0x1, ctypes.byref(out)):
+        raise ValueError("this text was protected by another Windows account or computer")
+    try:
+        return ctypes.string_at(out.pbData, out.cbData).decode("utf-8")
+    finally:
+        kernel32.LocalFree(ctypes.cast(out.pbData, ctypes.c_void_p))
+
+
+# ---- limits and validation for saved / imported jobs -----------------------------------------
+MAX_IMPORT_BYTES = 50 * 1024 * 1024
+MAX_JOBS = 2000
+MAX_STEPS = 2000
+MAX_TYPE_CHARS = 20_000          # typing is ~80 characters a second
+MAX_PASTE_CHARS = 200_000
+MAX_PNG_B64 = 6 * 1024 * 1024
+MAX_PNG_SIDE = 8000
+MAX_PATH_POINTS = 2000
+MAX_NAME = 200
+MAX_REPEAT = 10_000
+MAX_RUN_LIMIT_S = 24 * 3600
+VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
+STEP_TYPES = ("click", "wait", "waitpic", "type", "paste", "key", "move", "drag", "mouse",
+              "scroll", "keyhold", "if", "else", "end", "repeat", "set", "group")
+PASTE_KEYS = ("Ctrl+V", "Shift+Insert", "Ctrl+Shift+V")
+COND_KINDS = ("picture", "window", "var")
+VAR_OPS = ("==", "!=", "<", ">", "<=", ">=", "contains")
+
+
+def _clamp_num(v, lo, hi, default, as_int=True):
+    try:
+        f = float(v)
+        if f != f or f in (float("inf"), float("-inf")):
+            raise ValueError
+    except Exception:
+        return default
+    f = min(hi, max(lo, f))
+    return int(round(f)) if as_int else round(f, 3)
+
+
+def _clean_str(v, n, default=""):
+    if v is None:
+        return default
+    if not isinstance(v, str):
+        v = str(v)
+    return v[:n]
+
+
+def clean_png(value):
+    """A saved picture (PNG, base64) if it is a reasonable, readable image, else ''."""
+    if not isinstance(value, str) or not value:
+        return ""
+    if len(value) > MAX_PNG_B64:
+        return ""
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except Exception:
+        return ""
+    if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ""
+    if HAVE_PIL:
+        try:
+            with Image.open(io.BytesIO(raw)) as im:
+                w, h = im.size
+            if not (1 <= w <= MAX_PNG_SIDE and 1 <= h <= MAX_PNG_SIDE):
+                return ""
+        except Exception:
+            return ""
+    return value
+
+
+def _clean_point(v):
+    if isinstance(v, (list, tuple)) and len(v) == 2:
+        return [_clamp_num(v[0], -100000, 100000, 0), _clamp_num(v[1], -100000, 100000, 0)]
+    return None
+
+
+def _clean_rect(v):
+    if isinstance(v, (list, tuple)) and len(v) == 4:
+        r = [_clamp_num(x, -100000, 100000, 0) for x in v]
+        if r[2] >= 16 and r[3] >= 16:
+            return r
+    return None
+
+
+def _clean_path(v):
+    """[[t, x, y], ...] with increasing times."""
+    out, last = [], -1.0
+    for p in (v if isinstance(v, list) else [])[:MAX_PATH_POINTS]:
+        if not (isinstance(p, (list, tuple)) and len(p) == 3):
+            continue
+        t = _clamp_num(p[0], 0, 3600, 0, as_int=False)
+        t = max(t, last)
+        last = t
+        out.append([t, _clamp_num(p[1], -100000, 100000, 0), _clamp_num(p[2], -100000, 100000, 0)])
+    return out
+
+
+def clean_cond(c):
+    c = c if isinstance(c, dict) else {}
+    kind = c.get("kind") if c.get("kind") in COND_KINDS else "picture"
+    out = {"kind": kind}
+    if kind == "picture":
+        out.update(png=clean_png(c.get("png")),
+                   state="gone" if c.get("state") == "gone" else "shown",
+                   area=_clean_rect(c.get("area")),
+                   wait=_clamp_num(c.get("wait", 0), 0, STEP_MAX_WAIT_S, 0, as_int=False))
+    elif kind == "window":
+        out.update(title=_clean_str(c.get("title"), 300).strip(),
+                   state="closed" if c.get("state") == "closed" else "open",
+                   wait=_clamp_num(c.get("wait", 0), 0, STEP_MAX_WAIT_S, 0, as_int=False))
+    else:
+        var = _clean_str(c.get("var"), 32).strip()
+        out.update(var=var if VAR_NAME_RE.match(var) else "",
+                   op=c.get("op") if c.get("op") in VAR_OPS else "==",
+                   value=_clean_str(c.get("value"), 1000))
+    return out
+
+
+def sanitize_step(st):
+    """Validate one step. Returns (step, problem). A step that can't be made safe returns
+    (None, why). Unknown fields are dropped; numbers are clamped to sensible ranges."""
+    if not isinstance(st, dict):
+        return None, "a step isn't readable"
+    t = st.get("type")
+    if t not in STEP_TYPES:
+        return None, f"unknown step type “{_clean_str(t, 20)}”"
+    s = {"type": t}
+    if st.get("label"):
+        s["label"] = _clean_str(st.get("label"), 120)
+    if t not in ("else", "end"):
+        s["retries"] = _clamp_num(st.get("retries", 0), 0, 10, 0)
+        s["retry_wait"] = _clamp_num(st.get("retry_wait", 2), 0, 3600, 2, as_int=False)
+        s["on_fail"] = "continue" if st.get("on_fail") == "continue" else "stop"
+        s["careful"] = bool(st.get("careful", False))
+    btn = st.get("button") if st.get("button") in ("left", "right", "middle") else "left"
+    if t == "click":
+        s.update(x=_clamp_num(st.get("x", 0), -100000, 100000, 0),
+                 y=_clamp_num(st.get("y", 0), -100000, 100000, 0),
+                 button=btn, clicks=_clamp_num(st.get("clicks", 1), 1, 3, 1),
+                 use_image=bool(st.get("use_image", False)),
+                 snap_png=clean_png(st.get("snap_png")), snap_spot=_clean_point(st.get("snap_spot")),
+                 pick_dpi=_clamp_num(st.get("pick_dpi"), 48, 960, None) if st.get("pick_dpi") else None,
+                 pick_screen=_clean_point(st.get("pick_screen")),
+                 image_fallback="position" if st.get("image_fallback") == "position" else "wait",
+                 target_mode="window" if st.get("target_mode") == "window" else "screen",
+                 window_title=_clean_str(st.get("window_title"), 300),
+                 window_class=_clean_str(st.get("window_class"), 200),
+                 rel_x=_clamp_num(st.get("rel_x", 0), -100000, 100000, 0),
+                 rel_y=_clamp_num(st.get("rel_y", 0), -100000, 100000, 0),
+                 client_w=_clamp_num(st.get("client_w", 0), 0, 100000, 0),
+                 client_h=_clamp_num(st.get("client_h", 0), 0, 100000, 0),
+                 bring_to_front=bool(st.get("bring_to_front", True)),
+                 scale_with_window=bool(st.get("scale_with_window", False)),
+                 scale_with_screen=bool(st.get("scale_with_screen", False)))
+        if not s["snap_png"]:
+            s["use_image"] = False
+    elif t == "wait":
+        lo = _clamp_num(st.get("min", 1), 0, 86400, 1, as_int=False)
+        hi = _clamp_num(st.get("max", lo), 0, 86400, lo, as_int=False)
+        s.update(min=min(lo, hi), max=max(lo, hi))
+    elif t == "waitpic":
+        png = clean_png(st.get("png"))
+        if not png:
+            return None, "a “wait for a picture” step has no usable picture"
+        s.update(png=png, until="disappears" if st.get("until") == "disappears" else "appears",
+                 click_it=bool(st.get("click_it", False)), button=btn,
+                 clicks=_clamp_num(st.get("clicks", 1), 1, 3, 1),
+                 timeout=_clamp_num(st.get("timeout", 60), 1, STEP_MAX_WAIT_S, 60),
+                 on_timeout="continue" if st.get("on_timeout") == "continue" else "stop",
+                 area=_clean_rect(st.get("area")))
+    elif t in ("type", "paste"):
+        limit = MAX_TYPE_CHARS if t == "type" else MAX_PASTE_CHARS
+        text = st.get("text", "")
+        if not isinstance(text, str):
+            text = str(text)
+        if len(text) > limit:
+            return None, f"a “{t}” step has more than {limit:,} characters"
+        s.update(text=text, use_vars=bool(st.get("use_vars", False)),
+                 secret=bool(st.get("secret", False)))
+        enc = st.get("text_enc")
+        if s["secret"] and isinstance(enc, str) and enc.startswith("dpapi:") \
+                and len(enc) < 4 * limit + 4096:
+            s["text_enc"] = enc
+            s["text"] = ""
+        if t == "paste":
+            s.update(restore_clipboard=bool(st.get("restore_clipboard", True)),
+                     paste_keys=st.get("paste_keys") if st.get("paste_keys") in PASTE_KEYS
+                     else "Ctrl+V",
+                     settle=_clamp_num(st.get("settle", 0.3), 0.05, 5, 0.3, as_int=False))
+    elif t == "key":
+        keys = _clean_str(st.get("keys"), 60).strip()
+        try:
+            parse_combo(keys)
+        except ValueError as e:
+            return None, f"a “press keys” step is invalid ({e})"
+        s.update(keys=keys, times=_clamp_num(st.get("times", 1), 1, 100, 1))
+    elif t in ("move", "drag"):
+        path = _clean_path(st.get("path"))
+        if len(path) < (2 if t == "drag" else 1):
+            return None, f"a “{t}” step has no usable path"
+        s["path"] = path
+        if t == "drag":
+            s["button"] = btn
+    elif t == "mouse":
+        s.update(button=btn, action="up" if st.get("action") == "up" else "down",
+                 x=_clamp_num(st.get("x"), -100000, 100000, None) if st.get("x") is not None else None,
+                 y=_clamp_num(st.get("y"), -100000, 100000, None) if st.get("y") is not None else None)
+    elif t == "scroll":
+        s.update(x=_clamp_num(st.get("x"), -100000, 100000, None) if st.get("x") is not None else None,
+                 y=_clamp_num(st.get("y"), -100000, 100000, None) if st.get("y") is not None else None,
+                 amount=_clamp_num(st.get("amount", -3), -100, 100, -3),
+                 horizontal=bool(st.get("horizontal", False)))
+    elif t == "keyhold":
+        keys = _clean_str(st.get("keys"), 30).strip()
+        try:
+            if len(parse_combo(keys)) != 1:
+                raise ValueError("hold one key at a time")
+        except ValueError as e:
+            return None, f"a “hold key” step is invalid ({e})"
+        s.update(keys=keys, action="up" if st.get("action") == "up" else "down")
+    elif t == "if":
+        s["cond"] = clean_cond(st.get("cond"))
+    elif t == "repeat":
+        s.update(mode="until" if st.get("mode") == "until" else "times",
+                 times=_clamp_num(st.get("times", 3), 1, MAX_REPEAT, 3),
+                 max_times=_clamp_num(st.get("max_times", 100), 1, MAX_REPEAT, 100),
+                 max_seconds=_clamp_num(st.get("max_seconds", 600), 1, MAX_RUN_LIMIT_S, 600))
+        if s["mode"] == "until":
+            s["cond"] = clean_cond(st.get("cond"))
+    elif t == "set":
+        var = _clean_str(st.get("var"), 32).strip()
+        if not VAR_NAME_RE.match(var):
+            return None, "a “set variable” step has an invalid name"
+        s.update(var=var, op=st.get("op") if st.get("op") in ("set", "add", "sub") else "set",
+                 value=_clean_str(st.get("value"), 1000), persist=bool(st.get("persist", False)))
+    elif t == "group":
+        s["group_id"] = _clean_str(st.get("group_id"), 64)
+    return s, ""
+
+
+def sanitize_steps(steps):
+    """Returns (clean steps, list of problems). Bad steps are left out (and reported)."""
+    out, problems = [], []
+    for st in (steps if isinstance(steps, list) else [])[:MAX_STEPS]:
+        s, why = sanitize_step(st)
+        if s is None:
+            problems.append(why)
+        else:
+            out.append(s)
+    if isinstance(steps, list) and len(steps) > MAX_STEPS:
+        problems.append(f"only the first {MAX_STEPS} steps were kept")
+    return out, problems
+
+
+_JOB_ENUMS = {"button": ("left", "right", "middle"), "kind": ("click", "watch"),
+              "target_mode": ("screen", "window"), "hours_outside": ("wait", "skip"),
+              "watch_trigger": ("gone", "appears"), "image_fallback": ("wait", "position"),
+              "snap_size": ("Small", "Medium", "Large"), "priority": ("high", "normal", "low")}
+_JOB_RANGES = {"clicks": (1, 3), "interval_s": (1, 10 * 365 * 86400),
+               "delay_min_s": (0, 365 * 86400), "delay_max_s": (0, 365 * 86400),
+               "limit_clicks": (1, 10_000_000), "watch_interval_s": (1, 7 * 86400),
+               "watch_confirm": (1, 100), "watch_delay_min_s": (0, 86400),
+               "watch_delay_max_s": (0, 86400), "watch_cooldown_s": (0, 7 * 86400),
+               "run_limit_s": (10, MAX_RUN_LIMIT_S)}
+
+
+def sanitize_job(j):
+    """Validate an imported (untrusted) job. Returns (job, problems). Never runs anything:
+    the result is a plain job dict with known fields, sane numbers and checked pictures."""
+    base = new_job()
+    problems = []
+    if not isinstance(j, dict):
+        return None, ["a job isn't readable"]
+    for k, v in j.items():
+        if k not in base or k in RUNTIME_KEYS or k in ("id", "steps"):
+            continue
+        d = base[k]
+        if k in _JOB_ENUMS:
+            if v in _JOB_ENUMS[k]:
+                base[k] = v
+        elif k in ("snap_png", "watch_png"):
+            base[k] = clean_png(v)
+            if v and not base[k]:
+                problems.append(f"a picture in “{_clean_str(j.get('name'), 40)}” was unusable")
+        elif k in ("snap_spot", "pick_screen"):
+            base[k] = _clean_point(v)
+        elif k in ("watch_area",):
+            base[k] = _clean_rect(v)
+        elif k == "watch_area_screen":
+            base[k] = _clean_point(v[:2]) if isinstance(v, list) and len(v) >= 2 else None
+        elif k == "pick_dpi":
+            base[k] = _clamp_num(v, 48, 960, None) if v else None
+        elif k == "hours_days":
+            base[k] = sorted({int(x) for x in v if isinstance(x, int) and 0 <= x <= 6}) \
+                if isinstance(v, list) else d
+        elif k == "saved_vars":
+            base[k] = {str(a)[:32]: _clean_str(b, 1000) for a, b in v.items()
+                       if VAR_NAME_RE.match(str(a))} if isinstance(v, dict) else {}
+        elif isinstance(d, bool):
+            base[k] = bool(v)
+        elif isinstance(d, int):
+            lo, hi = _JOB_RANGES.get(k, (-100000, 100000))
+            base[k] = _clamp_num(v, lo, hi, d)
+        elif isinstance(d, str):
+            base[k] = _clean_str(v, MAX_NAME if k == "name" else 300)
+    base["name"] = base["name"].strip() or "Imported job"
+    base["steps"], sp = sanitize_steps(j.get("steps", []))
+    problems += sp
+    if base.get("first_time"):
+        try:
+            parse_hms_clock(base["first_time"])
+        except Exception:
+            base["first_time"] = ""
+    for k in ("hours_from", "hours_to"):
+        try:
+            parse_hhmm(base[k])
+        except Exception:
+            base[k] = new_job()[k]
+    return base, problems
+
+
+def sanitize_groups(groups):
+    out, problems = [], []
+    for g in (groups if isinstance(groups, list) else [])[:200]:
+        if not isinstance(g, dict):
+            continue
+        steps, sp = sanitize_steps(g.get("steps", []))
+        problems += sp
+        out.append({"id": _clean_str(g.get("id"), 64) or uuid.uuid4().hex,
+                    "name": _clean_str(g.get("name"), MAX_NAME).strip() or "Group",
+                    "steps": [s for s in steps if s["type"] != "group"]})   # no nesting
+    return out, problems
+
+
+def load_import_file(path):
+    """Read a jobs file someone gave you. Returns (jobs, groups, problems).
+    Raises ValueError with a readable reason for files that can't be used."""
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        raise ValueError(f"can't read the file ({e.strerror})")
+    if size > MAX_IMPORT_BYTES:
+        raise ValueError(f"the file is too large ({size // (1024 * 1024)} MB; the limit is "
+                         f"{MAX_IMPORT_BYTES // (1024 * 1024)} MB)")
+    with open(path, "r", encoding="utf-8") as f:
+        try:
+            data = json.load(f)
+        except Exception:
+            raise ValueError("it isn't a Clickue jobs file (not valid JSON)")
+    raw = data.get("jobs") if isinstance(data, dict) else data
+    if not isinstance(raw, list):
+        raise ValueError("no jobs found in that file")
+    if isinstance(data, dict) and int(_clamp_num(data.get("schema", 1), 0, 999, 1)) > SCHEMA_VERSION:
+        raise ValueError("it was made by a newer Clickue; update Clickue first")
+    raw = [j for j in raw if isinstance(j, dict) and "x" in j and "y" in j][:MAX_JOBS]
+    if not raw:
+        raise ValueError("no jobs found in that file")
+    groups, problems = sanitize_groups(data.get("groups", []) if isinstance(data, dict) else [])
+    jobs = []
+    for j in raw:
+        b, p = sanitize_job(j)
+        problems += p
+        if b:
+            jobs.append(b)
+    return jobs, groups, problems
+
+
+def strip_secret_text(steps):
+    """Copies of the steps with secret text removed (for exports)."""
+    out = []
+    for st in steps or []:
+        s = dict(st)
+        if s.get("secret") and s.get("type") in ("type", "paste"):
+            s.pop("text_enc", None)
+            s["text"] = ""
+            s["secret_missing"] = True
+        out.append(s)
+    return out
+
+
+def risky_step_summary(jobs, groups=()):
+    """Counts of steps that send keyboard input, for the import review message."""
+    n = {"type": 0, "paste": 0, "key": 0, "keyhold": 0}
+    for st in [s for j in jobs for s in j.get("steps", [])] + \
+              [s for g in groups for s in g.get("steps", [])]:
+        if st.get("type") in n:
+            n[st["type"]] += 1
+    return n
+
+
+# ---- variables ({date}, {time}, values set earlier in the run) ------------------------------
+_VAR_RE = re.compile(r"\{\{|\}\}|\{([A-Za-z_][A-Za-z0-9_]{0,31})\}")
+
+
+def builtin_vars(now=None):
+    d = datetime.fromtimestamp(now or time.time())
+    return {"date": d.strftime("%Y-%m-%d"), "time": d.strftime("%H:%M:%S"),
+            "datetime": d.strftime("%Y-%m-%d %H:%M:%S"), "year": d.strftime("%Y"),
+            "month": d.strftime("%m"), "day": d.strftime("%d"), "hour": d.strftime("%H"),
+            "minute": d.strftime("%M"), "weekday": DAY_NAMES[d.weekday()]}
+
+
+def expand_vars(text, values, limit=MAX_PASTE_CHARS):
+    """Replace {name} with its value. {{ and }} give literal braces; unknown names stay as
+    they are. The result is capped at `limit` characters."""
+    def sub(m):
+        tok = m.group(0)
+        if tok == "{{":
+            return "{"
+        if tok == "}}":
+            return "}"
+        name = m.group(1)
+        if name in values:
+            return str(values[name])
+        return tok
+    out = _VAR_RE.sub(sub, str(text))
+    if len(out) > limit:
+        raise ValueError(f"the text is longer than {limit:,} characters after filling in "
+                         f"the variables")
+    return out
+
+
+def _as_number(v):
+    try:
+        f = float(str(v).strip())
+        return int(f) if f.is_integer() else f
+    except Exception:
+        return None
+
+
+def compare_values(a, op, b):
+    if op == "contains":
+        return str(b) in str(a)
+    na, nb = _as_number(a), _as_number(b)
+    if na is not None and nb is not None:
+        a, b = na, nb
+    else:
+        a, b = str(a), str(b)
+    try:
+        return {"==": a == b, "!=": a != b, "<": a < b, ">": a > b, "<=": a <= b,
+                ">=": a >= b}[op]
+    except TypeError:
+        return False
+
+
+# ---- clipboard (for "Paste text") -------------------------------------------------------------
+if IS_WIN:
+    user32.OpenClipboard.argtypes = [wt.HWND]
+    user32.OpenClipboard.restype = wt.BOOL
+    user32.CloseClipboard.restype = wt.BOOL
+    user32.EmptyClipboard.restype = wt.BOOL
+    user32.EnumClipboardFormats.argtypes = [wt.UINT]
+    user32.EnumClipboardFormats.restype = wt.UINT
+    user32.GetClipboardData.argtypes = [wt.UINT]
+    user32.GetClipboardData.restype = wt.HANDLE
+    user32.SetClipboardData.argtypes = [wt.UINT, wt.HANDLE]
+    user32.SetClipboardData.restype = wt.HANDLE
+    user32.RegisterClipboardFormatW.argtypes = [wt.LPCWSTR]
+    user32.RegisterClipboardFormatW.restype = wt.UINT
+    user32.GetClipboardSequenceNumber.restype = wt.DWORD
+    kernel32.GlobalAlloc.argtypes = [wt.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wt.HGLOBAL
+    kernel32.GlobalLock.argtypes = [wt.HGLOBAL]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [wt.HGLOBAL]
+    kernel32.GlobalSize.argtypes = [wt.HGLOBAL]
+    kernel32.GlobalSize.restype = ctypes.c_size_t
+    kernel32.GlobalFree.argtypes = [wt.HGLOBAL]
+    kernel32.GlobalFree.restype = wt.HGLOBAL
+
+# formats whose data isn't a plain memory block (bitmaps, metafiles, palettes, owner-drawn):
+# they can't be copied byte for byte, so a clipboard holding only these isn't restored
+_CLIP_SKIP = {2, 3, 9, 14, 0x0080, 0x0082, 0x0083, 0x008E}
+CLIP_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _clip_open():
+    for _ in range(20):                     # another program may be holding it briefly
+        if user32.OpenClipboard(None):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def clipboard_snapshot():
+    """Copy what's on the clipboard now. Returns (formats [(fmt, bytes)], complete), or
+    (None, False) when the clipboard couldn't be opened (another program is holding it)."""
+    if not IS_WIN:
+        return [], True
+    if not _clip_open():
+        return None, False
+    items, complete, total = [], True, 0
+    try:
+        fmt = user32.EnumClipboardFormats(0)
+        while fmt:
+            if fmt in _CLIP_SKIP:
+                complete = False
+            else:
+                h = user32.GetClipboardData(fmt)
+                if h:
+                    size = kernel32.GlobalSize(h)
+                    if total + size > CLIP_MAX_BYTES:
+                        complete = False
+                    elif size:
+                        p = kernel32.GlobalLock(h)
+                        if p:
+                            try:
+                                items.append((fmt, ctypes.string_at(p, size)))
+                                total += size
+                            finally:
+                                kernel32.GlobalUnlock(h)
+            fmt = user32.EnumClipboardFormats(fmt)
+    finally:
+        user32.CloseClipboard()
+    return items, complete
+
+
+def _clip_put(fmt, data):
+    h = kernel32.GlobalAlloc(0x0002, max(1, len(data)))       # GMEM_MOVEABLE
+    if not h:
+        return False
+    p = kernel32.GlobalLock(h)
+    if not p:
+        kernel32.GlobalFree(h)
+        return False
+    ctypes.memmove(p, data, len(data))
+    kernel32.GlobalUnlock(h)
+    if not user32.SetClipboardData(fmt, h):
+        kernel32.GlobalFree(h)
+        return False
+    return True
+
+
+def clipboard_set_text(text, private=True):
+    """Put text on the clipboard. private=True asks Windows to keep it out of clipboard
+    history (Win+V) and cloud clipboard sync."""
+    if not IS_WIN:
+        return False
+    if not _clip_open():
+        return False
+    try:
+        user32.EmptyClipboard()
+        ok = _clip_put(13, (str(text) + "\0").encode("utf-16-le"))      # CF_UNICODETEXT
+        if private:
+            for name, val in (("ExcludeClipboardContentFromMonitorProcessing", b"\0\0\0\0"),
+                              ("CanIncludeInClipboardHistory", b"\0\0\0\0"),
+                              ("CanUploadToCloudClipboard", b"\0\0\0\0")):
+                f = user32.RegisterClipboardFormatW(name)
+                if f:
+                    _clip_put(f, val)
+        return ok
+    finally:
+        user32.CloseClipboard()
+
+
+def clipboard_restore(items):
+    if not IS_WIN:
+        return False
+    if not _clip_open():
+        return False
+    try:
+        user32.EmptyClipboard()
+        return all(_clip_put(f, d) for f, d in items)
+    finally:
+        user32.CloseClipboard()
+
+
+def paste_text(text, keys="Ctrl+V", restore=True, settle=0.3):
+    """Paste text into whatever has keyboard focus: put it on the clipboard, press Ctrl+V,
+    then put the previous clipboard back. Returns (ok, message). The message never
+    contains the text."""
+    if not IS_WIN:
+        return False, "pasting only works on Windows"
+    saved, complete = clipboard_snapshot() if restore else ([], True)
+    if saved is None:            # couldn't read it: don't touch it (the step can retry)
+        return False, "couldn't read the clipboard (another program is holding it)"
+    if not clipboard_set_text(text, private=True):
+        return False, "couldn't use the clipboard (another program is holding it)"
+    time.sleep(0.05)
+    ok, msg = press_keys(keys)
+    time.sleep(max(0.05, settle))              # let the program read the clipboard first
+    note = ""
+    if restore:
+        if saved and complete:
+            note = "" if clipboard_restore(saved) else " (couldn't put your clipboard back)"
+        elif saved:
+            clipboard_restore(saved)
+            note = " (your clipboard was only partly put back: it held a format Clickue " \
+                   "can't copy)"
+        else:
+            clipboard_restore([])           # leave it empty rather than holding the pasted text
+            if not complete:
+                note = " (your clipboard held a format Clickue can't copy, so it was cleared)"
+    return ok, ("pasted" + note) if ok else msg
+
+
+# ---- low-level input with guaranteed release -------------------------------------------------
+MOUSE_WHEEL, MOUSE_HWHEEL = 0x0800, 0x01000
+
+
+class InputGuard:
+    """Remembers every mouse button and key Clickue is holding down, so they can always be
+    released: when a run stops, fails, is cancelled, times out, or the app exits."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.buttons, self.keys = [], []
+
+    def button(self, button, down):
+        if not IS_WIN:
+            return False, "the mouse only works on Windows"
+        dn, up = MOUSE_FLAGS.get(button, MOUSE_FLAGS["left"])
+        with self.lock:
+            if down:
+                if button not in self.buttons:
+                    self.buttons.append(button)
+            elif button in self.buttons:
+                self.buttons.remove(button)
+        user32.mouse_event(dn if down else up, 0, 0, 0, 0)
+        return True, "pressed" if down else "released"
+
+    def key(self, vk, down):
+        if not IS_WIN:
+            return False, "keys only work on Windows"
+        with self.lock:
+            if down:
+                if vk not in self.keys:
+                    self.keys.append(vk)
+            elif vk in self.keys:
+                self.keys.remove(vk)
+        ext = 0x0001 if vk in EXTENDED_VKS else 0
+        _send([_key_input(vk, flags=ext | (0 if down else 0x0002))])
+        return True, "pressed" if down else "released"
+
+    def holding(self):
+        with self.lock:
+            return bool(self.buttons or self.keys)
+
+    def release_all(self):
+        """Let go of everything still held down. Safe to call any time."""
+        with self.lock:
+            buttons, keys = list(self.buttons), list(self.keys)
+            self.buttons, self.keys = [], []
+        if not IS_WIN:
+            return
+        for b in buttons:
+            try:
+                user32.mouse_event(MOUSE_FLAGS.get(b, MOUSE_FLAGS["left"])[1], 0, 0, 0, 0)
+            except Exception:
+                pass
+        for vk in reversed(keys):
+            try:
+                ext = 0x0001 if vk in EXTENDED_VKS else 0
+                _send([_key_input(vk, flags=ext | 0x0002)])
+            except Exception:
+                pass
+
+
+HELD = InputGuard()
+import atexit                                       # noqa: E402
+atexit.register(HELD.release_all)
+
+
+def move_mouse(x, y):
+    if not IS_WIN:
+        return False, "the mouse only works on Windows"
+    if not user32.SetCursorPos(int(x), int(y)):
+        return False, "could not move the mouse (no active screen)"
+    return True, "moved"
+
+
+def scroll_wheel(amount, horizontal=False):
+    """Scroll by `amount` notches (negative = down / left)."""
+    if not IS_WIN:
+        return False, "the mouse only works on Windows"
+    user32.mouse_event(MOUSE_HWHEEL if horizontal else MOUSE_WHEEL, 0, 0, int(amount) * 120, 0)
+    return True, "scrolled"
+
+
+# ---- step blocks: "if … else … end", "repeat … end" -----------------------------------------
+MAX_NESTING = 8
+
+
+def parse_blocks(steps):
+    """Turn the flat step list into a tree. Returns (nodes, errors).
+    A node is {"i": index, "st": step} plus "body"/"orelse" lists for if/repeat."""
+    root = []
+    stack = [("root", root, None)]
+    errors = []
+    for i, st in enumerate(steps or []):
+        t = st.get("type")
+        if t in ("if", "repeat"):
+            node = {"i": i, "st": st, "body": [], "orelse": []}
+            stack[-1][1].append(node)
+            if len(stack) > MAX_NESTING:
+                errors.append(f"step {i + 1}: blocks are nested too deeply (max {MAX_NESTING})")
+            stack.append((t, node["body"], node))
+        elif t == "else":
+            kind, _, node = stack[-1]
+            if kind != "if" or node.get("has_else"):
+                errors.append(f"step {i + 1}: “Otherwise” without a matching “If”")
+                continue
+            node["has_else"] = True
+            stack[-1] = ("else", node["orelse"], node)
+        elif t == "end":
+            if len(stack) == 1:
+                errors.append(f"step {i + 1}: “End” without a matching “If” or “Repeat”")
+                continue
+            stack.pop()
+        else:
+            stack[-1][1].append({"i": i, "st": st})
+    for kind, _, node in stack[1:]:
+        errors.append(f"step {node['i'] + 1}: this “{'If' if kind in ('if', 'else') else 'Repeat'}"
+                      f"” has no “End”")
+    return root, errors
+
+
+def step_depths(steps):
+    """Indentation level of each step (for the timeline)."""
+    out, d = [], 0
+    for st in steps or []:
+        t = st.get("type")
+        if t in ("else", "end"):
+            d = max(0, d - 1)
+        out.append(d)
+        if t in ("if", "repeat", "else"):
+            d += 1
+    return out
+
+
+# ---- target adapters ------------------------------------------------------------------------
+ADAPTER_API_VERSION = 1
+
+
+class TargetAdapter:
+    """How Clickue finds something on screen. To add support for another kind of target,
+    subclass this in src/clickue.py and call register_adapter() - the workflow engine only
+    talks to adapters through these methods (see docs/DEVELOPER_GUIDE.md, "Target
+    adapters"). Adapters are part of the program: Clickue never loads adapter code from
+    files or the internet.
+
+    api        ADAPTER_API_VERSION it was written for
+    id         short key stored in jobs ("picture", "window", "screen", ...)
+    label      shown to the user
+    needs      packages it needs (shown in About when missing)
+    """
+    api = ADAPTER_API_VERSION
+    id = ""
+    label = ""
+    needs = ()
+
+    def available(self):
+        """(ok, why-not)."""
+        return True, ""
+
+    def handles(self, target):
+        """True if this adapter is the one that finds `target` (a job or a click step)."""
+        return False
+
+    def describe(self, target):
+        """One line: how the target will be found, and the fallback (if any)."""
+        return self.label
+
+    def locate(self, target, activate=False, check_cover=True):
+        """Where to click now: (ok, x, y, message, how-it-was-found). Must not click."""
+        return False, 0, 0, "not supported", ""
+
+    def check(self, cond):
+        """For conditions: (true?, short note). Must not click or type."""
+        return False, "not supported"
+
+
+ADAPTERS = []
+
+
+def register_adapter(adapter):
+    if getattr(adapter, "api", 0) != ADAPTER_API_VERSION or not adapter.id:
+        raise ValueError(f"adapter {adapter!r} was written for another adapter API version")
+    ADAPTERS[:] = [a for a in ADAPTERS if a.id != adapter.id] + [adapter]
+    return adapter
+
+
+class PictureAdapter(TargetAdapter):
+    id, label, needs = "picture", "By picture", ("opencv-python-headless", "numpy", "pillow")
+
+    def available(self):
+        return (True, "") if HAVE_CV else (False, "picture matching isn't installed")
+
+    def handles(self, target):
+        return bool(target.get("use_image") and target.get("snap_png"))
+
+    def describe(self, target):
+        fb = ("then the saved position if the picture isn't found (you chose this)"
+              if target.get("image_fallback") == "position"
+              else "no fallback: if the picture isn't found, nothing is clicked")
+        where = " inside the window" if target.get("target_mode") == "window" else ""
+        return f"Finds the saved picture{where}; {fb}"
+
+    def locate(self, target, activate=False, check_cover=True):
+        return locate_spot(target, activate=activate, check_cover=check_cover)
+
+    def check(self, cond):
+        if not HAVE_CV:
+            return False, "picture matching isn't installed"
+        if not cond.get("png"):
+            return False, "no picture saved"
+        if not screen_available():
+            return False, "screen locked"
+        found, x, y, score, sc = picture_on_screen(cond["png"], area=cond.get("area"))
+        shown = cond.get("state", "shown") == "shown"
+        return (found if shown else not found), (f"picture showing ({score:.0%})" if found
+                                                  else f"picture not showing (best {score:.0%})")
+
+
+class WindowAdapter(TargetAdapter):
+    id, label = "window", "Inside a window"
+
+    def available(self):
+        return (True, "") if IS_WIN else (False, "window targets need Windows")
+
+    def handles(self, target):
+        return target.get("target_mode") == "window" and bool(target.get("window_title"))
+
+    def describe(self, target):
+        return (f"Spot inside the window “{short_title(target.get('window_title', ''), 40)}”; "
+                f"nothing is clicked if the window isn't open or something covers it")
+
+    def locate(self, target, activate=False, check_cover=True):
+        ok, x, y, msg = resolve_target(target, activate=activate, check_cover=check_cover)
+        return ok, x, y, msg, "window position"
+
+    def check(self, cond):
+        title = cond.get("title", "")
+        if not title:
+            return False, "no window title"
+        h = find_window(title, "") if IS_WIN else None
+        is_open = bool(h)
+        want_open = cond.get("state", "open") == "open"
+        return (is_open if want_open else not is_open), ("window is open" if is_open
+                                                          else "window isn't open")
+
+
+class ScreenPositionAdapter(TargetAdapter):
+    id, label = "screen", "Fixed screen position"
+
+    def handles(self, target):
+        return True
+
+    def describe(self, target):
+        return (f"Fixed position ({target.get('x', 0)}, {target.get('y', 0)}): not verified - "
+                f"only use it for things that never move")
+
+    def locate(self, target, activate=False, check_cover=True):
+        ok, x, y, msg = resolve_target(target, activate=activate, check_cover=check_cover)
+        return ok, x, y, msg, "saved position"
+
+
+for _a in (PictureAdapter(), WindowAdapter(), ScreenPositionAdapter()):
+    register_adapter(_a)
+
+
+def adapter_for(target):
+    """The adapter that will find this job's or step's click target."""
+    for a in ADAPTERS:
+        if a.handles(target) and a.available()[0]:
+            return a
+    return ADAPTERS[-1]
+
+
+PLANNED_ADAPTERS = (
+    ("ocr", "Text on screen (OCR)", "planned for the next release"),
+    ("uia", "Windows controls (UI Automation)", "planned"),
+    ("browser", "Web page elements (browser integration)", "planned"),
+)
+
+
+def check_condition(cond):
+    """Evaluate an If / Repeat-until condition once: (true?, note). Never sends input."""
+    kind = cond.get("kind", "picture")
+    if kind == "var":
+        return False, "variables are checked by the run"
+    for a in ADAPTERS:
+        if a.id == kind:
+            ok, why = a.available()
+            if not ok:
+                return False, why
+            return a.check(cond)
+    return False, f"unknown condition “{kind}”"
+
+
+def describe_cond(c):
+    c = c or {}
+    k = c.get("kind", "picture")
+    wait = c.get("wait", 0)
+    w = f" (wait up to {fmt_dur(wait)})" if wait else ""
+    if k == "picture":
+        return ("the picture is showing" if c.get("state", "shown") == "shown"
+                else "the picture is NOT showing") + w
+    if k == "window":
+        t = short_title(c.get("title", ""), 30)
+        return (f"window “{t}” is open" if c.get("state", "open") == "open"
+                else f"window “{t}” is NOT open") + w
+    return f"{{{c.get('var', '?')}}} {c.get('op', '==')} “{short_title(str(c.get('value', '')), 20)}”"
+
+
+def describe_step(st, private=False, groups=None):
+    """(what, details) for the timeline. private=True never shows typed/pasted text
+    (used for logs and the run history)."""
+    t = st.get("type")
+    label = st.get("label")
+    if t == "click":
+        how = ("by picture" if st.get("use_image") and st.get("snap_png") else
+               f"in window “{short_title(st.get('window_title', ''), 20)}”"
+               if st.get("target_mode") == "window" else "fixed spot")
+        d = (f"{st.get('button', 'left')} {'double ' if st.get('clicks') == 2 else ''}"
+             f"click at ({st.get('x')}, {st.get('y')}), {how}")
+        w = "Click"
+    elif t == "wait":
+        lo, hi = st.get("min", 1), st.get("max", st.get("min", 1))
+        w, d = "Wait", (f"{fmt_secs(lo)}" if lo == hi else
+                        f"{fmt_secs(lo)} to {fmt_secs(hi)} (random)")
+    elif t in ("type", "paste"):
+        txt = st.get("text", "")
+        w = "Type text" if t == "type" else "Paste text"
+        if st.get("secret"):
+            d = "•••• (secret, protected)" if st.get("text_enc") else "•••• (secret: enter it again)"
+        elif private:
+            d = f"{len(txt)} characters"
+        else:
+            d = (txt[:60] + "…") if len(txt) > 60 else txt
+            d = d.replace("\n", " ⏎ ")
+        if st.get("use_vars"):
+            d += "  · fills in {variables}"
+        if t == "paste" and not st.get("restore_clipboard", True):
+            d += "  · leaves it on the clipboard"
+    elif t == "key":
+        w, d = "Press keys", st.get("keys", "") + (f" × {st['times']}" if st.get("times", 1) > 1 else "")
+    elif t == "waitpic":
+        what = ("until it appears, then click it" if st.get("until", "appears") == "appears"
+                and st.get("click_it") else
+                "until it appears" if st.get("until", "appears") == "appears"
+                else "until it goes away")
+        then = "stop the chain" if st.get("on_timeout", "stop") == "stop" else "continue"
+        w, d = "Wait for picture", (f"{what} · up to {fmt_dur(int(st.get('timeout', 60)))}, "
+                                    f"then {then}")
+    elif t == "move":
+        p = st.get("path") or [[0, 0, 0]]
+        w, d = "Move mouse", (f"to ({p[-1][1]}, {p[-1][2]}) · {len(p)} points · "
+                              f"{fmt_secs(p[-1][0])}")
+    elif t == "drag":
+        p = st.get("path") or [[0, 0, 0], [0, 0, 0]]
+        w, d = "Drag", (f"{st.get('button', 'left')} from ({p[0][1]}, {p[0][2]}) to "
+                        f"({p[-1][1]}, {p[-1][2]}) · {fmt_secs(p[-1][0])}")
+    elif t == "mouse":
+        at = f" at ({st.get('x')}, {st.get('y')})" if st.get("x") is not None else ""
+        w, d = ("Mouse button down" if st.get("action") == "down" else "Mouse button up"), \
+            f"{st.get('button', 'left')}{at}"
+    elif t == "scroll":
+        n = int(st.get("amount", 0))
+        dirn = ("left" if n < 0 else "right") if st.get("horizontal") else ("down" if n < 0 else "up")
+        at = f" at ({st.get('x')}, {st.get('y')})" if st.get("x") is not None else ""
+        w, d = "Scroll", f"{abs(n)} notch{'es' if abs(n) != 1 else ''} {dirn}{at}"
+    elif t == "keyhold":
+        w, d = ("Hold key down" if st.get("action") == "down" else "Release key"), st.get("keys", "")
+    elif t == "if":
+        w, d = "If", describe_cond(st.get("cond"))
+    elif t == "else":
+        w, d = "Otherwise", ""
+    elif t == "end":
+        w, d = "End", ""
+    elif t == "repeat":
+        if st.get("mode") == "until":
+            w, d = "Repeat until", (f"{describe_cond(st.get('cond'))} · at most "
+                                    f"{st.get('max_times', 100)}× / {fmt_dur(st.get('max_seconds', 600))}")
+        else:
+            w, d = "Repeat", f"{st.get('times', 3)} times"
+    elif t == "set":
+        op = {"set": "=", "add": "+=", "sub": "-="}.get(st.get("op", "set"), "=")
+        val = st.get("value", "")
+        w, d = "Set variable", (f"{{{st.get('var', '')}}} {op} “{short_title(val, 30)}”"
+                                + ("  · remembered between runs" if st.get("persist") else ""))
+    elif t == "group":
+        name = next((g["name"] for g in (groups or []) if g.get("id") == st.get("group_id")),
+                    "(missing group)")
+        w, d = "Use group", f"“{name}”"
+    else:
+        w, d = str(t), "(unknown step - it will stop the run)"
+    extras = []
+    if st.get("retries"):
+        extras.append(f"retry {st['retries']}×")
+    if st.get("on_fail") == "continue" and t not in ("else", "end"):
+        extras.append("continue if it fails")
+    if st.get("careful"):
+        extras.append("⚠ careful")
+    if extras:
+        d = f"{d}  · {' · '.join(extras)}"
+    if label:
+        d = f"{label}: {d}"
+    return w, d
+
+
+def fmt_secs(v):
+    """2 s, 0.4 s, 1 min 30 s (keeps tenths for recorded delays)."""
+    try:
+        v = float(v)
+    except Exception:
+        return str(v)
+    if v < 60 and not float(v).is_integer():
+        return f"{v:.1f}s"
+    return fmt_dur(int(round(v)))
+
+
+# ---- jobs that may get in each other's way -----------------------------------------------------
+def job_targets(job):
+    """What a job clicks or types into: window titles, and fixed spots (40-px cells)."""
+    out = set()
+
+    def add(t):
+        if t.get("target_mode") == "window" and t.get("window_title"):
+            out.add(("window", t["window_title"].strip().lower()))
+        elif not (t.get("use_image") and t.get("snap_png")):
+            out.add(("spot", int(t.get("x", 0)) // 40, int(t.get("y", 0)) // 40))
+
+    if job.get("main_click", True) and not (is_watch(job) and job.get("watch_click_picture")):
+        add(job)
+    for st in job.get("steps") or []:
+        if st.get("type") == "click":
+            add(st)
+    return out
+
+
+def find_conflicts(jobs, job=None):
+    """Pairs of running jobs that click the same window or spot: they take turns, but one
+    may change what the other expects to see. Returns [(name_a, name_b, why)]."""
+    act = [j for j in jobs if j.get("enabled") or j is job]
+    out = []
+    for i, a in enumerate(act):
+        for b in act[i + 1:]:
+            if job is not None and job not in (a, b):
+                continue
+            common = job_targets(a) & job_targets(b)
+            if not common:
+                continue
+            kind = sorted(common)[0]
+            why = (f"both use the window “{kind[1]}”" if kind[0] == "window"
+                   else "both click the same spot on screen")
+            out.append((a.get("name", "?"), b.get("name", "?"), why))
+    return out
+
+
+# ---- keyboard names for recorded keys ---------------------------------------------------------
+_VK_CANON = {0x0D: "Enter", 0x09: "Tab", 0x1B: "Esc", 0x20: "Space", 0x08: "Backspace",
+             0x2E: "Delete", 0x2D: "Insert", 0x24: "Home", 0x23: "End", 0x21: "PageUp",
+             0x22: "PageDown", 0x26: "Up", 0x28: "Down", 0x25: "Left", 0x27: "Right",
+             0x2C: "PrintScreen", 0x13: "Pause", 0x14: "CapsLock", 0x5D: "Menu",
+             **{0x6F + i: f"F{i}" for i in range(1, 25)},
+             **{0x60 + i: f"Num{i}" for i in range(10)}}
+_MOD_OF_VK = {0x10: "shift", 0xA0: "shift", 0xA1: "shift", 0x11: "ctrl", 0xA2: "ctrl",
+              0xA3: "ctrl", 0x12: "alt", 0xA4: "alt", 0xA5: "alt", 0x5B: "win", 0x5C: "win"}
+_MOD_ORDER = ("ctrl", "alt", "shift", "win")
+_MOD_NAME = {"ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "win": "Win"}
+
+
+def vk_name(vk):
+    if vk in _VK_CANON:
+        return _VK_CANON[vk]
+    if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+        return chr(vk)
+    if 0 < vk < 256:
+        return f"0x{vk:02X}"
+    return None
+
+
+_US_SHIFT = dict(zip("1234567890-=[]\\;',./`", "!@#$%^&*()_+{}|:\"<>?~"))
+_US_OEM = {0xBA: ";", 0xBB: "=", 0xBC: ",", 0xBD: "-", 0xBE: ".", 0xBF: "/", 0xC0: "`",
+           0xDB: "[", 0xDC: "\\", 0xDD: "]", 0xDE: "'"}
+
+
+if IS_WIN:
+    user32.GetKeyboardLayout.argtypes = [wt.DWORD]
+    user32.GetKeyboardLayout.restype = ctypes.c_void_p
+    user32.MapVirtualKeyW.argtypes = [wt.UINT, wt.UINT]
+    user32.MapVirtualKeyW.restype = wt.UINT
+    user32.ToUnicodeEx.argtypes = [wt.UINT, wt.UINT, ctypes.POINTER(ctypes.c_ubyte), wt.LPWSTR,
+                                   ctypes.c_int, wt.UINT, ctypes.c_void_p]
+    user32.ToUnicodeEx.restype = ctypes.c_int
+
+
+def vk_char(vk, shift=False, caps=False):
+    """The character a key makes with the current keyboard layout, or None for keys that
+    don't type a character (or dead keys)."""
+    if IS_WIN:
+        try:
+            state = (ctypes.c_ubyte * 256)()
+            if shift:
+                state[0x10] = state[0xA0] = 0x80
+            if caps:
+                state[0x14] = 0x01
+            buf = ctypes.create_unicode_buffer(8)
+            hkl = user32.GetKeyboardLayout(user32.GetWindowThreadProcessId(
+                user32.GetForegroundWindow(), None))
+            n = user32.ToUnicodeEx(vk, user32.MapVirtualKeyW(vk, 0), state, buf, 8, 0x4, hkl)
+            if n == 1 and buf.value and buf.value.isprintable():
+                return buf.value
+            return None
+        except Exception:
+            pass
+    if vk == 0x20:
+        return " "
+    if 0x41 <= vk <= 0x5A:
+        c = chr(vk)
+        return c if (shift != caps) else c.lower()
+    base = chr(vk) if 0x30 <= vk <= 0x39 else _US_OEM.get(vk)
+    if base is None:
+        if 0x60 <= vk <= 0x69:
+            return str(vk - 0x60)
+        return None
+    return _US_SHIFT.get(base, base) if shift else base
+
+
+def rdp(points, eps):
+    """Ramer-Douglas-Peucker: drop points that don't change the path's shape much."""
+    if len(points) < 3:
+        return list(points)
+    (_, x0, y0), (_, x1, y1) = points[0], points[-1]
+    dx, dy = x1 - x0, y1 - y0
+    norm = (dx * dx + dy * dy) ** 0.5 or 1e-9
+    best, idx = -1.0, 0
+    for i in range(1, len(points) - 1):
+        _, x, y = points[i]
+        dist = abs(dy * x - dx * y + x1 * y0 - y1 * x0) / norm if (dx or dy) else \
+            ((x - x0) ** 2 + (y - y0) ** 2) ** 0.5
+        if dist > best:
+            best, idx = dist, i
+    if best > eps:
+        return rdp(points[:idx + 1], eps)[:-1] + rdp(points[idx:], eps)
+    return [points[0], points[-1]]
+
+
+REC_DEFAULTS = dict(moves=True, timing=True, min_wait=0.25, pictures=True, click_px=4,
+                    click_s=0.6, double_s=0.5, move_min_px=24, text_gap=1.5, eps=2.0)
+
+
+def compress_recording(events, opts=None, char_fn=None, exclude=()):
+    """Turn raw recorded input events into editable steps.
+
+    events: ("move", t, x, y) · ("down"/"up", t, x, y, button) · ("wheel", t, x, y, notches,
+    horizontal) · ("kdown", t, vk, shift, caps) · ("kup", t, vk) · ("snap", t, png, spot)
+    (a picture taken at the mouse-down at time t). Times are seconds from the start.
+    exclude: screen rectangles [x, y, w, h] whose mouse events are dropped (the recording
+    indicator). Returns a list of steps; each has "rec_t" (seconds from the start)."""
+    o = dict(REC_DEFAULTS, **(opts or {}))
+    char_fn = char_fn or vk_char
+
+    def outside(x, y):
+        return not any(r[0] <= x < r[0] + r[2] and r[1] <= y < r[1] + r[3] for r in exclude)
+
+    evs, snaps, pending_down = [], {}, set()
+    for e in sorted(events, key=lambda e: e[1]):
+        k = e[0]
+        if k == "snap":
+            snaps[round(e[1], 4)] = (e[2], e[3])
+        elif k in ("move", "down", "up", "wheel"):
+            if k == "up" and e[4] in pending_down:
+                pending_down.discard(e[4])
+                evs.append(e)
+            elif outside(e[2], e[3]):
+                if k == "down":
+                    pending_down.add(e[4])
+                evs.append(e)
+        else:
+            evs.append(e)
+    # keys released that weren't pressed during the recording (e.g. the start hotkey), and
+    # keys still held at the end (the stop hotkey) are left out
+    downs, keep = {}, [True] * len(evs)
+    for i, e in enumerate(evs):
+        if e[0] == "kdown":
+            downs.setdefault(e[2], i)
+        elif e[0] == "kup":
+            if e[2] in downs:
+                downs.pop(e[2])
+            else:
+                keep[i] = False
+    for vk, i in downs.items():
+        for j in range(i, len(evs)):
+            if evs[j][0] == "kdown" and evs[j][2] == vk:
+                keep[j] = False
+    evs = [e for e, k in zip(evs, keep) if k]
+
+    steps = []
+    st = {"last_t": 0.0, "text": None, "moves": [], "gesture": None}
+    mods = {}            # modifier -> {"t": pressed at, "used": bool}
+    held_for_mouse = set()
+    dpi, scr = system_dpi(), list(screen_size())
+
+    def emit(step, t0, t1, force_wait=False):
+        gap = t0 - st["last_t"]
+        if (o["timing"] or force_wait) and gap >= o["min_wait"]:
+            g = round(gap, 1)
+            steps.append({"type": "wait", "min": g, "max": g, "rec_t": round(st["last_t"], 2)})
+        step["rec_t"] = round(t0, 2)
+        steps.append(step)
+        st["last_t"] = max(st["last_t"], t1)
+
+    def flush_moves():
+        pts = st["moves"]
+        st["moves"] = []
+        if not o["moves"] or len(pts) < 2:
+            return
+        length = sum(((pts[i][1] - pts[i - 1][1]) ** 2 + (pts[i][2] - pts[i - 1][2]) ** 2) ** 0.5
+                     for i in range(1, len(pts)))
+        if length < o["move_min_px"]:
+            return
+        t0 = pts[0][0]
+        path = [[round(t - t0, 3), x, y] for t, x, y in rdp(pts, o["eps"])][:MAX_PATH_POINTS]
+        emit({"type": "move", "path": path}, t0, pts[-1][0])
+
+    def flush_text():
+        tx = st["text"]
+        st["text"] = None
+        if tx and tx["chars"]:
+            emit({"type": "type", "text": "".join(tx["chars"])}, tx["t0"], tx["t1"])
+
+    def emit_key(name, t):
+        last = steps[-1] if steps else None
+        if (last and last.get("type") == "key" and last.get("keys") == name
+                and t - st["last_t"] <= 0.6):
+            last["times"] = last.get("times", 1) + 1
+            st["last_t"] = t
+        else:
+            emit({"type": "key", "keys": name, "times": 1}, t, t)
+
+    def mod_combo(key_name):
+        held = [m for m in _MOD_ORDER if m in mods]
+        for m in held:
+            mods[m]["used"] = True
+        return "+".join([_MOD_NAME[m] for m in held] + [key_name])
+
+    for e in evs:
+        k, t = e[0], e[1]
+        if k == "move":
+            g = st["gesture"]
+            if g:
+                g["path"].append((t, e[2], e[3]))
+            else:
+                st["moves"].append((t, e[2], e[3]))
+            continue
+        flush_moves()
+        if k == "kdown":
+            vk = e[2]
+            if vk in _MOD_OF_VK:
+                m = _MOD_OF_VK[vk]
+                if m not in mods:
+                    mods[m] = {"t": t, "used": False}
+                continue
+            shift = "shift" in mods
+            combo = [m for m in ("ctrl", "alt", "win") if m in mods]
+            caps = bool(e[4]) if len(e) > 4 else False
+            ch = None if combo else char_fn(vk, shift, caps)
+            if ch and ch.isprintable():
+                if shift:
+                    mods["shift"]["used"] = True
+                tx = st["text"]
+                if tx and t - tx["t1"] > o["text_gap"] and o["timing"]:
+                    flush_text()
+                    tx = None
+                if tx is None:
+                    tx = st["text"] = {"t0": t, "t1": t, "chars": []}
+                tx["chars"].append(ch)
+                tx["t1"] = t
+                continue
+            if vk == 0x08 and st["text"] and st["text"]["chars"] and not combo:
+                st["text"]["chars"].pop()             # backspace while typing: fix the text
+                st["text"]["t1"] = t
+                continue
+            flush_text()
+            name = vk_name(vk)
+            if name:
+                emit_key(mod_combo(name), t)
+            continue
+        if k == "kup":
+            vk = e[2]
+            if vk in _MOD_OF_VK:
+                m = _MOD_OF_VK[vk]
+                info = mods.pop(m, None)
+                if m in held_for_mouse:
+                    held_for_mouse.discard(m)
+                    flush_text()
+                    emit({"type": "keyhold", "keys": _MOD_NAME[m], "action": "up"}, t, t)
+                elif info and not info["used"] and t - info["t"] < 1.0:
+                    flush_text()
+                    emit_key(_MOD_NAME[m], info["t"])   # a modifier tapped on its own (e.g. Win)
+            continue
+        flush_text()
+        if k == "wheel":
+            x, y, notches, horiz = e[2], e[3], e[4], bool(e[5])
+            last = steps[-1] if steps else None
+            if (last and last.get("type") == "scroll" and last.get("horizontal") == horiz
+                    and abs(last.get("x", 0) - x) <= 10 and abs(last.get("y", 0) - y) <= 10
+                    and t - st["last_t"] <= 0.4 and (last["_n"] > 0) == (notches > 0)):
+                last["_n"] += notches
+                last["amount"] = int(round(last["_n"])) or (1 if last["_n"] > 0 else -1)
+                st["last_t"] = t
+            else:
+                emit({"type": "scroll", "x": x, "y": y, "_n": notches, "horizontal": horiz,
+                      "amount": int(round(notches)) or (1 if notches > 0 else -1)}, t, t)
+            continue
+        if k == "down":
+            x, y, btn = e[2], e[3], e[4]
+            if st["gesture"]:                       # a second button while one is held
+                g = st["gesture"]
+                emit({"type": "mouse", "button": g["button"], "action": "down",
+                      "x": g["x0"], "y": g["y0"]}, g["t0"], g["t0"])
+                st["gesture"] = None
+                emit({"type": "mouse", "button": btn, "action": "down", "x": x, "y": y}, t, t)
+                continue
+            for m in _MOD_ORDER:
+                if m in mods and not mods[m]["used"] and m not in held_for_mouse:
+                    held_for_mouse.add(m)
+                    mods[m]["used"] = True
+                    emit({"type": "keyhold", "keys": _MOD_NAME[m], "action": "down"}, t, t)
+            st["gesture"] = {"button": btn, "t0": t, "x0": x, "y0": y, "path": [(t, x, y)],
+                             "snap": snaps.get(round(t, 4))}
+            continue
+        if k == "up":
+            x, y, btn = e[2], e[3], e[4]
+            g = st["gesture"]
+            if not g or g["button"] != btn:
+                if not g:
+                    emit({"type": "mouse", "button": btn, "action": "up", "x": x, "y": y}, t, t)
+                continue
+            st["gesture"] = None
+            g["path"].append((t, x, y))
+            dist = max(((px - g["x0"]) ** 2 + (py - g["y0"]) ** 2) ** 0.5 for _, px, py in g["path"])
+            dur = t - g["t0"]
+            if dist <= o["click_px"] and dur <= o["click_s"]:
+                last = steps[-1] if steps else None
+                if (last and last.get("type") == "click" and last.get("button") == btn
+                        and last.get("clicks") == 1 and abs(last["x"] - g["x0"]) <= o["click_px"]
+                        and abs(last["y"] - g["y0"]) <= o["click_px"]
+                        and g["t0"] - st["last_t"] <= o["double_s"]):
+                    last["clicks"] = 2
+                    st["last_t"] = t
+                    continue
+                step = {"type": "click", "x": g["x0"], "y": g["y0"], "button": btn, "clicks": 1,
+                        "use_image": False, "snap_png": "", "snap_spot": None,
+                        "image_fallback": "wait", "target_mode": "screen",
+                        "pick_dpi": dpi, "pick_screen": scr}
+                if o["pictures"] and g["snap"]:
+                    step.update(use_image=True, snap_png=g["snap"][0], snap_spot=list(g["snap"][1]))
+                emit(step, g["t0"], t)
+            elif dist <= o["click_px"]:
+                emit({"type": "mouse", "button": btn, "action": "down", "x": g["x0"],
+                      "y": g["y0"]}, g["t0"], g["t0"])
+                emit({"type": "mouse", "button": btn, "action": "up", "x": x, "y": y}, t, t,
+                     force_wait=True)
+            else:
+                t0 = g["t0"]
+                path = [[round(pt - t0, 3), px, py] for pt, px, py in rdp(g["path"], o["eps"])]
+                emit({"type": "drag", "button": btn, "path": path[:MAX_PATH_POINTS]}, t0, t)
+    flush_moves()
+    flush_text()
+    end_t = max([e[1] for e in evs] + [st["last_t"]])
+    g = st["gesture"]
+    if g:
+        emit({"type": "mouse", "button": g["button"], "action": "down", "x": g["x0"],
+              "y": g["y0"]}, g["t0"], g["t0"])
+        emit({"type": "mouse", "button": g["button"], "action": "up"}, end_t, end_t)
+    for m in sorted(held_for_mouse):
+        emit({"type": "keyhold", "keys": _MOD_NAME[m], "action": "up"}, end_t, end_t)
+    for s in steps:
+        s.pop("_n", None)
+    return steps
+
+
+# ---- run history (compact, searchable action log; never contains typed text) ----------------
+RUNLOG_FIELDS = ("run", "time", "job", "elapsed", "video_pos", "step", "action", "result",
+                 "video")
+RUNLOG_MAX_ROWS = 50000
+_RUNLOG_LOCK = threading.Lock()
+
+
+def runlog_path():
+    return data_path("run_history.csv")
+
+
+def append_runlog(row):
+    import csv
+    try:
+        with _RUNLOG_LOCK:
+            p = runlog_path()
+            new = not os.path.exists(p)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "a", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=RUNLOG_FIELDS, extrasaction="ignore")
+                if new:
+                    w.writeheader()
+                w.writerow({k: row.get(k, "") for k in RUNLOG_FIELDS})
+    except Exception:
+        pass
+
+
+def read_runlog():
+    import csv
+    try:
+        with _RUNLOG_LOCK, open(runlog_path(), newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    except Exception:
+        return []
+
+
+def trim_runlog():
+    import csv
+    rows = read_runlog()
+    if len(rows) <= RUNLOG_MAX_ROWS:
+        return
+    rows = rows[-RUNLOG_MAX_ROWS:]
+    try:
+        with _RUNLOG_LOCK:
+            p = runlog_path()
+            with open(p + ".tmp", "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=RUNLOG_FIELDS, extrasaction="ignore")
+                w.writeheader()
+                w.writerows(rows)
+            os.replace(p + ".tmp", p)
+    except Exception:
+        pass
+
+
+# ---- screen video of runs (optional, local only) -----------------------------------------------
+VIDEO_PRESETS = {
+    "compact": dict(fps=2, scale=0.5, label="Compact: 2 frames a second at half size. Small "
+                                            "files (very roughly 10-40 MB an hour)."),
+    "standard": dict(fps=5, scale=0.75, label="Standard: 5 frames a second at ¾ size "
+                                              "(very roughly 40-150 MB an hour)."),
+    "high": dict(fps=10, scale=1.0, label="High: 10 frames a second at full size. Large files "
+                                          "(very roughly 150-600 MB an hour)."),
+}
+VIDEO_MIN_FREE_START = 1024 ** 3          # don't start with less than 1 GB free
+VIDEO_MIN_FREE_RUN = 300 * 1024 ** 2      # stop recording below 300 MB free
+VIDEO_FILE_RE = re.compile(r"^clickue_run_\d{8}_\d{6}_[A-Za-z0-9_-]{0,40}\.(mp4|avi)$")
+DIAG_FILE_RE = re.compile(r"^clickue_fail_\d{8}_\d{6}_[A-Za-z0-9_-]{0,40}\.png$")
+
+
+def safe_file_part(name, n=40):
+    s = re.sub(r"[^A-Za-z0-9_-]+", "-", str(name)).strip("-_")
+    return s[:n] or "job"
+
+
+def video_folder(settings):
+    """The folder for videos: the user's choice, or <data folder>\\recordings."""
+    d = (settings.get("video_dir") or "").strip()
+    return os.path.abspath(d) if d else data_path("recordings")
+
+
+def free_bytes(folder):
+    try:
+        return shutil.disk_usage(folder).free
+    except Exception:
+        return 0
+
+
+def prune_files(folder, pattern, keep_days=None, max_bytes=None, keep_count=None):
+    """Delete Clickue's own files (names matching `pattern`) in one folder, oldest first,
+    until the limits hold. Never touches other files and never goes into subfolders.
+    Returns the number of files removed."""
+    try:
+        names = [n for n in os.listdir(folder) if pattern.match(n)]
+    except Exception:
+        return 0
+    files = []
+    for n in names:
+        p = os.path.join(folder, n)
+        try:
+            if os.path.isfile(p) and not os.path.islink(p):
+                s = os.stat(p)
+                files.append((s.st_mtime, s.st_size, p))
+        except Exception:
+            pass
+    files.sort()
+    removed, now = 0, time.time()
+    total = sum(f[1] for f in files)
+    for i, (mt, size, p) in enumerate(files):
+        too_old = keep_days is not None and now - mt > keep_days * 86400
+        too_big = max_bytes is not None and total > max_bytes
+        too_many = keep_count is not None and len(files) - i > keep_count
+        if not (too_old or too_big or too_many):
+            continue
+        try:
+            os.remove(p)
+            removed += 1
+            total -= size
+        except Exception:
+            pass
+    return removed
+
+
+class RunVideo:
+    """Records the screen while one run is going (only then), to a local file. Frames are
+    taken on a background thread; the run never waits for it. Failures (no codec, disk
+    full) stop the recording, never the run."""
+
+    def __init__(self, folder, job_name, preset="standard", redact=(), hidden=None,
+                 grab=None, now=None):
+        p = VIDEO_PRESETS.get(preset, VIDEO_PRESETS["standard"])
+        self.fps, self.scale = p["fps"], p["scale"]
+        self.folder, self.redact = folder, [r for r in (redact or []) if _clean_rect(r)]
+        self.hidden = hidden or (lambda: False)
+        self.grab = grab or (lambda: grab_screen(move_cursor=False))
+        stamp_ = datetime.fromtimestamp(now or time.time()).strftime("%Y%m%d_%H%M%S")
+        self.base = f"clickue_run_{stamp_}_{safe_file_part(job_name)}"
+        self.path, self.writer, self.size = "", None, None
+        self.frames, self.status, self.error = 0, "starting", ""
+        self.paused = False
+        self._stop = threading.Event()
+        self.thread = None
+        self.origin = (0, 0)
+
+    def position(self):
+        """Seconds into the video (what a step logged now will be at)."""
+        return round(self.frames / self.fps, 1)
+
+    def _open(self, w, h):
+        for fourcc, ext in (("mp4v", ".mp4"), ("MJPG", ".avi")):
+            path = os.path.join(self.folder, self.base + ext)
+            try:
+                wr = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*fourcc), self.fps, (w, h))
+                if wr.isOpened():
+                    return wr, path
+                wr.release()
+            except Exception:
+                pass
+            try:
+                if os.path.exists(path) and os.path.getsize(path) == 0:
+                    os.remove(path)
+            except Exception:
+                pass
+        return None, ""
+
+    def start(self):
+        if not HAVE_CV:
+            self.status, self.error = "off", "video needs opencv (picture matching) installed"
+            return False
+        try:
+            os.makedirs(self.folder, exist_ok=True)
+        except Exception as e:
+            self.status, self.error = "off", f"can't use the video folder ({e})"
+            return False
+        if free_bytes(self.folder) < VIDEO_MIN_FREE_START:
+            self.status, self.error = "off", "less than 1 GB free on the video drive"
+            return False
+        try:
+            img, self.origin = self.grab()
+        except Exception as e:
+            self.status, self.error = "off", f"can't capture the screen ({e})"
+            return False
+        w, h = max(2, int(img.width * self.scale) // 2 * 2), max(2, int(img.height * self.scale) // 2 * 2)
+        self.size = (w, h)
+        self.writer, self.path = self._open(w, h)
+        if not self.writer:
+            self.status, self.error = "off", "no video format is available on this computer"
+            return False
+        self.status = "recording"
+        self._write(img)
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+        return True
+
+    def _frame(self, img):
+        if self.hidden():
+            frame = Image.new("RGB", self.size, (24, 24, 28))
+            ImageDraw.Draw(frame).text((20, 20), "Hidden while Clickue enters text",
+                                       fill=(200, 200, 200))
+            return frame
+        if self.redact:
+            img = img.copy()
+            d = ImageDraw.Draw(img)
+            ox, oy = self.origin
+            for x, y, w, h in self.redact:
+                d.rectangle((x - ox, y - oy, x - ox + w, y - oy + h), fill=(0, 0, 0))
+        if img.size != self.size:
+            img = img.resize(self.size, Image.BILINEAR)
+        return img
+
+    def _write(self, img):
+        frame = self._frame(img)
+        self.writer.write(cv2.cvtColor(np.asarray(frame), cv2.COLOR_RGB2BGR))
+        self.frames += 1
+
+    def _loop(self):
+        step = 1.0 / self.fps
+        nxt, last_disk = time.time() + step, time.time()
+        while not self._stop.is_set():
+            delay = nxt - time.time()
+            if delay > 0:
+                self._stop.wait(delay)
+                if self._stop.is_set():
+                    break
+            nxt += step
+            if self.paused:
+                nxt = time.time() + step
+                continue
+            try:
+                if time.time() - last_disk > 5:
+                    last_disk = time.time()
+                    if free_bytes(self.folder) < VIDEO_MIN_FREE_RUN:
+                        self.status, self.error = "stopped", "the disk is almost full"
+                        break
+                img, self.origin = self.grab()
+                self._write(img)
+                if nxt < time.time() - 1:          # fell behind: skip ahead, don't pile up
+                    nxt = time.time() + step
+            except Exception as e:
+                self.status, self.error = "stopped", f"recording failed ({e})"
+                break
+        try:
+            self.writer.release()
+        except Exception:
+            pass
+
+    def stop(self):
+        self._stop.set()
+        if self.thread:
+            self.thread.join(5)
+        elif self.writer:
+            try:
+                self.writer.release()
+            except Exception:
+                pass
+        if self.status == "recording":
+            self.status = "done"
+        return self.path
+
+
+# ---- running steps (the workflow engine) -------------------------------------------------------
+class StopRun(Exception):
+    """The run must end now (cancelled, Clickue closing, time limit)."""
+
+
+class StepFailed(Exception):
+    """A step failed and its "if it fails" choice is to stop."""
+
+
+TEXT_STEPS = ("type", "paste")
+INPUT_STEPS = ("click", "type", "paste", "key", "move", "drag", "mouse", "scroll", "keyhold")
+MAX_EXECUTED_STEPS = 200_000
+MAX_GROUP_DEPTH = 4
+DEFAULT_RUN_LIMIT_S = 6 * 3600
+
+
+class WorkflowRun:
+    """Runs a job's steps. mode: "run" (for real), "dry" (look only: finds targets and checks
+    conditions, never clicks or types) or "debug" (for real, but a debugger is asked before
+    every step). Every loop, retry and wait has a limit, and Stop / Pause all / the emergency
+    hotkey are checked between steps and during waits."""
+
+    def __init__(self, app, job, mode="run", debugger=None, ctx=None, groups=None):
+        self.app, self.job, self.mode = app, job, mode
+        self.dry = mode == "dry"
+        self.debugger, self.ctx = debugger, ctx or {}
+        self.groups = list(groups if groups is not None else (getattr(app, "groups", None) or []))
+        self.vars = builtin_vars()
+        self.vars.update(job="" if job is None else job.get("name", ""),
+                         run=str(int(job.get("count") or 0) + 1), loop="0")
+        self.vars.update({k: str(v) for k, v in (job.get("saved_vars") or {}).items()})
+        self.persist = {}
+        self.report = []                  # dry run / debug lines (never typed text)
+        self.executed = 0
+        self.t0 = time.time()
+        self.limit = _clamp_num(job.get("run_limit_s", DEFAULT_RUN_LIMIT_S), 10,
+                                MAX_RUN_LIMIT_S, DEFAULT_RUN_LIMIT_S)
+        self.group_names = []
+        self.paused_logged = False
+        self.current = None
+
+    # ---- bookkeeping
+    def num(self, i):
+        if self.group_names:
+            return f"{i + 1} of group “{self.group_names[-1]}”"
+        return str(i + 1)
+
+    def say(self, i, st, text):
+        w, _ = describe_step(st, private=True, groups=self.groups)
+        self.report.append((self.num(i), w, text))
+
+    def log_action(self, i, st, result):
+        run_id = self.ctx.get("run")
+        if not run_id:
+            return
+        w, d = describe_step(st, private=True, groups=self.groups)
+        video = self.ctx.get("video")
+        append_runlog({"run": run_id, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                       "job": self.job.get("name", ""), "elapsed": round(time.time() - self.t0, 1),
+                       "video_pos": video.position() if video and video.status == "recording" else "",
+                       "step": self.num(i), "action": f"{w}: {d}"[:200], "result": result[:200],
+                       "video": os.path.basename(video.path) if video and video.path else ""})
+
+    def check_stop(self):
+        app = self.app
+        if app.stop.is_set():
+            raise StopRun("Clickue is closing")
+        if self.dry:
+            return
+        rc = getattr(app, "run_cancel", None)
+        if rc is not None and rc.is_set():
+            raise StopRun("stopped by you")
+        if time.time() - self.t0 > self.limit:
+            raise StopRun(f"stopped: the run went over its time limit ({fmt_dur(self.limit)})")
+        if self.mode == "run" and app.settings.get("paused"):
+            HELD.release_all()
+            if not self.paused_logged:
+                self.paused_logged = True
+                app.log(f"[{self.job.get('name')}] paused between steps - it carries on when "
+                        f"you resume")
+            while app.settings.get("paused"):
+                if app.stop.is_set() or (rc is not None and rc.is_set()):
+                    raise StopRun("stopped by you" if not app.stop.is_set() else "Clickue is closing")
+                time.sleep(0.3)
+                self.t0 += 0.3            # paused time doesn't count towards the time limit
+
+    def tick(self):
+        """Called often during waits: stop checks, and letting other jobs run if allowed."""
+        self.check_stop()
+        if self.mode == "run" and self.job.get("let_others_run") and not HELD.holding():
+            y = getattr(self.app, "yield_to_others", None)
+            if y:
+                y(self.job)
+
+    def sleep(self, secs):
+        end = time.time() + max(0.0, float(secs))
+        while True:
+            self.tick()
+            left = end - time.time()
+            if left <= 0:
+                return
+            time.sleep(min(0.2, left))
+
+    def set_hidden(self, on):
+        """Black out the run's video while text is being typed or pasted."""
+        if on:
+            self.app.video_hide_until = time.time() + 3600
+        else:
+            self.app.video_hide_until = time.time() + 1.0
+
+    # ---- running
+    def run(self, steps=None):
+        """Returns (ok, message)."""
+        steps = (self.job.get("steps") or []) if steps is None else steps
+        nodes, errors = parse_blocks(steps)
+        if errors:
+            return False, "the steps aren't valid: " + errors[0]
+        try:
+            self.run_nodes(nodes)
+            return True, ""
+        except (StopRun, StepFailed) as e:
+            return False, str(e)
+        finally:
+            if not self.dry:
+                HELD.release_all()
+                if getattr(self.app, "video_hide_until", 0) > time.time() + 2:
+                    self.set_hidden(False)
+                if self.persist:
+                    self.save_persisted()
+
+    def save_persisted(self):
+        app, job = self.app, self.job
+        target = next((j for j in getattr(app, "jobs", []) if j.get("id") == job.get("id")), None)
+        with app.lock:
+            for j in (job, target):
+                if j is not None:
+                    sv = dict(j.get("saved_vars") or {})
+                    sv.update(self.persist)
+                    j["saved_vars"] = sv
+
+    def run_nodes(self, nodes):
+        for n in nodes:
+            t = n["st"].get("type")
+            if t == "if":
+                yes = self.condition_step(n)
+                self.run_nodes(n["body"] if yes else n["orelse"])
+            elif t == "repeat":
+                self.repeat_step(n)
+            else:
+                self.run_step(n)
+
+    def before(self, i, st):
+        self.check_stop()
+        self.executed += 1
+        if self.executed > MAX_EXECUTED_STEPS:
+            raise StopRun(f"stopped to be safe: more than {MAX_EXECUTED_STEPS:,} steps in one run")
+        self.current = (self.num(i), st)
+        prog = getattr(self.app, "run_progress", None)
+        if prog:
+            prog(self, i, st)
+        if not self.dry:
+            time.sleep(0.15)
+        if self.debugger:
+            self.debugger.before(self, i, st)
+
+    def run_step(self, n):
+        i, st = n["i"], n["st"]
+        t = st.get("type")
+        self.before(i, st)
+        tries = 1 if self.dry else 1 + _clamp_num(st.get("retries", 0), 0, 10, 0)
+        ok, msg = False, ""
+        for k in range(tries):
+            try:
+                ok, msg = self.exec_step(st)
+            except (StopRun, StepFailed):
+                raise
+            except Exception as e:                      # never let one step crash the run
+                ok, msg = False, f"unexpected problem ({type(e).__name__}: {e})"[:200]
+            if ok or self.dry:
+                break
+            if k < tries - 1:
+                self.log_action(i, st, f"failed ({msg}); trying again")
+                self.sleep(_clamp_num(st.get("retry_wait", 2), 0, 3600, 2, as_int=False))
+        if self.debugger:
+            self.debugger.after(self, i, st, ok, msg)
+        if self.dry:
+            self.say(i, st, msg)
+            return
+        self.log_action(i, st, "ok" if ok else f"failed: {msg}")
+        name = self.job.get("name", "")
+        if ok:
+            if t == "waitpic":
+                self.app.log(f"[{name}] step {self.num(i)}: picture {msg}")
+            return
+        if t == "waitpic" and msg.startswith("timeout") and st.get("on_timeout") == "continue":
+            self.app.log(f"[{name}] step {self.num(i)}: {msg} - continuing")
+            return
+        if st.get("on_fail") == "continue":
+            self.app.log(f"[{name}] step {self.num(i)} failed ({msg}) - continuing, as set "
+                         f"for that step")
+            return
+        if msg.startswith("(click) "):
+            raise StepFailed(f"step {self.num(i)} (click): {msg[8:]}")
+        raise StepFailed(f"step {self.num(i)}: {msg}")
+
+    # ---- conditions, loops, groups
+    def eval_cond(self, cond):
+        cond = cond or {}
+        if cond.get("kind") == "var":
+            try:
+                want = expand_vars(cond.get("value", ""), self.vars, 1000)
+            except ValueError:
+                want = cond.get("value", "")
+            have = self.vars.get(cond.get("var", ""), "")
+            return compare_values(have, cond.get("op", "=="), want), f"{{{cond.get('var')}}} is “{short_title(str(have), 30)}”"
+        wait = 0 if self.dry else float(cond.get("wait", 0) or 0)
+        end = time.time() + wait
+        while True:
+            res, note = check_condition(cond)
+            if res or time.time() >= end:
+                return res, note
+            self.sleep(min(STEP_POLL_S, max(0.05, end - time.time())))
+
+    def condition_step(self, n):
+        i, st = n["i"], n["st"]
+        self.before(i, st)
+        res, note = self.eval_cond(st.get("cond"))
+        text = f"{'TRUE' if res else 'false'} ({note})"
+        if self.dry:
+            self.say(i, st, f"condition is {text} now → "
+                            f"{'runs the steps under If' if res else 'runs the Otherwise steps' if n['orelse'] else 'skips the steps under If'}")
+        else:
+            self.log_action(i, st, f"condition {text}")
+        if self.debugger:
+            self.debugger.after(self, i, st, True, f"condition {text}")
+        return res
+
+    def repeat_step(self, n):
+        i, st = n["i"], n["st"]
+        self.before(i, st)
+        until = st.get("mode") == "until"
+        limit_n = _clamp_num(st.get("max_times" if until else "times", 3), 1, MAX_REPEAT, 3)
+        limit_s = _clamp_num(st.get("max_seconds", 600), 1, MAX_RUN_LIMIT_S, 600)
+        start, count = time.time(), 0
+        if self.dry:
+            self.say(i, st, "would repeat the steps inside; here they're shown once")
+        while True:
+            if until:
+                res, note = self.eval_cond(st.get("cond"))
+                if res:
+                    self.log_action(i, st, f"done after {count} time(s): condition true")
+                    return
+                if count >= limit_n or time.time() - start > limit_s:
+                    msg = (f"the condition didn't come true after {count} time(s) / "
+                           f"{fmt_dur(time.time() - start)}")
+                    self.log_action(i, st, "stopped repeating: " + msg)
+                    if st.get("on_fail") == "continue":
+                        self.app.log(f"[{self.job.get('name')}] step {self.num(i)}: {msg} - "
+                                     f"continuing, as set for that step")
+                        return
+                    raise StepFailed(f"step {self.num(i)}: {msg}")
+            elif count >= limit_n:
+                return
+            count += 1
+            self.vars["loop"] = str(count)
+            self.run_nodes(n["body"])
+            if self.dry:
+                return
+
+    def run_group(self, st):
+        g = next((g for g in self.groups if g.get("id") == st.get("group_id")), None)
+        if not g:
+            return False, "the step group it uses was deleted"
+        if len(self.group_names) >= MAX_GROUP_DEPTH or g["name"] in self.group_names:
+            return False, "a step group can't use itself"
+        nodes, errors = parse_blocks(g.get("steps") or [])
+        if errors:
+            return False, f"group “{g['name']}”: {errors[0]}"
+        self.group_names.append(g["name"])
+        try:
+            self.run_nodes(nodes)
+        finally:
+            self.group_names.pop()
+        return True, f"ran group “{g['name']}”"
+
+    # ---- single steps
+    def text_of(self, st):
+        limit = MAX_TYPE_CHARS if st.get("type") == "type" else MAX_PASTE_CHARS
+        if st.get("secret"):
+            enc = st.get("text_enc")
+            if not enc:
+                return None, "the secret text isn't set here - edit the step and enter it again"
+            try:
+                text = unprotect_text(enc)
+            except ValueError as e:
+                return None, f"{e} - edit the step and enter it again"
+        else:
+            text = st.get("text", "")
+        if st.get("use_vars"):
+            try:
+                text = expand_vars(text, self.vars, limit)
+            except ValueError as e:
+                return None, str(e)
+        if len(text) > limit:
+            return None, f"the text is longer than {limit:,} characters"
+        return text, ""
+
+    def exec_step(self, st):
+        """One step. Returns (ok, message). Never puts typed text in the message."""
+        t = st.get("type")
+        dry = self.dry
+        rs = self.app.settings.get("restore_cursor", True)
+        if t == "wait":
+            lo, hi = st.get("min", 1), st.get("max", st.get("min", 1))
+            if isinstance(lo, int) and isinstance(hi, int):
+                secs = random.randint(min(lo, hi), max(lo, hi)) if hi != lo else lo
+            else:
+                lo, hi = float(lo), float(hi)
+                secs = random.uniform(min(lo, hi), max(lo, hi)) if hi != lo else lo
+            if dry:
+                return True, f"would wait {fmt_secs(secs)}"
+            self.sleep(secs)
+            return True, "waited"
+        if t == "waitpic":
+            if dry:
+                if not HAVE_CV:
+                    return False, "picture matching isn't installed"
+                found, x, y, score, sc = picture_on_screen(st["png"], area=st.get("area"))
+                return True, (f"the picture is showing now ({score:.0%})" if found else
+                              f"the picture isn't showing now (best {score:.0%}); it would wait "
+                              f"up to {fmt_dur(int(st.get('timeout', 60)))}")
+            return self.app.wait_for_picture(st, tick=self.tick)
+        if t == "set":
+            try:
+                val = expand_vars(st.get("value", ""), self.vars, 1000)
+            except ValueError as e:
+                return False, str(e)
+            name, op = st.get("var", ""), st.get("op", "set")
+            if op in ("add", "sub"):
+                cur, amt = _as_number(self.vars.get(name, "0")), _as_number(val)
+                if cur is None or amt is None:
+                    return False, f"{{{name}}} or the amount isn't a number"
+                val = str(cur + amt if op == "add" else cur - amt)
+            self.vars[name] = val
+            if st.get("persist") and not dry:
+                self.persist[name] = val
+            return True, f"{{{name}}} is now “{short_title(val, 30)}”"
+        if t == "group":
+            return self.run_group(st)
+        if t not in INPUT_STEPS:
+            return False, f"unknown step type {t}"
+        if not dry and not screen_available():
+            return False, "screen locked or session disconnected"
+        if t == "click":
+            a = adapter_for(st)
+            ok, x, y, msg, how = a.locate(st, activate=st.get("target_mode") == "window",
+                                          check_cover=not dry)
+            if not ok:
+                return False, f"(click) {msg}"
+            if dry:
+                return True, f"would click at ({x}, {y}) - found {how}"
+            return do_click(x, y, st.get("button", "left"), int(st.get("clicks", 1)), rs)
+        if t in TEXT_STEPS:
+            text, why = self.text_of(st)
+            if text is None:
+                return False, why
+            if dry:
+                return True, (f"would {t} {len(text)} character{'s' if len(text) != 1 else ''} "
+                              f"into whatever has focus")
+            self.set_hidden(True)
+            try:
+                if t == "type":
+                    return send_text(text)
+                return paste_text(text, st.get("paste_keys", "Ctrl+V"),
+                                  st.get("restore_clipboard", True), st.get("settle", 0.3))
+            finally:
+                self.set_hidden(False)
+        if t == "key":
+            n = _clamp_num(st.get("times", 1), 1, 100, 1)
+            if dry:
+                return True, f"would press {st.get('keys', '')}" + (f" {n} times" if n > 1 else "")
+            for k in range(n):
+                ok, msg = press_keys(st.get("keys", ""))
+                if not ok:
+                    return ok, msg
+                if k < n - 1:
+                    self.sleep(0.05)
+            return True, "pressed"
+        if t in ("move", "drag"):
+            path = st.get("path") or []
+            if not path:
+                return False, "no path"
+            if dry:
+                return True, (f"would {'drag' if t == 'drag' else 'move the mouse'} from "
+                              f"({path[0][1]}, {path[0][2]}) to ({path[-1][1]}, {path[-1][2]})")
+            ok, msg = move_mouse(path[0][1], path[0][2])
+            if not ok:
+                return ok, msg
+            if t == "drag":
+                time.sleep(0.05)
+                HELD.button(st.get("button", "left"), True)
+            base = time.time()
+            try:
+                for pt, x, y in path[1:]:
+                    while time.time() - base < pt:
+                        self.check_stop()
+                        time.sleep(min(0.01, max(0.0, pt - (time.time() - base))))
+                    ok, msg = move_mouse(x, y)
+                    if not ok:
+                        return ok, msg
+            finally:
+                if t == "drag":
+                    time.sleep(0.05)
+                    HELD.button(st.get("button", "left"), False)
+            return True, "dragged" if t == "drag" else "moved"
+        if t == "mouse":
+            if dry:
+                return True, f"would {'press' if st.get('action') == 'down' else 'release'} the " \
+                             f"{st.get('button', 'left')} button"
+            if st.get("x") is not None and st.get("y") is not None:
+                ok, msg = move_mouse(st["x"], st["y"])
+                if not ok:
+                    return ok, msg
+                time.sleep(0.03)
+            return HELD.button(st.get("button", "left"), st.get("action") == "down")
+        if t == "scroll":
+            if dry:
+                return True, "would scroll " + describe_step(st)[1]
+            if st.get("x") is not None and st.get("y") is not None:
+                ok, msg = move_mouse(st["x"], st["y"])
+                if not ok:
+                    return ok, msg
+                time.sleep(0.03)
+            return scroll_wheel(st.get("amount", -3), st.get("horizontal", False))
+        if t == "keyhold":
+            try:
+                vk = parse_combo(st.get("keys", ""))[0]
+            except ValueError as e:
+                return False, str(e)
+            if dry:
+                return True, f"would {'hold down' if st.get('action') == 'down' else 'release'} " \
+                             f"{st.get('keys')}"
+            return HELD.key(vk, st.get("action") == "down")
+        return False, f"unknown step type {t}"
+
+
+# ---- one place where real input happens: the action queue ------------------------------------
+PRIORITY_ORDER = {"high": 0, "normal": 1, "low": 2}
+
+
+class ExecutionWorker:
+    """Where actions are carried out. Version 1 has one worker: this Windows desktop, which
+    has ONE mouse and ONE keyboard focus, so its actions run strictly one at a time.
+    A future worker for a truly separate desktop (another VM or Windows session) would set
+    isolated = True and own its own queue; only isolated workers may run at the same time
+    as each other. Clickue never fakes several mice on one desktop."""
+    api = 1
+    name = ""
+    isolated = False
+
+    def describe(self):
+        return self.name
+
+
+class LocalDesktopWorker(ExecutionWorker):
+    name = "This Windows desktop"
+    isolated = False
+
+
+class ActionQueue:
+    """Clicks, key presses and runs from all jobs wait here and are carried out one at a
+    time. Watchers keep looking at the screen meanwhile (looking doesn't need the mouse)."""
+
+    def __init__(self, worker=None):
+        self.worker = worker or LocalDesktopWorker()
+        self.cv = threading.Condition()
+        self.items = []
+        self.seq = 0
+        self.running = None
+        self.active = False
+
+    def put(self, job, kind, priority=None, fn=None, label=""):
+        """Queue an action (one per job and kind). Returns the item, or None if that job
+        already has the same action waiting or running."""
+        with self.cv:
+            jid = job.get("id") if job else None
+            for it in self.items + ([self.running] if self.running else []):
+                if jid and it["job_id"] == jid and it["kind"] == kind:
+                    return None
+            self.seq += 1
+            pr = PRIORITY_ORDER.get(priority or (job or {}).get("priority", "normal"), 1)
+            it = {"seq": self.seq, "prio": pr, "job": job, "job_id": jid, "kind": kind,
+                  "fn": fn, "label": label or (job or {}).get("name", ""), "queued": time.time(),
+                  "done": threading.Event(), "result": None, "warned": False}
+            self.items.append(it)
+            self.items.sort(key=lambda x: (x["prio"], x["seq"]))
+            self.cv.notify_all()
+            return it
+
+    def take(self, timeout=0.5, exclude_job=None):
+        with self.cv:
+            if not self.items:
+                self.cv.wait(timeout)
+            for k, it in enumerate(self.items):
+                if exclude_job is not None and it["job_id"] == exclude_job:
+                    continue
+                return self.items.pop(k)
+            return None
+
+    def waiting(self):
+        with self.cv:
+            return list(self.items)
+
+    def remove_job(self, job_id):
+        with self.cv:
+            gone = [it for it in self.items if it["job_id"] == job_id]
+            self.items = [it for it in self.items if it["job_id"] != job_id]
+        for it in gone:
+            it["done"].set()
+
+    def clear(self):
+        with self.cv:
+            gone, self.items = self.items, []
+        for it in gone:
+            it["done"].set()
+        return len(gone)
+
+
+# ---- macro recorder (Windows low-level hooks) --------------------------------------------------
+if IS_WIN:
+    LRESULT = ctypes.c_ssize_t
+    HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wt.WPARAM, wt.LPARAM)
+
+    class MSLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [("pt", wt.POINT), ("mouseData", wt.DWORD), ("flags", wt.DWORD),
+                    ("time", wt.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class KBDLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [("vkCode", wt.DWORD), ("scanCode", wt.DWORD), ("flags", wt.DWORD),
+                    ("time", wt.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, wt.HINSTANCE, wt.DWORD]
+    user32.SetWindowsHookExW.restype = ctypes.c_void_p
+    user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wt.WPARAM, wt.LPARAM]
+    user32.CallNextHookEx.restype = LRESULT
+    user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+    user32.GetKeyState.argtypes = [ctypes.c_int]
+    user32.GetKeyState.restype = ctypes.c_short
+    kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+    kernel32.GetModuleHandleW.restype = wt.HMODULE
+
+_MOUSE_MSGS = {0x201: ("down", "left"), 0x202: ("up", "left"), 0x204: ("down", "right"),
+               0x205: ("up", "right"), 0x207: ("down", "middle"), 0x208: ("up", "middle")}
+
+
+class MacroRecorder:
+    """Records real mouse and keyboard input (not Clickue's own) until stopped.
+    Input from Clickue itself is ignored (injected events are flagged by Windows).
+    Nothing is sent anywhere; events stay in memory until you save the recording."""
+    MAX_EVENTS = 300_000
+
+    def __init__(self, opts=None, on_limit=None, snapper=None):
+        self.opts = dict(REC_DEFAULTS, **(opts or {}))
+        self.events = []
+        self.lock = threading.Lock()
+        self.state = "idle"
+        self.t0 = 0.0
+        self.paused_total = 0.0
+        self.pause_start = None
+        self.exclude = []
+        self.on_limit = on_limit
+        self.snapper = snapper or self._snap
+        self.snap_q = queue.Queue()
+        self._last_move = (-1.0, 0, 0)
+        self.tid = None
+        self.thread = None
+        self.error = ""
+        self.ready = threading.Event()
+        self.counts = {"clicks": 0, "keys": 0}
+
+    def now(self):
+        return time.time() - self.t0 - self.paused_total
+
+    def add(self, ev):
+        with self.lock:
+            if len(self.events) >= self.MAX_EVENTS:
+                if self.state == "recording":
+                    self.state = "full"
+                    if self.on_limit:
+                        self.on_limit()
+                return
+            self.events.append(ev)
+
+    def mouse(self, msg, x, y, data):
+        if self.state != "recording":
+            return
+        t = self.now()
+        if msg == 0x200:
+            lt, lx, ly = self._last_move
+            if t - lt < 0.015 and abs(x - lx) < 4 and abs(y - ly) < 4:
+                return
+            self._last_move = (t, x, y)
+            self.add(("move", t, x, y))
+        elif msg in _MOUSE_MSGS:
+            kind, btn = _MOUSE_MSGS[msg]
+            self.add((kind, t, x, y, btn))
+            if kind == "down":
+                self.counts["clicks"] += 1
+                if self.opts.get("pictures"):
+                    self.snap_q.put((t, x, y))
+        elif msg in (0x20A, 0x20E):
+            delta = ctypes.c_short((data >> 16) & 0xFFFF).value
+            self.add(("wheel", t, x, y, delta / 120.0, msg == 0x20E))
+
+    def key(self, msg, vk):
+        if self.state != "recording":
+            return
+        t = self.now()
+        if msg in (0x100, 0x104):
+            caps = bool(user32.GetKeyState(0x14) & 1) if IS_WIN else False
+            self.counts["keys"] += 1
+            self.add(("kdown", t, vk, False, caps))
+        elif msg in (0x101, 0x105):
+            self.add(("kup", t, vk))
+
+    def _snap(self, x, y):
+        """A small picture around (x, y), without moving the mouse."""
+        img, (vx, vy) = grab_screen(move_cursor=False)
+        w, h = SNAP_SIZES["Small"]
+        W, H = img.size
+        w, h = min(w, W), min(h, H)
+        left = min(max(x - vx - w // 2, 0), W - w)
+        top = min(max(y - vy - h // 2, 0), H - h)
+        crop = img.crop((left, top, left + w, top + h))
+        if HAVE_CV and float(np.asarray(crop.convert("L"), dtype=np.float32).std()) < 6:
+            return None                       # a plain area can't be found again reliably
+        return img_to_b64(crop), (x - vx - left, y - vy - top)
+
+    def _snap_loop(self):
+        while True:
+            item = self.snap_q.get()
+            if item is None:
+                return
+            t, x, y = item
+            try:
+                r = self.snapper(x, y)
+                if r:
+                    self.add(("snap", t, r[0], r[1]))
+            except Exception:
+                pass
+
+    def _hook_loop(self):
+        self.tid = kernel32.GetCurrentThreadId()
+
+        def mproc(n, wp, lp):
+            if n == 0:
+                ms = ctypes.cast(lp, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                if not (ms.flags & 0x01):                  # LLMHF_INJECTED: our own input
+                    try:
+                        self.mouse(wp, ms.pt.x, ms.pt.y, ms.mouseData)
+                    except Exception:
+                        pass
+            return user32.CallNextHookEx(None, n, wp, lp)
+
+        def kproc(n, wp, lp):
+            if n == 0:
+                kb = ctypes.cast(lp, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                if not (kb.flags & 0x10):                  # LLKHF_INJECTED
+                    try:
+                        self.key(wp, kb.vkCode)
+                    except Exception:
+                        pass
+            return user32.CallNextHookEx(None, n, wp, lp)
+
+        self._procs = (HOOKPROC(mproc), HOOKPROC(kproc))   # keep references alive
+        hmod = kernel32.GetModuleHandleW(None)
+        hm = user32.SetWindowsHookExW(14, self._procs[0], hmod, 0)      # WH_MOUSE_LL
+        hk = user32.SetWindowsHookExW(13, self._procs[1], hmod, 0)      # WH_KEYBOARD_LL
+        if not hm or not hk:
+            self.error = "Windows didn't allow recording (input hooks unavailable)"
+            for h in (hm, hk):
+                if h:
+                    user32.UnhookWindowsHookEx(h)
+            self.ready.set()
+            return
+        self.ready.set()
+        msg = wt.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        user32.UnhookWindowsHookEx(hm)
+        user32.UnhookWindowsHookEx(hk)
+
+    def start(self):
+        if not IS_WIN:
+            self.error = "recording only works on Windows"
+            return False
+        self.t0 = time.time()
+        self.state = "recording"
+        if self.opts.get("pictures") and HAVE_PIL:
+            threading.Thread(target=self._snap_loop, daemon=True).start()
+        self.thread = threading.Thread(target=self._hook_loop, daemon=True)
+        self.thread.start()
+        self.ready.wait(3)
+        if self.error:
+            self.state = "idle"
+            self.snap_q.put(None)
+            return False
+        return True
+
+    def pause(self):
+        if self.state == "recording":
+            self.state = "paused"
+            self.pause_start = time.time()
+
+    def resume(self):
+        if self.state == "paused":
+            self.paused_total += time.time() - (self.pause_start or time.time())
+            self.pause_start = None
+            self.state = "recording"
+
+    def _unhook(self):
+        if self.tid:
+            user32.PostThreadMessageW(self.tid, 0x0012, 0, 0)               # WM_QUIT
+        if self.thread:
+            self.thread.join(2)
+        self.snap_q.put(None)
+
+    def stop(self):
+        """Stop and return the recorded steps."""
+        if self.state == "paused":
+            self.resume()
+        self.state = "stopping"
+        if IS_WIN:
+            self._unhook()
+        deadline = time.time() + 3                  # let pending pictures finish
+        while not self.snap_q.empty() and time.time() < deadline:
+            time.sleep(0.05)
+        with self.lock:
+            events = list(self.events)
+        self.state = "idle"
+        return finish_recording(compress_recording(events, self.opts, exclude=self.exclude))
+
+    def cancel(self):
+        self.state = "idle"
+        if IS_WIN:
+            self._unhook()
+        with self.lock:
+            self.events = []
+
+
+def finish_recording(steps):
+    """Drop trailing mouse movement and waits (moving to the Stop button)."""
+    while steps and steps[-1].get("type") in ("move", "wait"):
+        steps.pop()
+    while steps and steps[0].get("type") == "wait":
+        steps.pop(0)
+    return steps
 
 
 # ---- global hotkeys --------------------------------------------------------------------------
@@ -1445,6 +4061,24 @@ DEFAULT_SETTINGS = {
     "default_watch_confirm": 2,
     "prefs_tab": "general",
     "install_id": "",               # last install this user has answered "keep jobs?" for
+    # ---- Clickue 4.5
+    "hk_stop": "Ctrl+Alt+X",        # emergency stop: end the running job, release keys, pause all
+    "hk_record": "Ctrl+Alt+R",      # start / stop recording a macro
+    "hk_rec_pause": "Ctrl+Alt+U",   # pause / resume the recording
+    "protect_secrets": False,       # keep alert settings encrypted with Windows (DPAPI)
+    "rec_moves": True,              # recorder: keep mouse movement (simplified)
+    "rec_pictures": True,           # recorder: save a picture of each clicked spot
+    "rec_timing": True,             # recorder: keep the pauses between actions
+    "run_log_on": True,             # keep the run history (steps, results; never typed text)
+    "video_on": False,              # screen video of runs (only jobs that ask for it)
+    "video_preset": "standard",
+    "video_dir": "",                # "" = <data folder>\recordings
+    "video_keep_days": 14,
+    "video_max_gb": 5,
+    "video_hide_text": True,        # black out the video while text is typed or pasted
+    "video_redact": [],             # screen areas always blacked out in videos [[x, y, w, h]]
+    "diag_keep": 30,                # failure screenshots kept
+    "warn_conflicts": True,
 }
 
 
@@ -1535,6 +4169,14 @@ def new_job(n=1):
         "wtest_at": None,           # scheduled watcher test
         "wtest_deadline": None,
         "wtest_click": False,       # watcher test: really click if the picture is missing
+        # ---- Clickue 4.5
+        "main_click": True,         # start with a click on the spot above (off = steps only)
+        "priority": "normal",       # when several jobs are due: high / normal / low
+        "let_others_run": False,    # while its steps wait, other jobs may click in between
+        "record_video": False,      # record the screen while this job runs (if videos are on)
+        "fail_shot": False,         # save a screenshot when its steps fail
+        "saved_vars": {},           # variables remembered between runs
+        "run_limit_s": DEFAULT_RUN_LIMIT_S,   # a run is stopped after this long
     }
 
 
@@ -1618,7 +4260,7 @@ class App:
                     parent=root)
                 if not keep:
                     try:
-                        make_backup(self.jobs, self.settings, "before-fresh-start")
+                        make_backup(self.jobs, self.settings, "before-fresh-start", self.groups)
                     except Exception:
                         pass
                     self.jobs = []
@@ -1632,6 +4274,12 @@ class App:
         root.deiconify()
         self.setup_logging()
         keep_awake(self.settings["keep_awake"])
+        self.ensure_runtime()
+        if self.schema_upgrade:
+            try:              # before the first save in the new format: keep a copy as it was
+                make_backup(self.jobs, self.settings, f"before-upgrade-{VERSION}", self.groups)
+            except Exception:
+                pass
 
         root.title(APP_NAME)
         g = fit_geometry(self.settings.get("main_geom"), 640, 600)
@@ -1681,6 +4329,12 @@ class App:
             self.log("Moved your jobs and settings from the old config file into the data folder.")
         if self.settings.get("paused"):
             self.log("All jobs are PAUSED (use Resume all).")
+        if self.schema_upgrade:
+            self.log(f"Your jobs were updated for Clickue {VERSION}. A copy of them as they were "
+                     f"is in \u2630 Menu \u2192 Backups (\u201cbefore-upgrade-{VERSION}\u201d).")
+            self.save()
+        if self.secret_note:
+            self.log(self.secret_note)
 
         self.refresh_tree(full=True)
         self.update_buttons()
@@ -1690,8 +4344,11 @@ class App:
         self.hk_thread = None
         self.start_hotkeys()
         threading.Thread(target=trim_history, daemon=True).start()
+        threading.Thread(target=trim_runlog, daemon=True).start()
+        threading.Thread(target=self.prune_media, daemon=True).start()
         self.root.after(3000, self.backup_check)
         self.start_tray()
+        self.start_input_thread()
         threading.Thread(target=self.scheduler_loop, daemon=True).start()
         root.after(500, self.ui_tick)
         root.after(200, self.poll_cmds)
@@ -1707,10 +4364,29 @@ class App:
             s_data, j_data, migrated = old.get("settings", {}), {"jobs": old.get("jobs", [])}, True
         if isinstance(s_data, dict):
             settings.update({k: v for k, v in s_data.items() if k in DEFAULT_SETTINGS})
-        for j in (j_data or {}).get("jobs", []):
+        self.secret_note = ""
+        for k in SECRET_KEYS:                 # protected alert settings (opt-in)
+            v = settings.get(k) or ""
+            if isinstance(v, str) and v.startswith("dpapi:"):
+                try:
+                    settings[k] = unprotect_text(v)
+                except ValueError as e:
+                    settings[k] = ""
+                    self.secret_note = (f"Your phone-alert settings couldn't be read ({e}). "
+                                        f"Enter them again in Preferences → Phone alerts.")
+        j_data = j_data if isinstance(j_data, dict) else {}
+        for j in j_data.get("jobs", []):
+            if not isinstance(j, dict):
+                continue
             base = new_job()
             base.update(j)
             jobs.append(base)
+        groups = j_data.get("groups", [])
+        self.groups = [g for g in groups if isinstance(g, dict) and g.get("id")] \
+            if isinstance(groups, list) else []
+        # files from Clickue 4.4 and earlier: keep a backup before saving in the new format
+        self.schema_upgrade = bool(jobs) and int(_clamp_num(j_data.get("schema", 1), 0, 999, 1)) \
+            < SCHEMA_VERSION
         return settings, jobs, migrated
 
     def save(self):
@@ -1718,8 +4394,15 @@ class App:
             return
         with self.lock:
             try:
-                write_json(SETTINGS_PATH, self.settings)
-                write_json(JOBS_PATH, {"app": APP_ID, "version": VERSION, "jobs": self.jobs})
+                s = dict(self.settings)
+                if s.get("protect_secrets") and HAVE_DPAPI:
+                    for k in SECRET_KEYS:
+                        if s.get(k):
+                            s[k] = protect_text(s[k])
+                write_json(SETTINGS_PATH, s)
+                write_json(JOBS_PATH, {"app": APP_ID, "version": VERSION,
+                                       "schema": SCHEMA_VERSION, "jobs": self.jobs,
+                                       "groups": getattr(self, "groups", [])})
             except Exception as e:
                 self.log(f"Could not save: {e}")
 
@@ -1759,6 +4442,8 @@ class App:
                     pass
 
     def log(self, msg):
+        settings = getattr(self, "settings", None) or {}
+        msg = redact(msg, [settings.get(k) for k in SECRET_KEYS])
         self.logq.put(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  {msg}")
         try:
             self.logger.info(msg)
@@ -1808,6 +4493,263 @@ class App:
 
     def find_job(self, job):
         return any(j is job for j in self.jobs)
+
+    # ------------------------------------------------------------ runs, queue, safety (4.5)
+    def ensure_runtime(self):
+        """Create the run-time helpers if they don't exist yet (also used by the tests,
+        which build the App without its window)."""
+        if getattr(self, "_rt_ready", False):
+            return
+        self._rt_ready = True
+        if not hasattr(self, "groups"):
+            self.groups = []
+        self.aq = ActionQueue()
+        self.workers = [self.aq.worker]
+        self.run_cancel = threading.Event()
+        self.run_info = None                  # what's running now (for the status bar)
+        self.run_stack = []
+        self.video_hide_until = 0.0
+        self.recorder = None
+        self.rec_window = None
+        self.last_video = None
+
+    def start_input_thread(self):
+        self.ensure_runtime()
+        self.aq.active = True
+        threading.Thread(target=self.input_loop, daemon=True).start()
+
+    def input_loop(self):
+        """The only thread that clicks and types while the app runs: one action at a time."""
+        while not self.stop.is_set():
+            it = self.aq.take(0.5)
+            if it:
+                self.run_item(it)
+
+    def run_item(self, it):
+        self.aq.running = it
+        if not self.run_stack:
+            self.run_cancel.clear()
+        self.run_stack.append(it)
+        it["started"] = time.time()
+        try:
+            job, kind = it["job"], it["kind"]
+            if it["fn"]:
+                it["result"] = it["fn"]()
+            elif kind == "wtest":
+                self.watch_test(job)
+            elif kind == "watchclick":
+                self.watch_click(job)
+            else:
+                self.execute(job, kind)
+        except Exception as e:
+            self.log(f"[{it['label']}] error: {e}")
+        finally:
+            HELD.release_all()
+            self.run_stack.pop()
+            self.aq.running = self.run_stack[-1] if self.run_stack else None
+            if not self.run_stack:
+                self.run_info = None
+            it["done"].set()
+
+    def queue_or_run(self, job, kind):
+        """Due work from the scheduler: into the queue (real app) or straight away (tests)."""
+        aq = getattr(self, "aq", None)
+        if aq is not None and aq.active:
+            aq.put(job, kind)
+        elif kind == "wtest":
+            self.watch_test(job)
+        elif kind == "watchclick":
+            self.watch_click(job)
+        else:
+            self.execute(job, kind)
+
+    def yield_to_others(self, job):
+        """Called while a job that allows it is waiting: run one queued action from another
+        job in between (never while keys or buttons are held)."""
+        aq = getattr(self, "aq", None)
+        if aq is None or len(self.run_stack) > 1 or HELD.holding():
+            return
+        it = aq.take(0, exclude_job=job.get("id"))
+        if it:
+            self.log(f"[{job.get('name')}] lets “{it['label']}” go first while it waits")
+            self.run_item(it)
+
+    def run_progress(self, run, i, st):
+        w, d = describe_step(st, private=True, groups=getattr(self, "groups", []))
+        self.run_info = {"job": run.job.get("name", ""), "step": run.num(i),
+                         "total": len(run.job.get("steps") or []), "what": f"{w}: {d}",
+                         "since": getattr(run, "t0", time.time()), "mode": run.mode}
+
+    def stop_current_run(self, why="stopped by you"):
+        """End the running job at the next safe point (between steps, or during a wait)."""
+        self.ensure_runtime()
+        self.run_cancel.set()
+        HELD.release_all()
+        self.log(f"Stop requested: the running job ends ({why})")
+
+    def emergency_stop(self):
+        """Hotkey / tray: stop the running job, drop queued clicks, let go of held keys and
+        buttons, stop recording, and pause everything."""
+        self.ensure_runtime()
+        self.run_cancel.set()
+        n = self.aq.clear()
+        HELD.release_all()
+        if self.recorder is not None:
+            try:
+                self.recorder.cancel()
+            except Exception:
+                pass
+            self.recorder = None
+            if self.rec_window is not None:
+                self.cmdq.put(lambda: self.rec_window.destroy() if self.rec_window else None)
+        with self.lock:
+            self.settings["paused"] = True
+            for j in self.jobs:
+                j["pending_click_at"] = None if is_watch(j) else j.get("pending_click_at")
+        self.save()
+        self.log(f"EMERGENCY STOP: running job stopped, {n} queued action(s) dropped, all held "
+                 f"keys/buttons released, everything paused. Resume all to continue.")
+        self.notify("Emergency stop: everything is paused.", "problem")
+
+    def queue_status(self):
+        """(running text, [waiting labels]) for the status line."""
+        aq = getattr(self, "aq", None)
+        if aq is None:
+            return "", []
+        info, running = self.run_info, aq.running
+        txt = ""
+        if running:
+            txt = f"Running “{running['label']}”"
+            if info and info.get("job") == running["label"]:
+                txt += f" · step {info['step']}"
+                if info.get("total"):
+                    txt += f" of {info['total']}"
+            txt += f" · {fmt_dur(time.time() - running.get('started', time.time()))}"
+        return txt, [it["label"] for it in aq.waiting()]
+
+    def note_waiting(self):
+        """Log once when a queued action has waited a while for another job."""
+        aq = getattr(self, "aq", None)
+        if aq is None or not aq.running:
+            return
+        for it in aq.waiting():
+            if not it["warned"] and time.time() - it["queued"] > 10:
+                it["warned"] = True
+                self.log(f"[{it['label']}] waiting its turn - “{aq.running['label']}” is "
+                         f"using the mouse and keyboard")
+
+    def begin_run(self, job):
+        """Start bookkeeping for one run: run id, history row, optional screen video."""
+        ctx = {"run": uuid.uuid4().hex[:10], "t0": time.time(), "video": None}
+        s = self.settings
+        if s.get("video_on") and job.get("record_video") and HAVE_CV:
+            v = RunVideo(video_folder(s), job.get("name", "job"), s.get("video_preset", "standard"),
+                         s.get("video_redact") or [],
+                         hidden=lambda: (s.get("video_hide_text", True)
+                                         and time.time() < getattr(self, "video_hide_until", 0)))
+            if v.start():
+                ctx["video"] = v
+                self.last_video = v
+                self.cmdq.put(lambda: self.show_video_bar(job.get("name", ""), v))
+                self.log(f"[{job.get('name')}] recording the screen for this run "
+                         f"({os.path.basename(v.path)})")
+            else:
+                self.log(f"[{job.get('name')}] screen video not recorded: {v.error}. The job "
+                         f"runs normally.")
+        if not s.get("run_log_on", True):
+            ctx["run"] = ""
+        if ctx["run"]:
+            v = ctx["video"]
+            append_runlog({"run": ctx["run"], "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                           "job": job.get("name", ""), "elapsed": 0, "video_pos": 0 if v else "",
+                           "step": "", "action": "Run started", "result": "",
+                           "video": os.path.basename(v.path) if v else ""})
+        return ctx
+
+    def end_run(self, ctx, job, ok, msg):
+        v = ctx.get("video")
+        if v is not None:
+            pos = v.position()
+            v.stop()
+            self.cmdq.put(self.hide_video_bar)
+            if v.status == "stopped":
+                self.log(f"[{job.get('name')}] screen video stopped early: {v.error}")
+                self.notify(f"{job.get('name')}: screen video stopped ({v.error})", "problem")
+            self.cmdq.put(lambda: self.prune_media())
+        else:
+            pos = ""
+        if ctx.get("run"):
+            append_runlog({"run": ctx["run"], "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                           "job": job.get("name", ""), "elapsed": round(time.time() - ctx["t0"], 1),
+                           "video_pos": pos, "step": "", "action": "Run finished",
+                           "result": "ok" if ok else f"failed: {msg}"[:200],
+                           "video": os.path.basename(v.path) if v and v.path else ""})
+        if not ok and job.get("fail_shot"):
+            self.failure_screenshot(job)
+
+    def failure_screenshot(self, job):
+        """Save what the screen looked like when a run failed (local only; areas you chose to
+        hide are blacked out; skipped while text was just entered)."""
+        s = self.settings
+        if s.get("video_hide_text", True) and time.time() < getattr(self, "video_hide_until", 0) + 2:
+            self.log(f"[{job.get('name')}] no failure screenshot: text was just being entered")
+            return
+        if not (HAVE_PIL and screen_available()):
+            return
+        try:
+            img, (ox, oy) = grab_screen(move_cursor=False)
+            d = ImageDraw.Draw(img)
+            for r in s.get("video_redact") or []:
+                if _clean_rect(r):
+                    x, y, w, h = r
+                    d.rectangle((x - ox, y - oy, x - ox + w, y - oy + h), fill=(0, 0, 0))
+            folder = data_path("diagnostics")
+            os.makedirs(folder, exist_ok=True)
+            p = os.path.join(folder, f"clickue_fail_{datetime.now():%Y%m%d_%H%M%S}_"
+                                     f"{safe_file_part(job.get('name'))}.png")
+            img.save(p)
+            prune_files(folder, DIAG_FILE_RE, keep_count=max(1, int(s.get("diag_keep", 30))))
+            self.log(f"[{job.get('name')}] failure screenshot saved: {p}")
+        except Exception as e:
+            self.log(f"[{job.get('name')}] couldn't save a failure screenshot ({e})")
+
+    def prune_media(self):
+        s = self.settings
+        try:
+            n = prune_files(video_folder(s), VIDEO_FILE_RE,
+                            keep_days=max(1, int(s.get("video_keep_days", 14))),
+                            max_bytes=max(1, int(s.get("video_max_gb", 5))) * 1024 ** 3)
+            if n:
+                self.log(f"Deleted {n} old screen video(s) (keep {s.get('video_keep_days')} days / "
+                         f"{s.get('video_max_gb')} GB)")
+        except Exception:
+            pass
+
+    def run_workflow(self, job, mode="run", debugger=None, ctx=None):
+        """Run a job's steps (no main click). Returns (ok, message, run)."""
+        self.ensure_runtime()
+        run = WorkflowRun(self, job, mode=mode, debugger=debugger, ctx=ctx,
+                          groups=self.groups)
+        ok, msg = run.run()
+        return ok, msg, run
+
+    def dry_run_steps(self, job):
+        """Walk through a job's steps without clicking or typing: targets found? conditions
+        true? Returns a list of report lines."""
+        self.ensure_runtime()
+        lines = []
+        if job.get("main_click", True):
+            if is_watch(job) and job.get("watch_trigger") == "appears" and job.get("watch_click_picture"):
+                lines.append(("0", "Click", "clicks the watched picture itself when it appears"))
+            else:
+                ok, x, y, msg, how = adapter_for(job).locate(job, activate=False, check_cover=False)
+                lines.append(("0", "Click", f"would click at ({x}, {y}) - found {how}" if ok
+                              else f"target NOT found: {msg}"))
+        ok, msg, run = self.run_workflow(job, mode="dry")
+        lines += run.report
+        if not ok:
+            lines.append(("!", "Problem", msg))
+        return lines
 
     # ------------------------------------------------------------ scheduling
     def schedule_first(self, job, now=None):
@@ -1891,14 +4833,11 @@ class App:
                 for j, kind in due:
                     if self.stop.is_set():
                         break
-                    if kind == "wtest":
-                        self.watch_test(j)
-                    elif kind == "watchcheck":
-                        self.watch_check(j)
-                    elif kind == "watchclick":
-                        self.watch_click(j)
+                    if kind == "watchcheck":
+                        self.watch_check(j)          # only looks: never waits for the mouse
                     else:
-                        self.execute(j, kind)
+                        self.queue_or_run(j, kind)
+                self.note_waiting()
             except Exception as e:
                 self.log(f"Scheduler error: {e}")
             self.stop.wait(1.0)
@@ -2039,7 +4978,9 @@ class App:
         try:
             out["picture"] = picture_on_screen(job["watch_png"], job.get("watch_scale"),
                                                area=job_area(job))
-            if job.get("watch_trigger") == "appears" and job.get("watch_click_picture"):
+            if not job.get("main_click", True):
+                out["button"] = (True, 0, 0, "", "steps only")
+            elif job.get("watch_trigger") == "appears" and job.get("watch_click_picture"):
                 f, px, py = out["picture"][:3]
                 out["button"] = (f, px, py, "" if f else "the picture isn't showing",
                                  "the picture itself")
@@ -2062,7 +5003,8 @@ class App:
         size = "" if not sc or abs(sc - 1) < 0.01 else f" at {sc:.0%} size"
         pic = (f"Picture found ({score:.0%}{size})" if found
                else f"Picture NOT on screen (best {score:.0%})")
-        btn = (f"button found at ({bx}, {by}) by {bhow}" if bok
+        btn = ("no click of its own, runs its steps" if bhow == "steps only" else
+               f"button found at ({bx}, {by}) by {bhow}" if bok
                else f"button NOT found: {bmsg}")
         if clicked is not None:
             act = "clicked the button" if clicked[0] else f"click failed: {clicked[1]}"
@@ -2194,7 +5136,7 @@ class App:
                 self.wait_msgs[wkey] = msg
             self.save()
 
-    def perform(self, job, check_idle, point=None):
+    def perform(self, job, check_idle, point=None, debugger=None):
         """Click the job's spot (or `point`), then run its extra steps.
         Returns (ok, message, seconds-until-retry, x, y, how-it-was-found)."""
         if not screen_available():
@@ -2202,66 +5144,62 @@ class App:
         need = int(self.settings.get("idle_seconds", 0) or 0)
         if check_idle and need > 0 and idle_seconds() < need:
             return False, "you were using the mouse/keyboard", 5, 0, 0, ""
-        if point:
+        main = job.get("main_click", True)
+        if not main:
+            x, y, how = 0, 0, "steps only"
+        elif point:
             x, y, how = int(point[0]), int(point[1]), "the picture itself"
         else:
             ok, x, y, msg, how = locate_spot(job, activate=True)
             if not ok:
                 return False, msg, 30, x, y, how
-        ok, msg = do_click(x, y, job["button"], job["clicks"], self.settings["restore_cursor"])
-        if ok and job.get("steps"):
-            sok, smsg = self.run_steps(job)
-            msg = smsg
-            if not sok:
-                self.log(f"[{job['name']}] extra steps stopped: {smsg}")
-                self.notify(f"{job['name']}: extra steps stopped ({smsg})", "problem")
+        self.ensure_runtime()
+        ctx = self.begin_run(job)
+        ok, msg, steps_ok = False, "", True
+        try:
+            if main:
+                if debugger:
+                    debugger.before_main(job, x, y, how)
+                ok, msg = do_click(x, y, job["button"], job["clicks"],
+                                   self.settings["restore_cursor"])
+                if ctx.get("run"):
+                    append_runlog({"run": ctx["run"], "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                   "job": job.get("name", ""),
+                                   "elapsed": round(time.time() - ctx["t0"], 1),
+                                   "video_pos": ctx["video"].position() if ctx.get("video") else "",
+                                   "step": "0", "action": f"Click: {job['button']} at ({x}, {y}), {how}",
+                                   "result": "ok" if ok else f"failed: {msg}"})
+            else:
+                ok, msg = True, ""
+            if ok and job.get("steps"):
+                sok, smsg = self.run_steps(job, debugger=debugger, ctx=ctx)
+                msg, steps_ok = smsg, sok
+                if not sok:
+                    self.log(f"[{job['name']}] extra steps stopped: {smsg}")
+                    self.notify(f"{job['name']}: extra steps stopped ({smsg})", "problem")
+                    if not main:
+                        ok = False
+            elif ok and not main:
+                msg = "nothing to do (no steps)"
+        finally:
+            self.end_run(ctx, job, ok and steps_ok, msg)
         return ok, msg, 30, x, y, how
 
-    def run_steps(self, job):
+    def run_steps(self, job, debugger=None, ctx=None):
         """Run a job's extra steps in order. Returns (ok, message)."""
         steps = job.get("steps") or []
-        for i, st in enumerate(steps, 1):
-            if self.stop.is_set():
-                return False, "Clickue is closing"
-            time.sleep(0.15)
-            t = st.get("type")
-            if t == "waitpic":
-                ok, msg = self.wait_for_picture(st)
-                if ok:
-                    self.log(f"[{job['name']}] step {i}: picture {msg}")
-                    continue
-                if msg.startswith("timeout") and st.get("on_timeout") == "continue":
-                    self.log(f"[{job['name']}] step {i}: {msg} - continuing")
-                    continue
-                return False, f"step {i}: {msg}"
-            if t == "wait":
-                lo, hi = int(st.get("min", 1)), int(st.get("max", st.get("min", 1)))
-                secs = random.randint(min(lo, hi), max(lo, hi)) if hi != lo else lo
-                end = time.time() + secs
-                while time.time() < end and not self.stop.is_set():
-                    time.sleep(0.2)
-                continue
-            if not screen_available():
-                return False, f"step {i}: screen locked or session disconnected"
-            if t == "click":
-                ok, x, y, msg, how = locate_spot(st, activate=False)
-                if not ok:
-                    return False, f"step {i} (click): {msg}"
-                ok, msg = do_click(x, y, st.get("button", "left"), int(st.get("clicks", 1)),
-                                   self.settings["restore_cursor"])
-            elif t == "type":
-                ok, msg = send_text(st.get("text", ""))
-            elif t == "key":
-                ok, msg = press_keys(st.get("keys", ""))
-            else:
-                ok, msg = False, f"unknown step type {t}"
-            if not ok:
-                return False, f"step {i}: {msg}"
+        ok, msg, run = self.run_workflow(job, mode="debug" if debugger else "run",
+                                         debugger=debugger, ctx=ctx)
+        if not ok:
+            return False, msg
+        if not job.get("main_click", True):
+            return True, f"ran {len(steps)} step{'s' if len(steps) != 1 else ''}"
         return True, f"clicked + {len(steps)} extra step{'s' if len(steps) != 1 else ''}"
 
-    def wait_for_picture(self, st):
+    def wait_for_picture(self, st, tick=None):
         """A chain step: wait until a picture appears (optionally click it) or disappears.
-        Returns (ok, message); a message starting with "timeout" means it didn't happen in time."""
+        Returns (ok, message); a message starting with "timeout" means it didn't happen in time.
+        tick() is called while waiting (stop checks; may raise StopRun)."""
         if not HAVE_CV:
             return False, "picture matching isn't installed"
         if not st.get("png"):
@@ -2273,7 +5211,7 @@ class App:
         while not self.stop.is_set():
             if screen_available():
                 try:
-                    found, x, y, score, sc = picture_on_screen(st["png"], hint)
+                    found, x, y, score, sc = picture_on_screen(st["png"], hint, area=st.get("area"))
                 except Exception as e:
                     return False, f"couldn't look at the screen ({e})"
                 if found:
@@ -2291,11 +5229,14 @@ class App:
                                f" within {fmt_dur(limit)}")
             nxt = time.time() + STEP_POLL_S
             while time.time() < nxt and not self.stop.is_set():
+                if tick:
+                    tick()
                 time.sleep(min(0.2, STEP_POLL_S))
         return False, "Clickue is closing"
 
-    def draw_capture(self, parent, prompt, on_done):
-        """Freeze the screen, let the user drag a box, call on_done(picture) (PIL image).
+    def draw_capture(self, parent, prompt, on_done, with_rect=False):
+        """Freeze the screen, let the user drag a box, call on_done(picture) (PIL image), or
+        on_done(picture, [x, y, w, h] on screen) with with_rect=True.
         The whole app hides meanwhile."""
         if not (HAVE_PIL and HAVE_CV) or getattr(self, "_spot_busy", False):
             return
@@ -2371,7 +5312,10 @@ class App:
                 crop = shot.crop(b)
                 ov.destroy()
                 restore()
-                on_done(crop)
+                if with_rect:
+                    on_done(crop, [vx + b[0], vy + b[1], b[2] - b[0], b[3] - b[1]])
+                else:
+                    on_done(crop)
 
             def cancel(e=None):
                 ov.destroy()
@@ -2585,11 +5529,19 @@ class App:
         self.jpause_btn = tool("⏸  Pause", self.toggle_pause_job, 1, 80, needs_sel=True)
         self.pause_btn = tool("⏸  Pause all", self.toggle_pause_all, 1, 75)
         tool("🧪  Tests", self.open_tests, 2, 70)
+        tool("⏺  Record", lambda: self.toggle_recording(from_hotkey=False), 2, 65)
         tool("↓  Import", self.import_jobs, 3, 20, right=True)
         tool("↑  Export", self.export_jobs, 3, 25, right=True)
         self.more_btn = ttk.Button(bar, text="More  ▾", command=self.show_more_menu)
         self.more_menu = tk.Menu(self.root, tearoff=0)
         bar.bind("<Configure>", lambda e: self.layout_toolbar())
+
+        # ---- what's running now, and what's waiting its turn
+        self.run_bar = ttk.Frame(main, style="Card.TFrame", padding=(10, 4))
+        self.run_lbl = ttk.Label(self.run_bar, style="CardSub.TLabel")
+        self.run_lbl.pack(side="left", fill="x", expand=True)
+        ttk.Button(self.run_bar, text="■  Stop this run", style="Small.TButton",
+                   command=lambda: self.stop_current_run()).pack(side="right")
 
         # ---- status bar (packed first so it always keeps its place at the bottom)
         self.status = ttk.Label(main, text="", style="Status.TLabel", padding=(0, 6, 0, 0))
@@ -3313,10 +6265,33 @@ class App:
         paused = self.settings.get("paused")
         self.set_text(self.pause_btn, "▶  Resume all" if paused else "⏸  Pause all")
         tray = "tray on" if self.tray else "tray off"
-        self.status.configure(text=f"v{VERSION}   ·   {tray}   ·   Data: {DATA_DIR}   ·   "
-                                   f"Shortcuts: Ctrl+N new · Enter edit · Space start/stop · P pause · "
-                                   f"Ctrl+T test · Del delete")
+        stop_hk = self.settings.get("hk_stop")
+        self.status.configure(text=f"v{VERSION}   ·   {tray}   ·   "
+                                   + (f"Emergency stop: {stop_hk}   ·   " if stop_hk else "")
+                                   + f"Data: {DATA_DIR}   ·   Shortcuts: Ctrl+N new · Enter edit · "
+                                     f"Space start/stop · P pause · Ctrl+T test · Del delete")
+        self.update_run_bar()
         self.root.after(1000, self.ui_tick)
+
+    def update_run_bar(self):
+        """Show what's running and what's waiting its turn (hidden when idle)."""
+        bar = getattr(self, "run_bar", None)
+        if bar is None:
+            return
+        txt, waiting = self.queue_status()
+        rec = getattr(self, "recorder", None)
+        if rec is not None and rec.state in ("recording", "paused"):
+            txt = ("● Recording a macro" if rec.state == "recording" else "Recording paused") + \
+                  (f" · {txt}" if txt else "")
+        if waiting:
+            txt += (" · " if txt else "") + "Waiting their turn: " + ", ".join(waiting[:4]) + \
+                   (f" +{len(waiting) - 4}" if len(waiting) > 4 else "")
+        if txt:
+            self.run_lbl.configure(text=("▶ " if not txt.startswith("●") else "") + txt)
+            if not bar.winfo_ismapped():
+                bar.pack(fill="x", pady=(0, 6), before=self.paned)
+        elif bar.winfo_ismapped():
+            bar.pack_forget()
 
     # ------------------------------------------------------------ tests window
     def open_tests(self, job=None):
@@ -3559,6 +6534,10 @@ class App:
                               command=lambda: WatchTestDialog(self, job))
             m.add_command(label="Open Tests…", command=lambda: self.open_tests(job))
             m.add_command(label="Stats & click history…", command=lambda: StatsDialog(self, job))
+            m.add_command(label="Run history…", command=lambda: self.open_run_history(job["name"]))
+            if job.get("steps"):
+                m.add_command(label="Dry run of its steps (no clicks)",
+                              command=lambda: DryRunDialog(self, copy.deepcopy(job)))
             m.add_separator()
             m.add_command(label="Duplicate", command=self.duplicate_job)
             m.add_command(label="Delete…", command=self.delete_job)
@@ -3586,6 +6565,7 @@ class App:
                 pystray.MenuItem(
                     lambda item: "Resume all" if self.settings.get("paused") else "Pause all",
                     lambda icon, item: self.cmdq.put("pause")),
+                pystray.MenuItem("Stop everything now", lambda icon, item: self.emergency_stop()),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Exit", lambda icon, item: self.cmdq.put("exit")))
             self.tray = pystray.Icon(APP_ID, self.icon_img, APP_NAME, menu)
@@ -3605,6 +6585,12 @@ class App:
             bindings[1] = (s["hk_pause"], "pause")
         if s.get("hk_show"):
             bindings[2] = (s["hk_show"], "toggle_window")
+        if s.get("hk_stop"):
+            bindings[3] = (s["hk_stop"], "stop_all")
+        if s.get("hk_record"):
+            bindings[4] = (s["hk_record"], "record")
+        if s.get("hk_rec_pause"):
+            bindings[5] = (s["hk_rec_pause"], "rec_pause")
         if not bindings:
             return
         self.hk_thread = HotkeyThread(bindings, self.cmdq.put,
@@ -3630,7 +6616,8 @@ class App:
             if self.settings.get("backups_on", True) and self.settings.get("last_backup") != today:
                 with self.lock:
                     jobs, settings = copy.deepcopy(self.jobs), dict(self.settings)
-                make_backup(jobs, settings, "auto")
+                    groups = copy.deepcopy(getattr(self, "groups", []))
+                make_backup(jobs, settings, "auto", groups)
                 prune_backups(self.settings.get("backups_keep", 14))
                 self.settings["last_backup"] = today
                 self.save()
@@ -3643,23 +6630,23 @@ class App:
     def backup_now(self, tag="manual"):
         with self.lock:
             jobs, settings = copy.deepcopy(self.jobs), dict(self.settings)
-        path = make_backup(jobs, settings, tag)
+            groups = copy.deepcopy(getattr(self, "groups", []))
+        path = make_backup(jobs, settings, tag, groups)
         self.log(f"Backup saved: {os.path.basename(path)}")
         return path
 
     def restore_backup(self, path, replace=True):
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+        jobs, groups, problems = load_import_file(path)
         self.backup_now("before-restore")
         new = []
-        for j in data.get("jobs", []):
-            b = new_job()
-            b.update({k: v for k, v in j.items() if k not in RUNTIME_KEYS})
+        for b in jobs:
             b["id"] = uuid.uuid4().hex
             for k in RUNTIME_KEYS:
                 b[k] = new_job().get(k)
             new.append(b)
         with self.lock:
+            have = {g.get("id") for g in self.groups}
+            self.groups.extend(g for g in groups if g["id"] not in have)
             if replace:
                 for j in self.jobs:
                     self.stop_job(j)
@@ -3671,7 +6658,8 @@ class App:
                     self.start_job(b)
         self.save()
         self.refresh_tree(full=True)
-        self.log(f"Restored {len(new)} job(s) from {os.path.basename(path)}")
+        self.log(f"Restored {len(new)} job(s) from {os.path.basename(path)}"
+                 + (f" ({len(problems)} problem(s) fixed or left out)" if problems else ""))
         return len(new)
 
     # ------------------------------------------------------------ undo delete
@@ -3713,8 +6701,20 @@ class App:
                 cmd = self.cmdq.get_nowait()
             except queue.Empty:
                 break
+            if callable(cmd):
+                try:
+                    cmd()
+                except Exception as e:
+                    self.log(f"UI error: {e}")
+                continue
             if cmd == "show":
                 self.show_window()
+            elif cmd == "stop_all":
+                self.emergency_stop()
+            elif cmd == "record":
+                self.toggle_recording()
+            elif cmd == "rec_pause":
+                self.toggle_recording_pause()
             elif cmd == "pause":
                 self.toggle_pause_all()
             elif cmd == "toggle_window":
@@ -3809,6 +6809,7 @@ class App:
             self.remember_geometry()
         except Exception:
             pass
+        self.emergency_stop_quiet()
         self.stop_hotkeys()
         self.stop.set()
         keep_awake(False)
@@ -3855,6 +6856,223 @@ class App:
         w["watch_confirm"] = int(self.settings.get("default_watch_confirm", 2))
         JobEditor(self, w, is_new=True)
 
+    # ------------------------------------------------------------ 4.5: windows, recording, debug
+    def hide_all_windows(self, keep=None):
+        """Hide every visible Clickue window (except `keep`). Returns restore()."""
+        wins = []
+        tops = [self.root] + [w for w in self.root.winfo_children() if isinstance(w, tk.Toplevel)]
+        for w in tops:
+            try:
+                if w is not keep and w.winfo_exists() and w.winfo_viewable():
+                    wins.append(w)
+            except Exception:
+                pass
+        for w in wins:
+            try:
+                w.withdraw()
+            except Exception:
+                pass
+        self._spot_busy = True
+
+        def restore():
+            for w in reversed(wins):
+                try:
+                    if w is self.root:
+                        self.restore_main()
+                    elif w.winfo_exists():
+                        w.deiconify()
+                except Exception:
+                    pass
+            self.root.after(600, lambda: setattr(self, "_spot_busy", False))
+        return restore
+
+    def warn_conflicts(self, job):
+        if not (self.settings.get("warn_conflicts", True) and job.get("enabled")):
+            return
+        with self.lock:
+            found = find_conflicts(self.jobs, job)
+        if not found:
+            return
+        a, b, why = found[0]
+        more = f" (and {len(found) - 1} more)" if len(found) > 1 else ""
+        msg = (f"Heads-up: “{a}” and “{b}” {why}{more}.\n\nThey never click at the same "
+               f"time (one job uses the mouse at a time), but one may change what the other "
+               f"expects to see. If that's a problem, give them different times, or combine "
+               f"them into one job with steps.")
+        self.log(f"Note: “{a}” and “{b}” {why} - they take turns")
+        messagebox.showinfo(APP_NAME, msg, parent=self.root)
+
+    # ---- step through (debugger)
+    def start_debug(self, job, parent=None):
+        self.ensure_runtime()
+        if not self.aq.active:
+            return
+        restore = self.hide_all_windows()
+        win = DebugWindow(self, job, on_close=restore)
+        dbg = StepDebugger(self, win)
+        win.dbg = dbg
+        snap = copy.deepcopy(job)
+
+        def run():
+            ok, msg, *_ = self.perform(snap, check_idle=False, debugger=dbg)
+            self.cmdq.put(lambda: win.finished(ok, msg))
+            return ok
+        it = self.aq.put(snap, "debug", priority="high", fn=run,
+                         label=f"{job.get('name', '')} (step through)")
+        if it is None:
+            win.finished(False, "this job is already running or waiting")
+
+    # ---- recording macros
+    def toggle_recording(self, from_hotkey=True):
+        if getattr(self, "recorder", None) is not None:
+            self.stop_recording()
+        elif from_hotkey:
+            s = self.settings
+            self.start_recording(dict(moves=s.get("rec_moves", True),
+                                      pictures=s.get("rec_pictures", True),
+                                      timing=s.get("rec_timing", True)),
+                                 "", pause_jobs=True, countdown=0)
+        else:
+            RecordDialog(self)
+
+    def toggle_recording_pause(self):
+        rec = getattr(self, "recorder", None)
+        if rec is None:
+            return
+        if rec.state == "paused":
+            rec.resume()
+            self.log("Recording resumed")
+        else:
+            rec.pause()
+            self.log("Recording paused")
+
+    def start_recording(self, opts, name, pause_jobs=True, countdown=0):
+        self.ensure_runtime()
+        if self.recorder is not None:
+            return
+        if not IS_WIN:
+            messagebox.showinfo(APP_NAME, "Recording macros only works on Windows.",
+                                parent=self.root)
+            return
+        if self.aq.running:
+            messagebox.showinfo(APP_NAME, f"“{self.aq.running['label']}” is running right now. "
+                                          f"Wait for it to finish (or stop it), then record.",
+                                parent=self.root)
+            return
+        self._rec_name = name
+        self._rec_unpause = pause_jobs and not self.settings.get("paused")
+        if self._rec_unpause:
+            self.settings["paused"] = True
+        rec = MacroRecorder(opts, on_limit=lambda: self.cmdq.put(self.stop_recording))
+        self._rec_restore = self.hide_all_windows()
+        ind = RecordingIndicator(self)
+        self.rec_window = ind
+        self.recorder = rec
+
+        def begin(n):
+            if self.recorder is not rec:
+                return
+            if n > 0:
+                ind.lbl.configure(text=f"Recording starts in {n}…")
+                self.root.after(1000, lambda: begin(n - 1))
+                return
+            rec.exclude.append(ind.rect())
+            if not rec.start():
+                err = rec.error
+                self.recorder = None
+                self._end_recording_ui()
+                messagebox.showerror(APP_NAME, f"Couldn't start recording:\n{err}",
+                                     parent=self.root)
+                return
+            self.log("Recording a macro (Clickue's own windows and clicks are not recorded)")
+        begin(countdown)
+
+    def _end_recording_ui(self):
+        if self.rec_window is not None:
+            try:
+                self.rec_window.destroy()
+            except Exception:
+                pass
+            self.rec_window = None
+        if getattr(self, "_rec_unpause", False):
+            self.settings["paused"] = False
+            self._rec_unpause = False
+        restore = getattr(self, "_rec_restore", None)
+        self._rec_restore = None
+        if restore:
+            restore()
+
+    def stop_recording(self, save=True):
+        rec = getattr(self, "recorder", None)
+        if rec is None:
+            return
+        self.recorder = None
+        if not save:
+            rec.cancel()
+            self._end_recording_ui()
+            self.log("Recording thrown away")
+            return
+        try:
+            steps = rec.stop() if rec.state != "idle" else []
+        except Exception as e:
+            steps = []
+            self.log(f"Recording failed: {e}")
+        self._end_recording_ui()
+        if not steps:
+            messagebox.showinfo(APP_NAME, "Nothing was recorded.", parent=self.root)
+            return
+        with self.lock:
+            n = sum(1 for j in self.jobs if j.get("name", "").startswith("Recorded macro")) + 1
+        job = new_job(n)
+        job.update(name=self._rec_name or f"Recorded macro {n}", main_click=False, steps=steps,
+                   use_image=False, interval_s=8 * 3600)
+        self.log(f"Recorded {len(steps)} steps. Check them, then save the job.")
+        self.show_window()
+        JobEditor(self, job, is_new=True, start_on=False)
+
+    def show_video_bar(self, name, video):
+        """A small red bar at the top of the screen while a run's video is recorded."""
+        self.hide_video_bar()
+        bar = tk.Toplevel(self.root)
+        bar.overrideredirect(True)
+        bar.attributes("-topmost", True)
+        bg = "#7f1d1d"
+        bar.configure(bg=bg)
+        lbl = tk.Label(bar, text=f"● Recording the screen: {short_title(name, 30)}", bg=bg,
+                       fg="#ffffff", font=(self.font_family, 9, "bold"), padx=8, pady=3)
+        lbl.pack(side="left")
+
+        def toggle():
+            video.paused = not video.paused
+            pb.configure(text="Resume video" if video.paused else "Pause video")
+            lbl.configure(text=("⏸ Video paused: " if video.paused else "● Recording the screen: ")
+                          + short_title(name, 30))
+        pb = tk.Button(bar, text="Pause video", command=toggle, relief="flat", bg="#991b1b",
+                       fg="#ffffff", bd=0, padx=6, font=(self.font_family, 8))
+        pb.pack(side="left", padx=2, pady=2)
+        tk.Button(bar, text="Stop video", command=lambda: (video.stop(), self.hide_video_bar()),
+                  relief="flat", bg="#991b1b", fg="#ffffff", bd=0, padx=6,
+                  font=(self.font_family, 8)).pack(side="left", padx=(2, 4), pady=2)
+        bar.update_idletasks()
+        sw = bar.winfo_screenwidth()
+        bar.geometry(f"+{max(0, (sw - bar.winfo_reqwidth()) // 2)}+0")
+        self.video_bar = bar
+
+    def hide_video_bar(self):
+        b = getattr(self, "video_bar", None)
+        self.video_bar = None
+        if b is not None:
+            try:
+                b.destroy()
+            except Exception:
+                pass
+
+    def open_run_history(self, job_name=None):
+        RunHistoryDialog(self, job_name)
+
+    def open_groups(self):
+        GroupsDialog(self)
+
     # ------------------------------------------------------------ ☰ menu
     def show_main_menu(self):
         m = self.main_menu
@@ -3862,6 +7080,12 @@ class App:
         m.add_command(label="New click…", accelerator="Ctrl+N", command=self.add_job)
         m.add_command(label="New watcher…", accelerator="Ctrl+Shift+N", command=self.add_watcher)
         m.add_command(label="Tests…", accelerator="Ctrl+T", command=self.open_tests)
+        m.add_command(label="Record a macro…", accelerator=self.settings.get("hk_record") or "",
+                      command=lambda: self.toggle_recording(from_hotkey=False))
+        m.add_command(label="Step groups…", command=self.open_groups)
+        m.add_command(label="Run history & videos…", command=self.open_run_history)
+        m.add_command(label="Stop everything now", accelerator=self.settings.get("hk_stop") or "",
+                      command=self.emergency_stop)
         m.add_separator()
         m.add_command(label="Undo delete", accelerator="Ctrl+Z", command=self.undo_delete,
                       state="normal" if self.undo_stack else "disabled")
@@ -4156,6 +7380,11 @@ class App:
         """Hide this app, find the spot, mark it for a few seconds, then come back."""
         activate = job.get("target_mode") == "window" and job.get("bring_to_front", True)
         owner = parent or self.root
+        if not job.get("main_click", True):
+            messagebox.showinfo(APP_NAME, "This job has no click of its own: it only runs its "
+                                          "steps. Use Dry run or Step through (in Edit) to "
+                                          "check them.", parent=owner)
+            return
         if getattr(self, "_spot_busy", False):
             return
         self._spot_busy = True
@@ -4343,8 +7572,11 @@ class App:
             return
         owner = parent or self.root
         if not messagebox.askyesno(
-                APP_NAME, f"The app will hide and '{j['name']}' will click once at "
-                          f"{target_text(j)}.\nThe schedule is not changed. Continue?",
+                APP_NAME, (f"The app will hide and '{j['name']}' will click once at "
+                           f"{target_text(j)}" if j.get("main_click", True) else
+                           f"The app will hide and '{j['name']}' will run its steps once")
+                          + (" (then run its steps)" if j.get("steps") and j.get("main_click", True)
+                             else "") + ".\nThe schedule is not changed. Continue?",
                 parent=owner):
             return
         if getattr(self, "_spot_busy", False):
@@ -4353,11 +7585,20 @@ class App:
         restore = self.hide_app(parent)
 
         def go():
-            th = threading.Thread(target=self.execute, args=(j, "manual"), daemon=True)
-            th.start()
+            self.ensure_runtime()
+            it = self.aq.put(j, "manual", priority="high") if self.aq.active else None
+            if it is None and self.aq.active:
+                self.root.after(600, restore)       # already queued or running
+                return
+            if it is None:
+                th = threading.Thread(target=self.execute, args=(j, "manual"), daemon=True)
+                th.start()
+                done = lambda: not th.is_alive()
+            else:
+                done = it["done"].is_set
 
             def wait():
-                if th.is_alive():
+                if not done():
                     self.root.after(200, wait)
                 else:
                     self.root.after(600, restore)
@@ -4373,13 +7614,24 @@ class App:
         SettingsDialog(self)
 
     # ------------------------------------------------------------ import / export
-    def export_to(self, path):
+    def export_to(self, path, jobs=None):
+        """Write jobs (all, or the given ones) and the step groups they use to a file.
+        Secret text is never exported."""
         with self.lock:
-            skip = set(RUNTIME_KEYS) | {"last_result", "last_run", "count"}
-            jobs = [{k: v for k, v in j.items() if k not in skip} for j in self.jobs]
-        write_json(path, {"app": APP_ID, "version": VERSION,
+            skip = set(RUNTIME_KEYS) | {"last_result", "last_run", "count", "saved_vars"}
+            src = self.jobs if jobs is None else jobs
+            out = []
+            for j in src:
+                d = {k: v for k, v in j.items() if k not in skip}
+                d["steps"] = strip_secret_text(j.get("steps"))
+                out.append(d)
+            used = {st.get("group_id") for j in src for st in j.get("steps") or []
+                    if st.get("type") == "group"}
+            groups = [dict(g, steps=strip_secret_text(g.get("steps")))
+                      for g in getattr(self, "groups", []) if g.get("id") in used]
+        write_json(path, {"app": APP_ID, "version": VERSION, "schema": SCHEMA_VERSION,
                           "exported": datetime.now().isoformat(timespec="seconds"),
-                          "jobs": jobs})
+                          "jobs": out, "groups": groups})
 
     def export_jobs(self):
         with self.lock:
@@ -4408,60 +7660,104 @@ class App:
         if not path:
             return
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            raw = data.get("jobs") if isinstance(data, dict) else data
-            raw = [j for j in (raw or []) if isinstance(j, dict) and "x" in j and "y" in j]
-            if not raw:
-                raise ValueError("no jobs found in that file")
+            raw, groups, problems = load_import_file(path)
         except Exception as e:
             messagebox.showerror(APP_NAME, f"Could not import:\n{e}", parent=self.root)
             return
         with self.lock:
             have = len(self.jobs)
+        risky = risky_step_summary(raw, groups)
+        names = {"type": "type text", "paste": "paste text", "key": "press keys",
+                 "keyhold": "hold keys down"}
+        rtxt = ", ".join(f"{names[k]} ({n})" for k, n in risky.items() if n)
+        review = ("\n\nSome steps send keyboard input: " + rtxt + "." if rtxt else "") + \
+            ("\n\n" + str(len(problems)) + " problem(s) were fixed or left out, e.g.: "
+             + problems[0] if problems else "")
         choice = True
         if have:
             choice = messagebox.askyesnocancel(
-                APP_NAME, f"Found {len(raw)} job(s) in the file.\n\n"
+                APP_NAME, f"Found {len(raw)} job(s) in the file.{review}\n\n"
+                          f"Imported jobs start STOPPED so you can check them first.\n\n"
                           f"Yes  =  add them to your {have} current job(s)\n"
-                          f"No   =  replace your current jobs\n"
+                          f"No   =  replace your current jobs (a backup is saved first)\n"
                           f"Cancel  =  do nothing", parent=self.root)
             if choice is None:
                 return
+        elif not messagebox.askokcancel(
+                APP_NAME, f"Import {len(raw)} job(s)?{review}\n\nImported jobs start STOPPED "
+                          f"so you can check them first (Edit, Tests → Dry run).",
+                parent=self.root):
+            return
+        if choice is False:
+            try:
+                self.backup_now("before-import")
+            except Exception:
+                pass
         new = []
-        for j in raw:
-            b = new_job()
-            b.update({k: v for k, v in j.items() if k not in RUNTIME_KEYS})
-            b.update(id=uuid.uuid4().hex, count=0, last_run=None, last_result="Imported")
+        id_map = {}
+        with self.lock:
+            existing = {g["id"] for g in self.groups}
+            for g in groups:
+                gid = g["id"]
+                if gid in existing:
+                    id_map[gid] = uuid.uuid4().hex
+                    g = dict(g, id=id_map[gid], name=g["name"] + " (imported)")
+                self.groups.append(g)
+        for b in raw:
+            b.update(id=uuid.uuid4().hex, count=0, last_run=None, last_result="Imported - check, "
+                     "then start", enabled=False, paused=False)
+            for st in b.get("steps", []):
+                if st.get("type") == "group" and st.get("group_id") in id_map:
+                    st["group_id"] = id_map[st["group_id"]]
             for k in RUNTIME_KEYS:
                 b[k] = None
+            b["run_clicks"], b["miss_count"], b["armed"] = 0, 0, True
             new.append(b)
         with self.lock:
             if choice is False:
+                for j in self.jobs:
+                    self.stop_job(j)
                 self.jobs = new
             else:
                 self.jobs.extend(new)
-            for b in new:
-                if b.get("enabled"):
-                    self.schedule_first(b)
-        self.log(f"Imported {len(new)} job(s) from {path}")
+        self.log(f"Imported {len(new)} job(s) from {path}. They are stopped until you start "
+                 f"them." + (f" {len(problems)} problem(s) fixed or left out." if problems else ""))
         self.save()
         self.refresh_tree(full=True)
 
     # ------------------------------------------------------------ uninstall
     def uninstall(self, parent):
-        items = ("• all scheduled clicks (they stop now)\n• your settings and jobs\n"
-                 "• the log files\n• the start-with-Windows entry")
-        if FROZEN:
-            items += "\n• Clickue.exe itself"
-        if not messagebox.askyesno(APP_NAME, f"Uninstall {APP_NAME}?\n\nThis removes:\n{items}",
+        installed = bool(read_install_id()) and IS_WIN and FROZEN
+        unins = os.path.join(PROGRAM_DIR, "unins000.exe")
+        items = ["• Clickue stops: no more clicks, hotkeys or tray icon",
+                 "• the start-with-Windows entry"]
+        if installed and os.path.exists(unins):
+            items.append("• the program and its shortcuts (Windows' uninstaller opens next)")
+        elif FROZEN:
+            items.append("• Clickue.exe itself")
+        if not messagebox.askyesno(APP_NAME, f"Uninstall {APP_NAME}?\n\nThis removes:\n"
+                                             + "\n".join(items) + "\n\nNext you can choose to "
+                                             "keep or delete your jobs and other data.",
                                    icon="warning", parent=parent):
+            return
+        vdir = video_folder(self.settings)
+        custom_videos = os.path.normcase(os.path.abspath(vdir)) != \
+            os.path.normcase(os.path.abspath(data_path("recordings")))
+        extra = (f"\n\nScreen videos in your own folder ({vdir}): only Clickue's video files "
+                 f"there are deleted, nothing else." if custom_videos else "")
+        delete_data = messagebox.askyesnocancel(
+            APP_NAME, f"Also delete your Clickue data?\n\n{DATA_DIR}\n(jobs, settings, step "
+                      f"groups, click and run history, logs, backups, failure screenshots and "
+                      f"screen videos kept there){extra}\n\nYes = delete my data\n"
+                      f"No = keep it (installing Clickue again picks it up)\n"
+                      f"Cancel = don't uninstall", icon="warning", parent=parent)
+        if delete_data is None:
             return
         backup_path = None
         with self.lock:
             has_jobs = bool(self.jobs)
-        if has_jobs and messagebox.askyesno(
-                APP_NAME, "Save a backup copy of your jobs to your Documents folder first?\n"
+        if delete_data and has_jobs and messagebox.askyesno(
+                APP_NAME, "Save a copy of your jobs to your Documents folder first?\n"
                           "(You can load it later with Import…)", parent=parent):
             try:
                 docs = os.path.join(os.path.expanduser("~"), "Documents")
@@ -4469,11 +7765,13 @@ class App:
                     docs, f"Clickue jobs backup {datetime.now():%Y-%m-%d %H%M}.json")
                 self.export_to(backup_path)
             except Exception as e:
-                if not messagebox.askyesno(APP_NAME, f"Backup failed:\n{e}\n\nUninstall anyway?",
-                                           parent=parent):
+                if not messagebox.askyesno(APP_NAME, f"Saving the copy failed:\n{e}\n\n"
+                                                     f"Uninstall anyway?", parent=parent):
                     return
                 backup_path = None
 
+        self.ensure_runtime()
+        self.emergency_stop_quiet()
         self.uninstalled = True
         self.stop_hotkeys()
         self.stop.set()
@@ -4487,23 +7785,55 @@ class App:
         self.close_logging()
         self.logger.addHandler(logging.NullHandler())
         time.sleep(0.3)
-        shutil.rmtree(DATA_DIR, ignore_errors=True)
-
-        msg = f"{APP_NAME} has been uninstalled."
+        notes = []
+        if delete_data:
+            if custom_videos:
+                prune_files(vdir, VIDEO_FILE_RE, keep_count=0)
+            if is_clickue_data_dir(DATA_DIR):
+                shutil.rmtree(DATA_DIR, ignore_errors=True)
+                notes.append("Your data was deleted.")
+            else:
+                notes.append(f"Your data was NOT deleted, because this folder doesn't look like "
+                             f"Clickue's own data folder:\n{DATA_DIR}")
+        else:
+            notes.append(f"Your data was kept in:\n{DATA_DIR}")
         if backup_path:
-            msg += f"\n\nYour jobs were saved to:\n{backup_path}"
-        if FROZEN and IS_WIN:
+            notes.append(f"A copy of your jobs was saved to:\n{backup_path}")
+        exe = sys.executable
+        if installed and os.path.exists(unins):
+            try:
+                subprocess.Popen([unins] + ([] if delete_data else ["/KEEPDATA"]))
+                notes.append("Windows' uninstaller opens next to remove the program.")
+            except Exception:
+                notes.append("Finish in Windows Settings → Apps → Clickue → Uninstall.")
+        elif FROZEN and IS_WIN and os.path.basename(exe).lower() == "clickue.exe" \
+                and '"' not in exe:
             try:
                 subprocess.Popen(
-                    f'cmd /c ping 127.0.0.1 -n 4 > nul & del /f /q "{sys.executable}"',
+                    f'cmd /c ping 127.0.0.1 -n 4 > nul & del /f /q "{exe}"',
                     creationflags=0x08000000)  # CREATE_NO_WINDOW
-                msg += "\n\nClickue.exe will delete itself in a few seconds."
+                notes.append("Clickue.exe will delete itself in a few seconds."
+                             + (f" Then you can delete its folder:\n{PROGRAM_DIR}" if PORTABLE
+                                else ""))
             except Exception:
-                msg += f"\n\nPlease delete this file yourself:\n{sys.executable}"
+                notes.append(f"Please delete this file yourself:\n{exe}")
         else:
-            msg += f"\n\nTo finish, delete the program folder:\n{PROGRAM_DIR}"
-        messagebox.showinfo(APP_NAME, msg, parent=parent)
+            notes.append(f"To finish, delete the program folder:\n{PROGRAM_DIR}")
+        messagebox.showinfo(APP_NAME, f"{APP_NAME} has been uninstalled.\n\n" + "\n\n".join(notes),
+                            parent=parent)
         self.root.destroy()
+
+    def emergency_stop_quiet(self):
+        """Stop everything without pausing or saving (exit / uninstall)."""
+        try:
+            self.run_cancel.set()
+            self.aq.clear()
+            HELD.release_all()
+            if self.recorder is not None:
+                self.recorder.cancel()
+                self.recorder = None
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------- dialogs
@@ -4653,8 +7983,264 @@ class Dialog(tk.Toplevel):
         self.destroy()
 
 
+class StepsEditor:
+    """The editable timeline of steps, used by the job editor and the step-group editor.
+    Blocks (If / Otherwise / End, Repeat / End) are indented; recorded steps show when they
+    happened in the recording."""
+    ADD_MENU = (("click", "Click a spot"), ("wait", "Wait"), ("waitpic", "Wait for a picture"),
+                ("type", "Type text"), ("paste", "Paste text"), ("key", "Press keys"), None,
+                ("if", "If … (then End)"), ("else", "Otherwise (inside an If)"),
+                ("repeat", "Repeat … (then End)"), ("set", "Set a variable"),
+                ("group", "Use a step group"), None,
+                ("scroll", "Scroll"), ("drag", "Drag"), ("move", "Move the mouse"),
+                ("mouse", "Mouse button down / up"), ("keyhold", "Hold a key down / let go"))
+
+    def __init__(self, app, window, parent, steps, title, intro, allow_groups=True):
+        self.app, self.window, self.steps = app, window, steps
+        self.allow_groups = allow_groups
+        self.insert_at = None
+        g = ttk.LabelFrame(parent, text=title, padding=(12, 8))
+        g.pack(fill="x", pady=(12, 0))
+        self.frame = g
+        ttk.Label(g, style="Muted.TLabel", wraplength=600, justify="left", text=intro).pack(
+            anchor="w")
+        tf = ttk.Frame(g, style="Card.TFrame", padding=1)
+        tf.pack(fill="x", pady=(6, 6))
+        self.tree = ttk.Treeview(tf, columns=("n", "at", "what", "detail"), show="headings",
+                                 height=7, selectmode="extended")
+        for c, h, w, st in (("n", "#", 40, False), ("at", "At", 56, False),
+                            ("what", "Step", 150, False), ("detail", "Details", 380, True)):
+            self.tree.heading(c, text=h, anchor="w")
+            self.tree.column(c, width=w, minwidth=30, stretch=st, anchor="w")
+        sb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.tree.pack(fill="x", side="left", expand=True)
+        self.tree.bind("<Double-1>", lambda e: self.edit())
+        self.tree.bind("<Delete>", lambda e: self.remove())
+        br = ttk.Frame(g)
+        br.pack(fill="x")
+        self.add_btn = ttk.Button(br, text="＋ Add step  ▾", style="Small.TButton",
+                                  command=self.show_add_menu)
+        self.add_btn.pack(side="left")
+        self.add_menu = tk.Menu(window, tearoff=0)
+        for item in self.ADD_MENU:
+            if item is None:
+                self.add_menu.add_separator()
+            elif item[0] != "group" or allow_groups:
+                self.add_menu.add_command(label=item[1], command=lambda k=item[0]: self.add(k))
+        for text, cmd in (("Edit", self.edit), ("Duplicate", self.duplicate),
+                          ("Remove", self.remove), ("▲", lambda: self.move(-1)),
+                          ("▼", lambda: self.move(1))):
+            ttk.Button(br, text=text, style="Small.TButton", command=cmd).pack(side="left",
+                                                                              padx=(4, 0))
+        self.tools_btn = ttk.Button(br, text="More  ▾", style="Small.TButton",
+                                    command=self.show_tools_menu)
+        self.tools_btn.pack(side="right")
+        self.tools_menu = tk.Menu(window, tearoff=0)
+        self.problem = ttk.Label(g, style="Warn.TLabel", wraplength=600, justify="left")
+        self.refresh()
+
+    # ---- menus
+    def show_add_menu(self):
+        b = self.add_btn
+        self.add_menu.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height() + 2)
+
+    def show_tools_menu(self):
+        m = self.tools_menu
+        m.delete(0, "end")
+        m.add_command(label="Make all waits shorter (× 0.5)", command=lambda: self.scale_waits(0.5))
+        m.add_command(label="Make all waits longer (× 2)", command=lambda: self.scale_waits(2))
+        m.add_command(label="Remove waits shorter than 0.5 s", command=self.drop_short_waits)
+        m.add_command(label="Remove mouse movements", command=self.drop_moves)
+        if self.allow_groups:
+            m.add_separator()
+            m.add_command(label="Save selected steps as a group…", command=self.save_as_group)
+        b = self.tools_btn
+        m.tk_popup(b.winfo_rootx() + b.winfo_width() - 240, b.winfo_rooty() + b.winfo_height() + 2)
+
+    # ---- list
+    def refresh(self, select=None):
+        tr = self.tree
+        tr.delete(*tr.get_children())
+        depths = step_depths(self.steps)
+        groups = getattr(self.app, "groups", [])
+        for i, st in enumerate(self.steps):
+            what, det = describe_step(st, groups=groups)
+            at = st.get("rec_t")
+            at = f"{at:.1f}s" if isinstance(at, (int, float)) else ""
+            tr.insert("", "end", iid=str(i), values=(i + 1, at, "    " * depths[i] + what, det))
+        _, errors = parse_blocks(self.steps)
+        if errors:
+            self.problem.configure(text="⚠ " + errors[0])
+            if not self.problem.winfo_ismapped():
+                self.problem.pack(anchor="w", pady=(6, 0))
+        elif self.problem.winfo_ismapped():
+            self.problem.pack_forget()
+        if select is not None and 0 <= select < len(self.steps):
+            tr.selection_set(str(select))
+            tr.see(str(select))
+
+    def selected(self):
+        return sorted(int(i) for i in self.tree.selection())
+
+    def first_selected(self):
+        sel = self.selected()
+        return sel[0] if sel else None
+
+    def errors(self):
+        return parse_blocks(self.steps)[1]
+
+    # ---- editing
+    def add(self, kind):
+        i = self.first_selected()
+        sel = self.selected()
+        self.insert_at = (sel[-1] + 1) if sel else len(self.steps)
+        if kind in ("else", "end"):
+            self.steps.insert(self.insert_at, {"type": kind})
+            self.refresh(self.insert_at)
+            return
+        if kind == "group" and not getattr(self.app, "groups", []):
+            messagebox.showinfo(APP_NAME, "There are no step groups yet. Select some steps and "
+                                          "use More → Save selected steps as a group…",
+                                parent=self.window)
+            return
+        StepDialog(self.app, self, {"type": kind})
+        del i
+
+    def step_saved(self, step, index=None):
+        if index is None:
+            at = self.insert_at if self.insert_at is not None else len(self.steps)
+            at = min(max(0, at), len(self.steps))
+            self.steps.insert(at, step)
+            if step.get("type") in ("if", "repeat"):
+                self.steps.insert(at + 1, {"type": "end"})
+            index = at
+            self.insert_at = None
+        else:
+            self.steps[index] = step
+        self.refresh(index)
+
+    def edit(self):
+        i = self.first_selected()
+        if i is None:
+            return
+        if self.steps[i].get("type") in ("else", "end"):
+            return
+        StepDialog(self.app, self, copy.deepcopy(self.steps[i]), i)
+
+    def duplicate(self):
+        sel = self.selected()
+        if not sel:
+            return
+        block = [copy.deepcopy(self.steps[i]) for i in sel]
+        at = sel[-1] + 1
+        self.steps[at:at] = block
+        self.refresh(at)
+
+    def remove(self):
+        sel = self.selected()
+        if not sel:
+            return
+        for i in reversed(sel):
+            del self.steps[i]
+        self.refresh(min(sel[0], len(self.steps) - 1))
+
+    def move(self, d):
+        sel = self.selected()
+        if not sel:
+            return
+        lo, hi = sel[0], sel[-1]
+        if lo + d < 0 or hi + d >= len(self.steps):
+            return
+        block = self.steps[lo:hi + 1]
+        del self.steps[lo:hi + 1]
+        self.steps[lo + d:lo + d] = block
+        self.refresh()
+        for k in range(lo + d, hi + d + 1):
+            self.tree.selection_add(str(k))
+        self.tree.see(str(lo + d))
+
+    def scale_waits(self, f):
+        for st in self.steps:
+            if st.get("type") == "wait":
+                st["min"] = round(st.get("min", 1) * f, 1)
+                st["max"] = round(st.get("max", st.get("min", 1)) * f, 1)
+            elif st.get("type") in ("move", "drag"):
+                st["path"] = [[round(p[0] * f, 3), p[1], p[2]] for p in st.get("path", [])]
+        self.refresh()
+
+    def drop_short_waits(self):
+        self.steps[:] = [s for s in self.steps
+                         if not (s.get("type") == "wait" and s.get("max", 1) < 0.5)]
+        self.refresh()
+
+    def drop_moves(self):
+        self.steps[:] = [s for s in self.steps if s.get("type") != "move"]
+        self.refresh()
+
+    def save_as_group(self):
+        sel = self.selected()
+        chosen = [self.steps[i] for i in sel] if sel else list(self.steps)
+        if not chosen:
+            return
+        if any(s.get("type") == "group" for s in chosen):
+            messagebox.showerror(APP_NAME, "A step group can't contain “Use a step group” steps.",
+                                 parent=self.window)
+            return
+        if parse_blocks(chosen)[1]:
+            messagebox.showerror(APP_NAME, "Select whole blocks (an If or Repeat together with "
+                                           "its End).", parent=self.window)
+            return
+
+        def done(name):
+            g = {"id": uuid.uuid4().hex, "name": name, "steps": copy.deepcopy(chosen)}
+            with self.app.lock:
+                self.app.groups.append(g)
+            self.app.save()
+            if sel and messagebox.askyesno(
+                    APP_NAME, f"Saved the group “{name}”. Replace the selected steps here with "
+                              f"one “Use group” step?", parent=self.window):
+                lo = sel[0]
+                for i in reversed(sel):
+                    del self.steps[i]
+                self.steps.insert(lo, {"type": "group", "group_id": g["id"], "retries": 0,
+                                       "retry_wait": 2, "on_fail": "stop", "careful": False})
+                self.refresh(lo)
+        TextPrompt(self.app, self.window, "Save as a step group",
+                   "Name for this group of steps (you can reuse it in other jobs):",
+                   f"Group {len(getattr(self.app, 'groups', [])) + 1}", done)
+
+
+class TextPrompt(Dialog):
+    """Ask for one line of text."""
+
+    def __init__(self, app, parent, title, prompt, initial, on_ok):
+        super().__init__(app, title, parent)
+        self.on_ok = on_ok
+        ttk.Label(self.body, text=prompt, wraplength=420, justify="left").pack(anchor="w")
+        self.v = tk.StringVar(value=initial)
+        e = ttk.Entry(self.body, textvariable=self.v, width=44)
+        e.pack(anchor="w", pady=(8, 0), fill="x")
+        e.bind("<Return>", lambda ev: self.ok())
+        ttk.Button(self.footer, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(self.footer, text="OK", style="Accent.TButton", command=self.ok).pack(
+            side="right", padx=6)
+        self.finish()
+        e.focus_set()
+        e.select_range(0, "end")
+
+    def ok(self):
+        v = self.v.get().strip()[:MAX_NAME]
+        if not v:
+            self.bell()
+            return
+        self.destroy()
+        self.on_ok(v)
+
+
 class JobEditor(Dialog):
-    def __init__(self, app, job, is_new):
+    def __init__(self, app, job, is_new, start_on=None):
         self.kind = "watch" if is_watch(job) else "click"
         title = ("New screen watcher" if self.kind == "watch" else "New click") if is_new \
             else f"Edit - {job['name']}"
@@ -4688,6 +8274,12 @@ class JobEditor(Dialog):
                            if self.kind == "watch" else "Where to click", padding=(12, 8))
         self.where_frame = g
         g.pack(fill="x", pady=(12, 0))
+        self.v_main = tk.BooleanVar(value=bool(job.get("main_click", True)))
+        ttk.Checkbutton(g, variable=self.v_main, command=self.main_toggled, text=(
+            "Click a button when this happens (off: only run the steps below)"
+            if self.kind == "watch" else
+            "Start with a click on this spot (off: only run the steps below)")).pack(
+            anchor="w", pady=(0, 6))
         top = ttk.Frame(g)
         top.pack(fill="x")
         ttk.Button(top, text="◎  Pick on screen…", style="Accent.TButton",
@@ -4783,6 +8375,7 @@ class JobEditor(Dialog):
 
         # ---------------- click
         g2 = ttk.LabelFrame(f, text="Click", padding=(12, 8))
+        self.click_frame = g2
         g2.pack(fill="x", pady=(12, 0))
         self.v_button = tk.StringVar(value=job["button"])
         ttk.Combobox(g2, values=("left", "right", "middle"), state="readonly", width=8,
@@ -4828,7 +8421,9 @@ class JobEditor(Dialog):
         self.build_hours_section(f, job)
         self.build_steps_section(f, job)
 
-        self.v_enabled = tk.BooleanVar(value=job.get("enabled", False) or is_new)
+        self.build_run_options(f, job)
+        self.v_enabled = tk.BooleanVar(value=(job.get("enabled", False) or is_new)
+                                       if start_on is None else start_on)
         ttk.Checkbutton(f, text="Start watching when I save" if self.kind == "watch"
                         else "Start this schedule when I save",
                         variable=self.v_enabled).pack(anchor="w", pady=(10, 0))
@@ -4837,8 +8432,11 @@ class JobEditor(Dialog):
         ttk.Button(b, text="Cancel", command=self.destroy).pack(side="right")
         ttk.Button(b, text="Save", style="Accent.TButton", command=self.on_save).pack(
             side="right", padx=6)
+        ttk.Button(b, text="Dry run", command=self.dry_run_steps).pack(side="left")
+        ttk.Button(b, text="Step through…", command=self.step_through).pack(side="left", padx=6)
 
         self.mode_changed()
+        self.main_toggled()
         self.update_info()
         self.update_thumb()
         self.random_toggled()
@@ -4932,101 +8530,107 @@ class JobEditor(Dialog):
             if isinstance(w, ttk.Combobox) and on:
                 w.state(["readonly"])
 
-    # ---- extra steps
+    # ---- extra steps (the timeline)
     def build_steps_section(self, f, job):
-        g = ttk.LabelFrame(f, text="More steps after the click (optional)", padding=(12, 8))
-        g.pack(fill="x", pady=(12, 0))
-        ttk.Label(g, style="Muted.TLabel", wraplength=560, justify="left", text=(
-            "Run right after the main click, in order: click other spots, wait, wait for a "
-            "picture to appear or go away (and click it), type text or press keys. Chain them "
-            "to react to each click's result, e.g. click Refresh, wait for Export to appear, "
-            "click it, wait for Save, click it.")).pack(anchor="w")
-        tf = ttk.Frame(g, style="Card.TFrame", padding=1)
-        tf.pack(fill="x", pady=(6, 6))
-        self.steps_tree = ttk.Treeview(tf, columns=("n", "what", "detail"), show="headings",
-                                       height=4, selectmode="browse")
-        for c, h, w, st in (("n", "#", 40, False), ("what", "Step", 120, False),
-                            ("detail", "Details", 360, True)):
-            self.steps_tree.heading(c, text=h, anchor="w")
-            self.steps_tree.column(c, width=w, minwidth=30, stretch=st, anchor="w")
-        self.steps_tree.pack(fill="x")
-        self.steps_tree.bind("<Double-1>", lambda e: self.edit_step())
-        br = ttk.Frame(g)
-        br.pack(fill="x")
-        for text, kind in (("+ Click", "click"), ("+ Wait", "wait"),
-                           ("+ Wait for picture", "waitpic"), ("+ Type", "type"),
-                           ("+ Keys", "key")):
-            ttk.Button(br, text=text, style="Small.TButton",
-                       command=lambda k=kind: StepDialog(self.app, self, {"type": k})).pack(
-                side="left", padx=(0, 4))
-        for text, cmd in (("▼", lambda: self.move_step(1)), ("▲", lambda: self.move_step(-1)),
-                          ("Remove", self.remove_step), ("Edit", self.edit_step)):
-            ttk.Button(br, text=text, style="Small.TButton", command=cmd).pack(side="right",
-                                                                              padx=(4, 0))
+        self.stepsed = StepsEditor(
+            self.app, self, f, self.steps, "Steps (optional)",
+            "Run in order after the click above (or on their own if that click is off): click "
+            "other spots, wait, wait for a picture, type or paste text, press keys, scroll or "
+            "drag, branch with If, repeat with Repeat, or reuse a saved step group. Recorded "
+            "macros appear here too, ready to edit.")
 
     @staticmethod
     def describe_step(st):
-        t = st.get("type")
-        if t == "click":
-            how = "by picture" if st.get("use_image") and st.get("snap_png") else "fixed spot"
-            return ("Click", f"{st.get('button', 'left')} {'double ' if st.get('clicks') == 2 else ''}"
-                             f"click at ({st.get('x')}, {st.get('y')}), {how}")
-        if t == "wait":
-            lo, hi = st.get("min", 1), st.get("max", st.get("min", 1))
-            return "Wait", (f"{fmt_dur(lo)}" if lo == hi else f"{fmt_dur(lo)} to {fmt_dur(hi)} (random)")
-        if t == "type":
-            txt = st.get("text", "")
-            return "Type text", (txt[:60] + "…") if len(txt) > 60 else txt.replace("\n", " ⏎ ")
-        if t == "key":
-            return "Press keys", st.get("keys", "")
-        if t == "waitpic":
-            what = ("until it appears, then click it" if st.get("until", "appears") == "appears"
-                    and st.get("click_it") else
-                    "until it appears" if st.get("until", "appears") == "appears"
-                    else "until it goes away")
-            then = "stop the chain" if st.get("on_timeout", "stop") == "stop" else "continue"
-            return "Wait for picture", (f"{what} · up to {fmt_dur(int(st.get('timeout', 60)))}, "
-                                        f"then {then}")
-        return t, ""
+        return describe_step(st)
 
     def refresh_steps(self):
-        tr = self.steps_tree
-        tr.delete(*tr.get_children())
-        for i, st in enumerate(self.steps):
-            what, det = self.describe_step(st)
-            tr.insert("", "end", iid=str(i), values=(i + 1, what, det))
+        self.stepsed.refresh()
 
-    def selected_step(self):
-        sel = self.steps_tree.selection()
-        return int(sel[0]) if sel else None
+    def main_toggled(self):
+        on = bool(self.v_main.get())
 
-    def step_saved(self, step, index=None):
-        if index is None:
-            self.steps.append(step)
-            index = len(self.steps) - 1
-        else:
-            self.steps[index] = step
-        self.refresh_steps()
-        self.steps_tree.selection_set(str(index))
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, ttk.Checkbutton) and str(c.cget("variable")) == str(self.v_main):
+                    continue
+                try:
+                    if isinstance(c, ttk.Combobox):
+                        c.state(["!disabled", "readonly"] if on else ["disabled"])
+                    else:
+                        c.state(["!disabled"] if on else ["disabled"])
+                except Exception:
+                    pass
+                walk(c)
+        for fr in (self.where_frame, self.click_frame):
+            walk(fr)
+        if on:
+            self.mode_changed()
 
-    def edit_step(self):
-        i = self.selected_step()
-        if i is not None:
-            StepDialog(self.app, self, copy.deepcopy(self.steps[i]), i)
+    def build_run_options(self, f, job):
+        g = ttk.LabelFrame(f, text="Run options", padding=(12, 8))
+        g.pack(fill="x", pady=(12, 0))
+        r = ttk.Frame(g)
+        r.pack(anchor="w")
+        ttk.Label(r, text="Priority when several jobs are due").pack(side="left")
+        self.v_prio = tk.StringVar(value={"high": "High", "low": "Low"}.get(
+            job.get("priority"), "Normal"))
+        ttk.Combobox(r, values=("High", "Normal", "Low"), state="readonly", width=8,
+                     textvariable=self.v_prio).pack(side="left", padx=6)
+        ttk.Label(r, text="(only one job uses the mouse and keyboard at a time)",
+                  style="Muted.TLabel").pack(side="left")
+        self.v_yield = tk.BooleanVar(value=bool(job.get("let_others_run")))
+        ttk.Checkbutton(g, variable=self.v_yield, text=(
+            "While its steps are waiting, let other jobs click in between (only if they "
+            "can't disturb this job)")).pack(anchor="w", pady=(6, 0))
+        self.v_video = tk.BooleanVar(value=bool(job.get("record_video")))
+        ttk.Checkbutton(g, variable=self.v_video, text=(
+            "Record the screen while it runs (turn on screen videos in Preferences → "
+            "Recording & video)")).pack(anchor="w", pady=(2, 0))
+        self.v_failshot = tk.BooleanVar(value=bool(job.get("fail_shot")))
+        ttk.Checkbutton(g, variable=self.v_failshot, text=(
+            "Save a screenshot on this computer if its steps fail (may show what's on "
+            "screen)")).pack(anchor="w", pady=(2, 0))
+        r = ttk.Frame(g)
+        r.pack(anchor="w", pady=(6, 0))
+        self.run_limit = self.hms_row(r, 0, "Stop a run that takes longer than",
+                                      int(job.get("run_limit_s", DEFAULT_RUN_LIMIT_S)))
 
-    def remove_step(self):
-        i = self.selected_step()
-        if i is not None:
-            del self.steps[i]
-            self.refresh_steps()
+    def editor_job(self):
+        """The job as it is in the form right now (for dry runs and stepping through)."""
+        d = self.collect()
+        if not d:
+            return None
+        temp = copy.deepcopy(self.job)
+        temp.update(d)
+        if temp["kind"] == "watch" and not temp.get("main_click", True):
+            pass
+        return temp
 
-    def move_step(self, d):
-        i = self.selected_step()
-        if i is None or not (0 <= i + d < len(self.steps)):
+    def dry_run_steps(self):
+        job = self.editor_job()
+        if job is None:
             return
-        self.steps[i], self.steps[i + d] = self.steps[i + d], self.steps[i]
-        self.refresh_steps()
-        self.steps_tree.selection_set(str(i + d))
+        errs = parse_blocks(job.get("steps") or [])[1]
+        if errs:
+            messagebox.showerror(APP_NAME, f"Fix the steps first: {errs[0]}", parent=self)
+            return
+        DryRunDialog(self.app, job, self)
+
+    def step_through(self):
+        job = self.editor_job()
+        if job is None:
+            return
+        errs = parse_blocks(job.get("steps") or [])[1]
+        if errs:
+            messagebox.showerror(APP_NAME, f"Fix the steps first: {errs[0]}", parent=self)
+            return
+        if not messagebox.askyesno(
+                APP_NAME, "Step through this job for real?\n\nIt clicks and types like a "
+                          "normal run, but stops before every step so you can see what it "
+                          "will do and why. Clickue's other windows hide meanwhile.",
+                parent=self):
+            return
+        self.app.start_debug(job, self)
 
     def geom_key(self):
         return f"JobEditor-{self.kind}"
@@ -5631,7 +9235,14 @@ class JobEditor(Dialog):
                      limit_clicks=max(1, int(self.v_lim_n.get())),
                      limit_until_on=bool(self.v_until_on.get()),
                      limit_until=self.v_until.get().strip(),
-                     steps=copy.deepcopy(self.steps))
+                     steps=copy.deepcopy(self.steps),
+                     main_click=bool(self.v_main.get()),
+                     priority=self.v_prio.get().lower(),
+                     let_others_run=bool(self.v_yield.get()),
+                     record_video=bool(self.v_video.get()),
+                     fail_shot=bool(self.v_failshot.get()),
+                     run_limit_s=max(10, min(MAX_RUN_LIMIT_S, self.hms_value(self.run_limit)))
+                     if self.hms_value(self.run_limit) else DEFAULT_RUN_LIMIT_S)
             if self.kind == "watch":
                 d.update(kind="watch", watch_png=self.watch_png,
                          watch_interval_s=self.hms_value(self.w_interval),
@@ -5671,10 +9282,18 @@ class JobEditor(Dialog):
                 messagebox.showerror(APP_NAME, "\u201cStop at\u201d must look like "
                                                "2026-12-31 18:00.", parent=self)
                 return None
-        if d["target_mode"] == "window" and not d["window_title"]:
+        if d["target_mode"] == "window" and not d["window_title"] and d["main_click"]:
             messagebox.showerror(APP_NAME, "Enter the window title to follow, or pick the spot "
                                            "again, or choose “Fixed screen position”.",
                                  parent=self)
+            return None
+        if not d["main_click"] and not d["steps"]:
+            messagebox.showerror(APP_NAME, "Add at least one step, or turn the click on.",
+                                 parent=self)
+            return None
+        errs = parse_blocks(d["steps"])[1]
+        if errs:
+            messagebox.showerror(APP_NAME, f"Please fix the steps: {errs[0]}", parent=self)
             return None
         # keep window details from the pick only if the title wasn't changed by hand
         same_title = d["window_title"] == self.job.get("window_title") or self.window_class
@@ -5740,6 +9359,7 @@ class JobEditor(Dialog):
         app.save()
         app.refresh_tree(full=True)
         self.destroy()
+        app.warn_conflicts(j)
 
 
     def save_watcher(self, d):
@@ -5758,8 +9378,8 @@ class JobEditor(Dialog):
             messagebox.showerror(APP_NAME, "Draw the area to search in, or choose "
                                            "\u201cthe whole screen\u201d.", parent=self)
             return
-        if (not d["watch_click_picture"] and not d["snap_png"] and d["target_mode"] == "screen"
-                and d["x"] == 0 and d["y"] == 0):
+        if (d["main_click"] and not d["watch_click_picture"] and not d["snap_png"]
+                and d["target_mode"] == "screen" and d["x"] == 0 and d["y"] == 0):
             messagebox.showerror(APP_NAME, "Pick the button to click (\u201cPick on "
                                            "screen\u201d).", parent=self)
             return
@@ -5783,6 +9403,7 @@ class JobEditor(Dialog):
             app.v_filter.set("all")
         app.refresh_tree(full=True)
         self.destroy()
+        app.warn_conflicts(j)
 
 
 class TestDialog(Dialog):
@@ -6337,42 +9958,55 @@ class WatchTestDialog(Dialog):
 
 
 class StepDialog(Dialog):
-    """Add or edit one extra step of a job: click a spot, wait, type text, press keys."""
+    """Add or edit one step of a job or step group."""
     TYPES = (("click", "Click a spot"), ("wait", "Wait"), ("waitpic", "Wait for a picture"),
-             ("type", "Type text"), ("key", "Press keys"))
+             ("type", "Type text"), ("paste", "Paste text"), ("key", "Press keys"),
+             ("if", "If (condition)"), ("repeat", "Repeat"), ("set", "Set a variable"),
+             ("group", "Use a step group"), ("scroll", "Scroll"), ("drag", "Drag"),
+             ("move", "Move the mouse"), ("mouse", "Mouse button down / up"),
+             ("keyhold", "Hold a key down / let go"))
+    COND_CHOICES = (("picture", "shown", "a picture is showing"),
+                    ("picture", "gone", "a picture is NOT showing"),
+                    ("window", "open", "a window is open"),
+                    ("window", "closed", "a window is NOT open"),
+                    ("var", "", "a variable has a value"))
 
     def __init__(self, app, editor, step, index=None):
-        super().__init__(app, "Edit step" if index is not None else "Add a step", editor)
+        super().__init__(app, "Edit step" if index is not None else "Add a step",
+                         getattr(editor, "window", editor))
         self.editor, self.index = editor, index
         self.step = dict(step)
+        self.groups = list(getattr(app, "groups", []))
         f = self.body
         row = ttk.Frame(f)
         row.pack(fill="x")
         ttk.Label(row, text="Step").pack(side="left", padx=(0, 8))
-        names = [n for _, n in self.TYPES]
+        names = [n for k, n in self.TYPES if k != "group" or self.groups]
         self.v_type = tk.StringVar(value=dict(self.TYPES).get(self.step.get("type", "click")))
-        cb = ttk.Combobox(row, values=names, state="readonly", width=20, textvariable=self.v_type)
+        cb = ttk.Combobox(row, values=names, state="readonly", width=24, textvariable=self.v_type)
         cb.pack(side="left")
         cb.bind("<<ComboboxSelected>>", lambda e: self.show_type())
         self.frames = {}
+        P = app.pal
 
-        # click
-        fr = ttk.Frame(f, padding=(0, 10, 0, 0))
-        self.frames["click"] = fr
+        # ---- click
+        fr = self.new_frame("click")
         br = ttk.Frame(fr)
         br.pack(anchor="w")
         ttk.Button(br, text="◎  Pick on screen…", style="Accent.TButton",
                    command=self.pick).pack(side="left")
-        self.click_info = ttk.Label(fr, style="Muted.TLabel", wraplength=420, justify="left")
+        ttk.Button(br, text="Picture of this spot now", command=self.snap_now).pack(
+            side="left", padx=6)
+        self.click_info = ttk.Label(fr, style="Muted.TLabel", wraplength=460, justify="left")
         self.click_info.pack(anchor="w", pady=(8, 4))
         r = ttk.Frame(fr)
         r.pack(anchor="w")
         ttk.Label(r, text="X").pack(side="left")
         self.v_x = tk.IntVar(value=int(self.step.get("x", 0)))
-        ttk.Spinbox(r, from_=-10000, to=20000, width=7, textvariable=self.v_x).pack(side="left", padx=6)
+        ttk.Spinbox(r, from_=-100000, to=100000, width=7, textvariable=self.v_x).pack(side="left", padx=6)
         ttk.Label(r, text="Y").pack(side="left")
         self.v_y = tk.IntVar(value=int(self.step.get("y", 0)))
-        ttk.Spinbox(r, from_=-10000, to=20000, width=7, textvariable=self.v_y).pack(side="left", padx=6)
+        ttk.Spinbox(r, from_=-100000, to=100000, width=7, textvariable=self.v_y).pack(side="left", padx=6)
         r2 = ttk.Frame(fr)
         r2.pack(anchor="w", pady=(6, 0))
         self.v_btn = tk.StringVar(value=self.step.get("button", "left"))
@@ -6381,40 +10015,101 @@ class StepDialog(Dialog):
         self.v_clicks = tk.StringVar(value="double" if self.step.get("clicks") == 2 else "single")
         ttk.Combobox(r2, values=("single", "double"), state="readonly", width=8,
                      textvariable=self.v_clicks).pack(side="left", padx=6)
-        self.v_img = tk.BooleanVar(value=bool(self.step.get("use_image", True)) and HAVE_CV)
-        ttk.Checkbutton(fr, text="Find the spot by its picture (recommended)",
-                        variable=self.v_img).pack(anchor="w", pady=(6, 0))
+        ttk.Label(fr, text="How to find the spot").pack(anchor="w", pady=(8, 2))
+        mode = ("picture" if self.step.get("use_image", True) and self.step.get("snap_png")
+                else "window" if self.step.get("target_mode") == "window" else "screen")
+        if not self.step.get("snap_png") and "use_image" not in self.step:
+            mode = "picture"
+        self.v_find = tk.StringVar(value=mode)
+        for val, text in (("picture", "By its picture (recommended: checked before clicking)"),
+                          ("window", "Inside a window (follows the window)"),
+                          ("screen", "Fixed screen position (not checked: only for things that "
+                                     "never move)")):
+            ttk.Radiobutton(fr, text=text, value=val, variable=self.v_find,
+                            command=self.update_click_info).pack(anchor="w", padx=(12, 0))
+            if val == "window":
+                wr = ttk.Frame(fr, padding=(36, 2, 0, 2))
+                wr.pack(anchor="w")
+                ttk.Label(wr, text="Title contains").pack(side="left")
+                self.v_wtitle = tk.StringVar(value=self.step.get("window_title", ""))
+                ttk.Entry(wr, textvariable=self.v_wtitle, width=26).pack(side="left", padx=6)
+                ttk.Button(wr, text="Use the window at this spot", style="Small.TButton",
+                           command=self.window_here).pack(side="left")
+        self.target_note = ttk.Label(fr, style="Muted.TLabel", wraplength=460, justify="left")
+        self.target_note.pack(anchor="w", pady=(6, 0))
 
-        # wait
-        fr = ttk.Frame(f, padding=(0, 10, 0, 0))
-        self.frames["wait"] = fr
+        # ---- wait
+        fr = self.new_frame("wait")
         r = ttk.Frame(fr)
         r.pack(anchor="w")
         ttk.Label(r, text="Wait").pack(side="left")
-        self.v_wmin = tk.IntVar(value=int(self.step.get("min", 2)))
-        ttk.Spinbox(r, from_=0, to=86400, width=7, textvariable=self.v_wmin).pack(side="left", padx=6)
+        self.v_wmin = tk.DoubleVar(value=float(self.step.get("min", 2)))
+        ttk.Spinbox(r, from_=0, to=86400, increment=0.5, width=7, textvariable=self.v_wmin).pack(
+            side="left", padx=6)
         ttk.Label(r, text="to").pack(side="left")
-        self.v_wmax = tk.IntVar(value=int(self.step.get("max", self.step.get("min", 2))))
-        ttk.Spinbox(r, from_=0, to=86400, width=7, textvariable=self.v_wmax).pack(side="left", padx=6)
+        self.v_wmax = tk.DoubleVar(value=float(self.step.get("max", self.step.get("min", 2))))
+        ttk.Spinbox(r, from_=0, to=86400, increment=0.5, width=7, textvariable=self.v_wmax).pack(
+            side="left", padx=6)
         ttk.Label(r, text="seconds (the same number twice = exactly that long)",
                   style="Muted.TLabel").pack(side="left")
 
-        # type
-        fr = ttk.Frame(f, padding=(0, 10, 0, 0))
-        self.frames["type"] = fr
-        ttk.Label(fr, text="Text to type (into whatever has focus after the previous step). "
-                           "New lines press Enter.", style="Muted.TLabel",
-                  wraplength=420).pack(anchor="w")
-        self.txt = tk.Text(fr, height=5, width=48, wrap="word", bd=0, padx=8, pady=6,
-                           bg=app.pal["field"], fg=app.pal["fg"],
-                           insertbackground=app.pal["fg"], highlightthickness=1,
-                           highlightbackground=app.pal["border"], highlightcolor=app.pal["accent"])
-        self.txt.pack(fill="x", pady=(6, 0))
-        self.txt.insert("1.0", self.step.get("text", ""))
+        # ---- type / paste (one text box, shown for both)
+        self.text_frame = ttk.Frame(f, padding=(0, 10, 0, 0))
+        tf = self.text_frame
+        self.text_hint = ttk.Label(tf, style="Muted.TLabel", wraplength=460, justify="left")
+        self.text_hint.pack(anchor="w")
+        self.txt = tk.Text(tf, height=7, width=54, wrap="word", bd=0, padx=8, pady=6,
+                           undo=True, bg=P["field"], fg=P["fg"], insertbackground=P["fg"],
+                           highlightthickness=1, highlightbackground=P["border"],
+                           highlightcolor=P["accent"])
+        self.txt.pack(fill="both", expand=True, pady=(6, 0))
+        self.secret_loaded = False
+        text = self.step.get("text", "")
+        if self.step.get("secret") and self.step.get("text_enc"):
+            try:
+                text = unprotect_text(self.step["text_enc"])
+                self.secret_loaded = True
+            except ValueError:
+                text = ""
+        self.txt.insert("1.0", text)
+        self.txt.bind("<KeyRelease>", lambda e: self.update_count())
+        self.count_lbl = ttk.Label(tf, style="Muted.TLabel")
+        self.count_lbl.pack(anchor="e")
+        self.v_vars = tk.BooleanVar(value=bool(self.step.get("use_vars", False))
+                                    if "text" in self.step or "text_enc" in self.step else False)
+        ttk.Checkbutton(tf, variable=self.v_vars, text=(
+            "Fill in {variables}: {date} {time} {datetime} {job} {run} {loop} and any set by "
+            "earlier steps ({{ and }} give a brace)")).pack(anchor="w", pady=(4, 0))
+        self.v_secret = tk.BooleanVar(value=bool(self.step.get("secret", False)))
+        sc = ttk.Checkbutton(tf, variable=self.v_secret, command=self.secret_toggled, text=(
+            "Secret: protect it with your Windows account, hide it in the list, never export "
+            "it"))
+        sc.pack(anchor="w", pady=(2, 0))
+        if not HAVE_DPAPI:
+            sc.state(["disabled"])
+        self.paste_opts = ttk.Frame(tf)
+        r = ttk.Frame(self.paste_opts)
+        r.pack(anchor="w", pady=(6, 0))
+        ttk.Label(r, text="Paste with").pack(side="left")
+        self.v_pkeys = tk.StringVar(value=self.step.get("paste_keys", "Ctrl+V"))
+        ttk.Combobox(r, values=PASTE_KEYS, state="readonly", width=13,
+                     textvariable=self.v_pkeys).pack(side="left", padx=6)
+        ttk.Label(r, text="(Shift+Insert works in most terminals)", style="Muted.TLabel").pack(
+            side="left")
+        self.v_restore = tk.BooleanVar(value=bool(self.step.get("restore_clipboard", True)))
+        ttk.Checkbutton(self.paste_opts, variable=self.v_restore, text=(
+            "Put back what was on the clipboard afterwards")).pack(anchor="w", pady=(4, 0))
+        r = ttk.Frame(self.paste_opts)
+        r.pack(anchor="w", pady=(4, 0))
+        ttk.Label(r, text="Wait after pasting").pack(side="left")
+        self.v_settle = tk.DoubleVar(value=float(self.step.get("settle", 0.3)))
+        ttk.Spinbox(r, from_=0.05, to=5, increment=0.05, width=6,
+                    textvariable=self.v_settle).pack(side="left", padx=6)
+        ttk.Label(r, text="s before the clipboard is put back (slow programs may need more)",
+                  style="Muted.TLabel").pack(side="left")
 
-        # wait for a picture
-        fr = ttk.Frame(f, padding=(0, 10, 0, 0))
-        self.frames["waitpic"] = fr
+        # ---- wait for a picture
+        fr = self.new_frame("waitpic")
         top = ttk.Frame(fr)
         top.pack(fill="x")
         self.pic_lbl = ttk.Label(top, style="Thumb.TLabel", anchor="center", width=24)
@@ -6422,9 +10117,9 @@ class StepDialog(Dialog):
         rc = ttk.Frame(top, padding=(12, 0, 0, 0))
         rc.pack(side="left", fill="x", expand=True, anchor="n")
         ttk.Button(rc, text="▢  Draw box around picture…", style="Accent.TButton",
-                   command=self.draw_pic).pack(anchor="w")
+                   command=lambda: self.draw_pic("png")).pack(anchor="w")
         ttk.Label(rc, style="Muted.TLabel", wraplength=280, justify="left", text=(
-            "Draw a box around what the previous click should make appear (or disappear), "
+            "Draw a box around what the previous step should make appear (or disappear), "
             "e.g. the next button or a “Done” message.")).pack(anchor="w", pady=(6, 0))
         self.v_until = tk.StringVar(value=self.step.get("until", "appears"))
         r = ttk.Frame(fr)
@@ -6460,27 +10155,277 @@ class StepDialog(Dialog):
         ttk.Combobox(r, values=("stop the chain", "continue anyway"), state="readonly", width=15,
                      textvariable=self.v_ponto).pack(side="left", padx=6)
         ttk.Label(fr, style="Muted.TLabel", wraplength=460, justify="left", text=(
-            "It looks about once a second. While a chain is waiting, other jobs wait their turn "
-            "(the mouse can only do one thing at a time).")).pack(anchor="w", pady=(8, 0))
+            "It looks about once a second. Other jobs wait their turn meanwhile (the mouse can "
+            "only do one thing at a time), unless the job lets others go first in Run "
+            "options. Watchers keep watching.")).pack(anchor="w", pady=(8, 0))
         self._pic_thumb = None
 
-        # key
-        fr = ttk.Frame(f, padding=(0, 10, 0, 0))
-        self.frames["key"] = fr
+        # ---- keys
+        fr = self.new_frame("key")
         r = ttk.Frame(fr)
         r.pack(anchor="w")
         ttk.Label(r, text="Keys").pack(side="left")
         self.v_keys = tk.StringVar(value=self.step.get("keys", "Enter"))
         ttk.Entry(r, textvariable=self.v_keys, width=22).pack(side="left", padx=6)
+        ttk.Label(r, text="times").pack(side="left")
+        self.v_times = tk.IntVar(value=int(self.step.get("times", 1)))
+        ttk.Spinbox(r, from_=1, to=100, width=4, textvariable=self.v_times).pack(side="left", padx=6)
         qr = ttk.Frame(fr)
         qr.pack(anchor="w", pady=(6, 0))
         for k in ("Enter", "Tab", "Esc", "Ctrl+S", "Ctrl+A", "Ctrl+V", "F5", "Alt+Tab"):
             ttk.Button(qr, text=k, style="Small.TButton",
                        command=lambda k=k: self.v_keys.set(k)).pack(side="left", padx=(0, 4))
-        ttk.Label(fr, style="Muted.TLabel", wraplength=440, justify="left", text=(
+        ttk.Label(fr, style="Muted.TLabel", wraplength=460, justify="left", text=(
             "Combine with +, e.g. Ctrl+Shift+S. Names: Ctrl, Alt, Shift, Win, Enter, Tab, Esc, "
-            "Space, Backspace, Delete, Up, Down, Left, Right, Home, End, PageUp, PageDown, "
-            "F1-F12, letters and digits.")).pack(anchor="w", pady=(6, 0))
+            "Space, Backspace, Delete, Insert, Up, Down, Left, Right, Home, End, PageUp, "
+            "PageDown, F1-F24, Num0-Num9, letters and digits, or a key code like 0xBA.")).pack(
+            anchor="w", pady=(6, 0))
+
+        # ---- condition (shared by If and Repeat until)
+        self.cond = dict(self.step.get("cond") or {"kind": "picture", "state": "shown"})
+        self.cond_frame = ttk.Frame(f, padding=(0, 10, 0, 0))
+        cf = self.cond_frame
+        r = ttk.Frame(cf)
+        r.pack(anchor="w")
+        self.cond_lbl = ttk.Label(r, text="If")
+        self.cond_lbl.pack(side="left")
+        cur = next((t for k, st_, t in self.COND_CHOICES if k == self.cond.get("kind")
+                    and (k == "var" or st_ == self.cond.get("state", "shown" if k == "picture"
+                                                            else "open"))),
+                   self.COND_CHOICES[0][2])
+        self.v_cond = tk.StringVar(value=cur)
+        cc = ttk.Combobox(r, values=[t for _, _, t in self.COND_CHOICES], state="readonly",
+                          width=26, textvariable=self.v_cond)
+        cc.pack(side="left", padx=6)
+        cc.bind("<<ComboboxSelected>>", lambda e: self.cond_changed())
+        self.cond_pic = ttk.Frame(cf)
+        self.cpic_lbl = ttk.Label(self.cond_pic, style="Thumb.TLabel", anchor="center", width=24)
+        self.cpic_lbl.pack(side="left", anchor="n", pady=(6, 0))
+        ttk.Button(self.cond_pic, text="▢  Draw box around picture…",
+                   command=lambda: self.draw_pic("cond")).pack(side="left", anchor="n",
+                                                               padx=10, pady=(6, 0))
+        self.cond_win = ttk.Frame(cf)
+        ttk.Label(self.cond_win, text="Window title contains").pack(side="left", pady=(6, 0))
+        self.v_ctitle = tk.StringVar(value=self.cond.get("title", ""))
+        ttk.Entry(self.cond_win, textvariable=self.v_ctitle, width=30).pack(side="left", padx=6,
+                                                                           pady=(6, 0))
+        self.cond_var = ttk.Frame(cf)
+        ttk.Label(self.cond_var, text="{").pack(side="left", pady=(6, 0))
+        self.v_cvar = tk.StringVar(value=self.cond.get("var", "count"))
+        ttk.Entry(self.cond_var, textvariable=self.v_cvar, width=12).pack(side="left", pady=(6, 0))
+        ttk.Label(self.cond_var, text="}").pack(side="left", pady=(6, 0))
+        self.v_cop = tk.StringVar(value=self.cond.get("op", "=="))
+        ttk.Combobox(self.cond_var, values=VAR_OPS, state="readonly", width=8,
+                     textvariable=self.v_cop).pack(side="left", padx=6, pady=(6, 0))
+        self.v_cval = tk.StringVar(value=self.cond.get("value", ""))
+        ttk.Entry(self.cond_var, textvariable=self.v_cval, width=16).pack(side="left", pady=(6, 0))
+        self.cond_wait = ttk.Frame(cf)
+        ttk.Label(self.cond_wait, text="Wait up to").pack(side="left", pady=(6, 0))
+        self.v_cwait = tk.DoubleVar(value=float(self.cond.get("wait", 0)))
+        ttk.Spinbox(self.cond_wait, from_=0, to=STEP_MAX_WAIT_S, increment=1, width=6,
+                    textvariable=self.v_cwait).pack(side="left", padx=6, pady=(6, 0))
+        ttk.Label(self.cond_wait, text="seconds for it to become true (0 = check once)",
+                  style="Muted.TLabel").pack(side="left", pady=(6, 0))
+        self._cthumb = None
+
+        # ---- if
+        fr = self.new_frame("if")
+        ttk.Label(fr, style="Muted.TLabel", wraplength=460, justify="left", text=(
+            "The steps between If and End run only when the condition is true. Add an "
+            "“Otherwise” step inside to run other steps when it isn't. An End is added for "
+            "you; move steps between them with ▲ ▼.")).pack(anchor="w")
+
+        # ---- repeat
+        fr = self.new_frame("repeat")
+        self.v_rmode = tk.StringVar(value=self.step.get("mode", "times"))
+        r = ttk.Frame(fr)
+        r.pack(anchor="w")
+        ttk.Radiobutton(r, text="Repeat", value="times", variable=self.v_rmode,
+                        command=self.show_type).pack(side="left")
+        self.v_rtimes = tk.IntVar(value=int(self.step.get("times", 3)))
+        ttk.Spinbox(r, from_=1, to=MAX_REPEAT, width=6, textvariable=self.v_rtimes).pack(
+            side="left", padx=6)
+        ttk.Label(r, text="times").pack(side="left")
+        r = ttk.Frame(fr)
+        r.pack(anchor="w", pady=(4, 0))
+        ttk.Radiobutton(r, text="Repeat until the condition below is true, at most",
+                        value="until", variable=self.v_rmode, command=self.show_type).pack(
+            side="left")
+        self.v_rmax = tk.IntVar(value=int(self.step.get("max_times", 100)))
+        ttk.Spinbox(r, from_=1, to=MAX_REPEAT, width=6, textvariable=self.v_rmax).pack(
+            side="left", padx=6)
+        ttk.Label(r, text="times and").pack(side="left")
+        self.v_rsecs = tk.IntVar(value=int(self.step.get("max_seconds", 600)))
+        ttk.Spinbox(r, from_=1, to=MAX_RUN_LIMIT_S, width=7, textvariable=self.v_rsecs).pack(
+            side="left", padx=6)
+        ttk.Label(r, text="seconds").pack(side="left")
+        ttk.Label(fr, style="Muted.TLabel", wraplength=460, justify="left", text=(
+            "The steps between Repeat and End run again and again. {loop} is the pass number "
+            "(1, 2, 3…). The limits always apply, so a loop can't run forever.")).pack(
+            anchor="w", pady=(6, 0))
+
+        # ---- set a variable
+        fr = self.new_frame("set")
+        r = ttk.Frame(fr)
+        r.pack(anchor="w")
+        ttk.Label(r, text="{").pack(side="left")
+        self.v_var = tk.StringVar(value=self.step.get("var", "count"))
+        ttk.Entry(r, textvariable=self.v_var, width=14).pack(side="left")
+        ttk.Label(r, text="}").pack(side="left")
+        self.v_op = tk.StringVar(value={"add": "add", "sub": "subtract"}.get(
+            self.step.get("op"), "set to"))
+        ttk.Combobox(r, values=("set to", "add", "subtract"), state="readonly", width=9,
+                     textvariable=self.v_op).pack(side="left", padx=6)
+        self.v_val = tk.StringVar(value=self.step.get("value", "1"))
+        ttk.Entry(r, textvariable=self.v_val, width=24).pack(side="left")
+        self.v_persist = tk.BooleanVar(value=bool(self.step.get("persist", False)))
+        ttk.Checkbutton(fr, variable=self.v_persist, text="Remember it for the next run (e.g. a "
+                                                         "counter that keeps going up)").pack(
+            anchor="w", pady=(6, 0))
+        ttk.Label(fr, style="Muted.TLabel", wraplength=460, justify="left", text=(
+            "Names: letters, digits and _. The value may use other variables, e.g. "
+            "“{date}-{count}”. Use them in Type/Paste text (tick “Fill in {variables}”) and "
+            "in conditions.")).pack(anchor="w", pady=(6, 0))
+
+        # ---- use a group
+        fr = self.new_frame("group")
+        r = ttk.Frame(fr)
+        r.pack(anchor="w")
+        ttk.Label(r, text="Run the steps of").pack(side="left")
+        gname = next((g["name"] for g in self.groups if g["id"] == self.step.get("group_id")),
+                     self.groups[0]["name"] if self.groups else "")
+        self.v_group = tk.StringVar(value=gname)
+        ttk.Combobox(r, values=[g["name"] for g in self.groups], state="readonly", width=28,
+                     textvariable=self.v_group).pack(side="left", padx=6)
+        ttk.Label(fr, style="Muted.TLabel", wraplength=460, justify="left", text=(
+            "Change a group once in ☰ Menu → Step groups and every job that uses it gets the "
+            "change.")).pack(anchor="w", pady=(6, 0))
+
+        # ---- scroll
+        fr = self.new_frame("scroll")
+        r = ttk.Frame(fr)
+        r.pack(anchor="w")
+        ttk.Label(r, text="Scroll").pack(side="left")
+        amt = int(self.step.get("amount", -3))
+        self.v_samt = tk.IntVar(value=abs(amt) or 3)
+        ttk.Spinbox(r, from_=1, to=100, width=5, textvariable=self.v_samt).pack(side="left", padx=6)
+        ttk.Label(r, text="notches").pack(side="left")
+        self.v_sdir = tk.StringVar(value=("left" if amt < 0 else "right")
+                                   if self.step.get("horizontal") else
+                                   ("down" if amt < 0 else "up"))
+        ttk.Combobox(r, values=("down", "up", "left", "right"), state="readonly", width=7,
+                     textvariable=self.v_sdir).pack(side="left", padx=6)
+        self.pos_rows = {}
+        self.pos_row(fr, "scroll", "Point at this spot first")
+
+        # ---- mouse button down / up
+        fr = self.new_frame("mouse")
+        r = ttk.Frame(fr)
+        r.pack(anchor="w")
+        self.v_maction = tk.StringVar(value="Press and hold" if self.step.get("action", "down")
+                                      == "down" else "Let go of")
+        ttk.Combobox(r, values=("Press and hold", "Let go of"), state="readonly", width=14,
+                     textvariable=self.v_maction).pack(side="left")
+        ttk.Label(r, text="the").pack(side="left", padx=6)
+        self.v_mbtn = tk.StringVar(value=self.step.get("button", "left"))
+        ttk.Combobox(r, values=("left", "right", "middle"), state="readonly", width=8,
+                     textvariable=self.v_mbtn).pack(side="left")
+        ttk.Label(r, text="mouse button").pack(side="left", padx=6)
+        self.pos_row(fr, "mouse", "Move to this spot first")
+        ttk.Label(fr, style="Muted.TLabel", wraplength=460, justify="left", text=(
+            "Clickue always lets go of held buttons when a run ends, fails or is stopped.")).pack(
+            anchor="w", pady=(6, 0))
+
+        # ---- move / drag
+        for kind in ("move", "drag"):
+            fr = self.new_frame(kind)
+            path = self.step.get("path") or []
+            if kind == "drag":
+                r = ttk.Frame(fr)
+                r.pack(anchor="w", pady=(0, 6))
+                ttk.Label(r, text="Drag with the").pack(side="left")
+                self.v_dbtn = tk.StringVar(value=self.step.get("button", "left"))
+                ttk.Combobox(r, values=("left", "right", "middle"), state="readonly", width=8,
+                             textvariable=self.v_dbtn).pack(side="left", padx=6)
+                ttk.Label(r, text="button").pack(side="left")
+            ttk.Label(fr, style="Muted.TLabel", wraplength=460, justify="left", text=(
+                f"Recorded path: {len(path)} points over {fmt_secs(path[-1][0])}. Changing the "
+                f"points below replaces it with a straight line." if len(path) > 2 else
+                "A straight line from the start to the end, over the time below.")).pack(anchor="w")
+        self.path_vars = {}
+        for kind in ("move", "drag"):
+            path = self.step.get("path") or [[0, 0, 0], [1.0, 0, 0]]
+            fr = self.frames[kind]
+            vs = {}
+            for which, pt in (("start", path[0]), ("end", path[-1])):
+                r = ttk.Frame(fr)
+                r.pack(anchor="w", pady=(6, 0))
+                ttk.Label(r, text=f"{which.capitalize():6}  X").pack(side="left")
+                vs[which + "x"] = tk.IntVar(value=int(pt[1]))
+                ttk.Spinbox(r, from_=-100000, to=100000, width=7,
+                            textvariable=vs[which + "x"]).pack(side="left", padx=4)
+                ttk.Label(r, text="Y").pack(side="left")
+                vs[which + "y"] = tk.IntVar(value=int(pt[2]))
+                ttk.Spinbox(r, from_=-100000, to=100000, width=7,
+                            textvariable=vs[which + "y"]).pack(side="left", padx=4)
+                ttk.Button(r, text="Pick…", style="Small.TButton",
+                           command=lambda vs=vs, w=which: self.pick_xy(vs[w + "x"], vs[w + "y"])).pack(
+                    side="left", padx=4)
+            r = ttk.Frame(fr)
+            r.pack(anchor="w", pady=(6, 0))
+            ttk.Label(r, text="Takes").pack(side="left")
+            vs["dur"] = tk.DoubleVar(value=float(path[-1][0] or 0.5))
+            ttk.Spinbox(r, from_=0, to=3600, increment=0.1, width=6,
+                        textvariable=vs["dur"]).pack(side="left", padx=6)
+            ttk.Label(r, text="seconds").pack(side="left")
+            vs["orig"] = (path[0][1], path[0][2], path[-1][1], path[-1][2], path[-1][0])
+            self.path_vars[kind] = vs
+
+        # ---- hold a key
+        fr = self.new_frame("keyhold")
+        r = ttk.Frame(fr)
+        r.pack(anchor="w")
+        self.v_haction = tk.StringVar(value="Hold down" if self.step.get("action", "down")
+                                      == "down" else "Let go of")
+        ttk.Combobox(r, values=("Hold down", "Let go of"), state="readonly", width=11,
+                     textvariable=self.v_haction).pack(side="left")
+        self.v_hkey = tk.StringVar(value=self.step.get("keys", "Shift"))
+        ttk.Entry(r, textvariable=self.v_hkey, width=12).pack(side="left", padx=6)
+        ttk.Label(fr, style="Muted.TLabel", wraplength=460, justify="left", text=(
+            "For Shift+click or Ctrl+drag: hold the key, do the clicks, then let it go. "
+            "Clickue always lets go of held keys when a run ends, fails or is stopped.")).pack(
+            anchor="w", pady=(6, 0))
+
+        # ---- common options
+        self.common = ttk.LabelFrame(f, text="This step", padding=(10, 6))
+        r = ttk.Frame(self.common)
+        r.pack(anchor="w")
+        ttk.Label(r, text="Name (optional)").pack(side="left")
+        self.v_label = tk.StringVar(value=self.step.get("label", ""))
+        ttk.Entry(r, textvariable=self.v_label, width=30).pack(side="left", padx=6)
+        r = ttk.Frame(self.common)
+        r.pack(anchor="w", pady=(6, 0))
+        ttk.Label(r, text="If it fails, try again").pack(side="left")
+        self.v_retries = tk.IntVar(value=int(self.step.get("retries", 0)))
+        ttk.Spinbox(r, from_=0, to=10, width=4, textvariable=self.v_retries).pack(side="left", padx=6)
+        ttk.Label(r, text="more times, waiting").pack(side="left")
+        self.v_rwait = tk.DoubleVar(value=float(self.step.get("retry_wait", 2)))
+        ttk.Spinbox(r, from_=0, to=3600, increment=1, width=5, textvariable=self.v_rwait).pack(
+            side="left", padx=6)
+        ttk.Label(r, text="s in between").pack(side="left")
+        r = ttk.Frame(self.common)
+        r.pack(anchor="w", pady=(6, 0))
+        ttk.Label(r, text="If it still fails").pack(side="left")
+        self.v_onfail = tk.StringVar(value="continue with the next step"
+                                     if self.step.get("on_fail") == "continue"
+                                     else "stop the job's run")
+        ttk.Combobox(r, values=("stop the job's run", "continue with the next step"),
+                     state="readonly", width=26, textvariable=self.v_onfail).pack(side="left",
+                                                                                 padx=6)
+        self.v_careful = tk.BooleanVar(value=bool(self.step.get("careful", False)))
+        ttk.Checkbutton(self.common, variable=self.v_careful, text=(
+            "⚠ Careful step (sends, deletes, buys…): Step through stops here even when "
+            "running to the end")).pack(anchor="w", pady=(6, 0))
 
         b = self.footer
         ttk.Button(b, text="Cancel", command=self.destroy).pack(side="right")
@@ -6488,9 +10433,78 @@ class StepDialog(Dialog):
             side="right", padx=6)
         self.update_click_info()
         self.update_pic_thumb()
+        self.update_cond_thumb()
         self.until_changed()
+        self.cond_changed()
+        self.update_count()
         self.show_type()
         self.finish()
+
+    def geom_key(self):
+        return f"StepDialog-{self.step.get('type', 'click')}"
+
+    # ---- layout helpers
+    def new_frame(self, kind):
+        fr = ttk.Frame(self.body, padding=(0, 10, 0, 0))
+        self.frames[kind] = fr
+        return fr
+
+    def pos_row(self, fr, kind, text):
+        on = self.step.get("x") is not None and self.step.get("type") == kind
+        v_on = tk.BooleanVar(value=on)
+        vx = tk.IntVar(value=int(self.step.get("x") or 0))
+        vy = tk.IntVar(value=int(self.step.get("y") or 0))
+        r = ttk.Frame(fr)
+        r.pack(anchor="w", pady=(6, 0))
+        ttk.Checkbutton(r, text=text, variable=v_on).pack(side="left")
+        ttk.Label(r, text=" X").pack(side="left")
+        ttk.Spinbox(r, from_=-100000, to=100000, width=7, textvariable=vx).pack(side="left", padx=4)
+        ttk.Label(r, text="Y").pack(side="left")
+        ttk.Spinbox(r, from_=-100000, to=100000, width=7, textvariable=vy).pack(side="left", padx=4)
+        ttk.Button(r, text="Pick…", style="Small.TButton",
+                   command=lambda: (v_on.set(True), self.pick_xy(vx, vy))).pack(side="left", padx=4)
+        self.pos_rows[kind] = (v_on, vx, vy)
+
+    def kind(self):
+        return {n: k for k, n in self.TYPES}.get(self.v_type.get(), "click")
+
+    def show_type(self):
+        k = self.kind()
+        for fr in list(self.frames.values()) + [self.text_frame, self.cond_frame, self.common]:
+            fr.pack_forget()
+        if k in TEXT_STEPS:
+            self.text_frame.pack(fill="both", expand=True)
+            if k == "paste":
+                self.paste_opts.pack(anchor="w", fill="x")
+                self.text_hint.configure(text=(
+                    "Text to paste into whatever has focus (add a Click on the field first). It "
+                    "is pasted exactly as written: several lines, any language, symbols. "
+                    f"Up to {MAX_PASTE_CHARS:,} characters. Faster than typing, and the clipboard "
+                    "is put back afterwards."))
+            else:
+                self.paste_opts.pack_forget()
+                self.text_hint.configure(text=(
+                    "Text to type into whatever has focus (add a Click on the field first). Each "
+                    "character is typed like on a keyboard; a new line presses Enter. "
+                    f"Up to {MAX_TYPE_CHARS:,} characters. Use Paste for long text."))
+            self.update_count()
+        else:
+            self.frames[k].pack(fill="x")
+        if k == "if" or (k == "repeat" and self.v_rmode.get() == "until"):
+            self.cond_lbl.configure(text="If" if k == "if" else "Until")
+            self.cond_frame.pack(fill="x")
+        self.common.pack(fill="x", pady=(12, 0))
+        self.after(30, self._sync_scroll)
+
+    def update_count(self):
+        n = len(self.txt.get("1.0", "end-1c"))
+        lim = MAX_TYPE_CHARS if self.kind() == "type" else MAX_PASTE_CHARS
+        self.count_lbl.configure(text=f"{n:,} / {lim:,} characters",
+                                 style="Warn.TLabel" if n > lim else "Muted.TLabel")
+
+    def secret_toggled(self):
+        if self.v_secret.get():
+            self.v_vars.set(False)
 
     def until_changed(self):
         on = self.v_until.get() == "appears"
@@ -6499,42 +10513,61 @@ class StepDialog(Dialog):
             if on and isinstance(w, ttk.Combobox):
                 w.state(["readonly"])
 
-    def update_pic_thumb(self):
-        png = self.step.get("png")
+    def cond_changed(self):
+        choice = next((c for c in self.COND_CHOICES if c[2] == self.v_cond.get()),
+                      self.COND_CHOICES[0])
+        for fr in (self.cond_pic, self.cond_win, self.cond_var, self.cond_wait):
+            fr.pack_forget()
+        {"picture": self.cond_pic, "window": self.cond_win, "var": self.cond_var}[choice[0]].pack(
+            anchor="w")
+        if choice[0] != "var":
+            self.cond_wait.pack(anchor="w")
+
+    def thumb(self, label, png, attr):
         if not (HAVE_PIL and png):
-            self.pic_lbl.configure(image="", text="No picture yet")
+            label.configure(image="", text="No picture yet")
             return
         try:
             img = b64_to_img(png)
             f = min(200 / img.width, 110 / img.height, 3.0)
             if abs(f - 1) > 0.05:
                 img = img.resize((max(1, round(img.width * f)), max(1, round(img.height * f))))
-            self._pic_thumb = ImageTk.PhotoImage(img)
-            self.pic_lbl.configure(image=self._pic_thumb, text="")
+            setattr(self, attr, ImageTk.PhotoImage(img))
+            label.configure(image=getattr(self, attr), text="")
         except Exception:
-            self.pic_lbl.configure(image="", text="(picture unreadable)")
+            label.configure(image="", text="(picture unreadable)")
 
-    def draw_pic(self):
+    def update_pic_thumb(self):
+        self.thumb(self.pic_lbl, self.step.get("png"), "_pic_thumb")
+
+    def update_cond_thumb(self):
+        self.thumb(self.cpic_lbl, self.cond.get("png"), "_cthumb")
+
+    def draw_pic(self, which):
         def done(img):
-            self.step["png"] = img_to_b64(img)
-            self.update_pic_thumb()
-        self.app.draw_capture(self, "Drag a box around the picture to wait for", done)
-
-    def kind(self):
-        return {n: k for k, n in self.TYPES}.get(self.v_type.get(), "click")
-
-    def show_type(self):
-        for k, fr in self.frames.items():
-            fr.pack_forget()
-        self.frames[self.kind()].pack(fill="x")
+            if which == "png":
+                self.step["png"] = img_to_b64(img)
+                self.update_pic_thumb()
+            else:
+                self.cond["png"] = img_to_b64(img)
+                self.update_cond_thumb()
+        self.app.draw_capture(self, "Drag a box around the picture", done)
 
     def update_click_info(self):
+        mode = self.v_find.get()
         if self.step.get("snap_png"):
-            self.click_info.configure(text="A picture of the spot is saved, so it will be found "
-                                           "even if things move.")
+            self.click_info.configure(text="A picture of the spot is saved.")
         else:
-            self.click_info.configure(text="Click “Pick on screen”, then point at the "
-                                           "spot within 5 seconds.")
+            self.click_info.configure(text="Click “Pick on screen”, then point at the spot "
+                                           "within 5 seconds (a picture of it is saved too).")
+        tgt = {"use_image": mode == "picture" and bool(self.step.get("snap_png")),
+               "snap_png": self.step.get("snap_png", ""), "target_mode": mode,
+               "window_title": self.v_wtitle.get(), "x": self.v_x.get(), "y": self.v_y.get()}
+        if mode == "picture" and not self.step.get("snap_png"):
+            note = "No picture saved yet: pick the spot, or take a picture of it now."
+        else:
+            note = adapter_for(tgt).describe(tgt)
+        self.target_note.configure(text="Targeting: " + note)
 
     def pick(self):
         def done(x, y, png, spot):
@@ -6542,57 +10575,945 @@ class StepDialog(Dialog):
             self.v_y.set(y)
             self.step.update(snap_png=png, snap_spot=spot, pick_dpi=system_dpi(),
                              pick_screen=list(screen_size()))
+            if png and self.v_find.get() == "screen":
+                self.v_find.set("picture")
             self.update_click_info()
         self.app.pick_point(self, done)
+
+    def pick_xy(self, vx, vy):
+        self.app.pick_point(self, lambda x, y, png, spot: (vx.set(x), vy.set(y)))
+
+    def snap_now(self):
+        """Save a picture of the spot at X, Y as it looks now (e.g. for recorded clicks)."""
+        if not (HAVE_PIL and HAVE_CV):
+            messagebox.showwarning(APP_NAME, "Pictures need pillow, opencv and numpy.", parent=self)
+            return
+        try:
+            x, y = int(self.v_x.get()), int(self.v_y.get())
+        except Exception:
+            return
+        restore = self.app.hide_all_windows()
+
+        def go():
+            try:
+                img, spot, detail = capture_snapshot(x, y, "Medium")
+                ok = detail >= 6
+                if ok:
+                    self.step.update(snap_png=img_to_b64(img), snap_spot=list(spot),
+                                     pick_dpi=system_dpi(), pick_screen=list(screen_size()))
+                    self.v_find.set("picture")
+            except Exception as e:
+                ok = False
+                detail = str(e)
+            restore()
+            self.update_click_info()
+            if not ok:
+                messagebox.showwarning(APP_NAME, "That spot is very plain (or couldn't be "
+                                                 "captured), so it can't be found by its picture. "
+                                                 "Use a window or fixed position instead.",
+                                       parent=self)
+        self.after(500, go)
+
+    def window_here(self):
+        if not IS_WIN:
+            return
+        try:
+            info = describe_point(int(self.v_x.get()), int(self.v_y.get()))
+        except Exception:
+            info = None
+        h = window_at(int(self.v_x.get()), int(self.v_y.get())) if IS_WIN else None
+        title = win_text(h) if h else ""
+        if not title or is_own_window(h):
+            messagebox.showinfo(APP_NAME, "No window was found at that spot right now. Open the "
+                                          "window, then try again.", parent=self)
+            return
+        ox, oy, cw, ch = client_origin(h)
+        self.step.update(rel_x=int(self.v_x.get()) - ox, rel_y=int(self.v_y.get()) - oy,
+                         client_w=cw, client_h=ch, window_class=win_class(h))
+        self.v_wtitle.set(title[:300])
+        self.v_find.set("window")
+        self.update_click_info()
+        del info
+
+    # ---- saving
+    def text_value(self):
+        return self.txt.get("1.0", "end-1c")
+
+    def cond_value(self):
+        choice = next((c for c in self.COND_CHOICES if c[2] == self.v_cond.get()),
+                      self.COND_CHOICES[0])
+        k = choice[0]
+        if k == "picture":
+            if not self.cond.get("png"):
+                raise ValueError("draw a box around the picture for the condition")
+            c = {"kind": "picture", "png": self.cond["png"], "state": choice[1],
+                 "area": self.cond.get("area"), "wait": max(0.0, float(self.v_cwait.get()))}
+        elif k == "window":
+            if not self.v_ctitle.get().strip():
+                raise ValueError("enter the window title for the condition")
+            c = {"kind": "window", "title": self.v_ctitle.get().strip(), "state": choice[1],
+                 "wait": max(0.0, float(self.v_cwait.get()))}
+        else:
+            var = self.v_cvar.get().strip()
+            if not VAR_NAME_RE.match(var):
+                raise ValueError("the variable name may only use letters, digits and _")
+            c = {"kind": "var", "var": var, "op": self.v_cop.get(), "value": self.v_cval.get()}
+        return clean_cond(c)
 
     def on_save(self):
         k = self.kind()
         st = {"type": k}
         try:
             if k == "click":
+                mode = self.v_find.get()
                 st.update(x=int(self.v_x.get()), y=int(self.v_y.get()), button=self.v_btn.get(),
                           clicks=2 if self.v_clicks.get() == "double" else 1,
-                          use_image=bool(self.v_img.get()) and bool(self.step.get("snap_png")),
+                          use_image=mode == "picture" and bool(self.step.get("snap_png")),
                           snap_png=self.step.get("snap_png", ""),
                           snap_spot=self.step.get("snap_spot"),
                           pick_dpi=self.step.get("pick_dpi"),
                           pick_screen=self.step.get("pick_screen"),
-                          image_fallback="wait", target_mode="screen")
-                if st["x"] == 0 and st["y"] == 0 and not st["snap_png"]:
-                    messagebox.showerror(APP_NAME, "Pick the spot to click first.", parent=self)
-                    return
+                          image_fallback="wait",
+                          target_mode="window" if mode == "window" else "screen",
+                          window_title=self.v_wtitle.get().strip() if mode == "window" else "",
+                          window_class=self.step.get("window_class", "") if mode == "window" else "",
+                          rel_x=self.step.get("rel_x", 0), rel_y=self.step.get("rel_y", 0),
+                          client_w=self.step.get("client_w", 0),
+                          client_h=self.step.get("client_h", 0),
+                          bring_to_front=True)
+                if mode == "picture" and not st["snap_png"]:
+                    raise ValueError("pick the spot (or take a picture of it) to find it by its "
+                                     "picture")
+                if mode == "window" and not st["window_title"]:
+                    raise ValueError("enter the window title, or use the window at this spot")
+                if mode == "window" and not (st["rel_x"] or st["rel_y"]):
+                    raise ValueError("use “Use the window at this spot” so Clickue knows where "
+                                     "inside the window to click")
+                if st["x"] == 0 and st["y"] == 0 and not st["snap_png"] and mode == "screen":
+                    raise ValueError("pick the spot to click first")
             elif k == "wait":
-                lo, hi = int(self.v_wmin.get()), int(self.v_wmax.get())
+                lo, hi = float(self.v_wmin.get()), float(self.v_wmax.get())
                 if hi < lo:
                     lo, hi = hi, lo
-                st.update(min=max(0, lo), max=max(0, hi))
+                lo, hi = max(0.0, lo), max(0.0, hi)
+                st.update(min=int(lo) if lo.is_integer() else round(lo, 2),
+                          max=int(hi) if hi.is_integer() else round(hi, 2))
             elif k == "waitpic":
                 if not self.step.get("png"):
-                    messagebox.showerror(APP_NAME, "Draw a box around the picture to wait for "
-                                                   "first.", parent=self)
-                    return
+                    raise ValueError("draw a box around the picture to wait for first")
                 st.update(png=self.step["png"], until=self.v_until.get(),
                           click_it=bool(self.v_click_it.get()) and self.v_until.get() == "appears",
                           button=self.v_pbtn.get(),
                           clicks=2 if self.v_pclicks.get() == "double" else 1,
                           timeout=max(1, min(STEP_MAX_WAIT_S, int(self.v_ptimeout.get()))),
                           on_timeout="continue" if self.v_ponto.get().startswith("continue")
-                          else "stop")
-            elif k == "type":
-                st["text"] = self.txt.get("1.0", "end-1c")
-                if not st["text"]:
-                    messagebox.showerror(APP_NAME, "Enter the text to type.", parent=self)
-                    return
-            else:
+                          else "stop", area=self.step.get("area"))
+            elif k in TEXT_STEPS:
+                text = self.text_value()
+                lim = MAX_TYPE_CHARS if k == "type" else MAX_PASTE_CHARS
+                if not text:
+                    raise ValueError("enter the text")
+                if len(text) > lim:
+                    raise ValueError(f"the text has {len(text):,} characters; the limit is "
+                                     f"{lim:,}" + (" (use Paste text for long text)" if k == "type"
+                                                   else ""))
+                st.update(use_vars=bool(self.v_vars.get()), secret=bool(self.v_secret.get()))
+                if st["secret"]:
+                    try:
+                        st["text_enc"] = protect_text(text)
+                    except Exception as e:
+                        raise ValueError(f"couldn't protect the secret text ({e})")
+                    st["text"] = ""
+                    st["use_vars"] = False
+                else:
+                    st["text"] = text
+                if k == "paste":
+                    st.update(paste_keys=self.v_pkeys.get(),
+                              restore_clipboard=bool(self.v_restore.get()),
+                              settle=max(0.05, min(5.0, float(self.v_settle.get()))))
+            elif k == "key":
                 parse_combo(self.v_keys.get())
-                st["keys"] = self.v_keys.get().strip()
+                st.update(keys=self.v_keys.get().strip(),
+                          times=max(1, min(100, int(self.v_times.get()))))
+            elif k == "if":
+                st["cond"] = self.cond_value()
+            elif k == "repeat":
+                st.update(mode=self.v_rmode.get(),
+                          times=max(1, min(MAX_REPEAT, int(self.v_rtimes.get()))),
+                          max_times=max(1, min(MAX_REPEAT, int(self.v_rmax.get()))),
+                          max_seconds=max(1, min(MAX_RUN_LIMIT_S, int(self.v_rsecs.get()))))
+                if st["mode"] == "until":
+                    st["cond"] = self.cond_value()
+            elif k == "set":
+                var = self.v_var.get().strip()
+                if not VAR_NAME_RE.match(var):
+                    raise ValueError("the variable name may only use letters, digits and _ "
+                                     "(and not start with a digit)")
+                op = {"add": "add", "subtract": "sub"}.get(self.v_op.get(), "set")
+                if op != "set" and _as_number(self.v_val.get()) is None and \
+                        "{" not in self.v_val.get():
+                    raise ValueError("to add or subtract, the value must be a number")
+                st.update(var=var, op=op, value=self.v_val.get()[:1000],
+                          persist=bool(self.v_persist.get()))
+            elif k == "group":
+                g = next((g for g in self.groups if g["name"] == self.v_group.get()), None)
+                if not g:
+                    raise ValueError("choose a step group")
+                st["group_id"] = g["id"]
+            elif k == "scroll":
+                n = max(1, min(100, int(self.v_samt.get())))
+                d = self.v_sdir.get()
+                on, vx, vy = self.pos_rows["scroll"]
+                st.update(amount=-n if d in ("down", "left") else n,
+                          horizontal=d in ("left", "right"),
+                          x=int(vx.get()) if on.get() else None,
+                          y=int(vy.get()) if on.get() else None)
+            elif k == "mouse":
+                on, vx, vy = self.pos_rows["mouse"]
+                st.update(button=self.v_mbtn.get(),
+                          action="down" if self.v_maction.get().startswith("Press") else "up",
+                          x=int(vx.get()) if on.get() else None,
+                          y=int(vy.get()) if on.get() else None)
+            elif k in ("move", "drag"):
+                vs = self.path_vars[k]
+                cur = (int(vs["startx"].get()), int(vs["starty"].get()), int(vs["endx"].get()),
+                       int(vs["endy"].get()), float(vs["dur"].get()))
+                path = self.step.get("path") if self.step.get("type") == k else None
+                if not path or cur[:4] != tuple(vs["orig"][:4]):
+                    n = 12
+                    path = [[round(cur[4] * i / n, 3), round(cur[0] + (cur[2] - cur[0]) * i / n),
+                             round(cur[1] + (cur[3] - cur[1]) * i / n)] for i in range(n + 1)]
+                elif cur[4] != vs["orig"][4] and path[-1][0]:
+                    f = cur[4] / path[-1][0]
+                    path = [[round(p[0] * f, 3), p[1], p[2]] for p in path]
+                st["path"] = path
+                if k == "drag":
+                    st["button"] = self.v_dbtn.get()
+            elif k == "keyhold":
+                keys = self.v_hkey.get().strip()
+                if len(parse_combo(keys)) != 1:
+                    raise ValueError("hold one key at a time (e.g. Shift)")
+                st.update(keys=keys, action="down" if self.v_haction.get().startswith("Hold")
+                          else "up")
+            st.update(retries=max(0, min(10, int(self.v_retries.get()))),
+                      retry_wait=max(0.0, min(3600.0, float(self.v_rwait.get()))),
+                      on_fail="continue" if self.v_onfail.get().startswith("continue") else "stop",
+                      careful=bool(self.v_careful.get()))
+            if self.v_label.get().strip():
+                st["label"] = self.v_label.get().strip()[:120]
+            if "rec_t" in self.step:
+                st["rec_t"] = self.step["rec_t"]
         except ValueError as e:
             messagebox.showerror(APP_NAME, f"Please check this step: {e}", parent=self)
             return
         except Exception:
             messagebox.showerror(APP_NAME, "Please check the numbers.", parent=self)
             return
-        self.editor.step_saved(st, self.index)
+        clean, why = sanitize_step(st)
+        if clean is None:
+            messagebox.showerror(APP_NAME, f"Please check this step: {why}", parent=self)
+            return
+        if "rec_t" in st:
+            clean["rec_t"] = st["rec_t"]
+        self.editor.step_saved(clean, self.index)
+        self.destroy()
+
+
+class DryRunDialog(Dialog):
+    """What a job would do right now, step by step, without clicking or typing."""
+
+    def __init__(self, app, job, parent=None):
+        super().__init__(app, f"Dry run - {job.get('name', '')}", parent)
+        f = self.body
+        ttk.Label(f, style="Muted.TLabel", wraplength=640, justify="left", text=(
+            "Nothing was clicked or typed. Each step was checked against the screen as it is "
+            "now: are the targets there, are the conditions true? Loops are shown once; waits "
+            "are not waited. Typed or pasted text is only counted, never shown.")).pack(
+            anchor="w")
+        tf = ttk.Frame(f, style="Card.TFrame", padding=1)
+        tf.pack(fill="both", expand=True, pady=(8, 0))
+        tr = ttk.Treeview(tf, columns=("n", "what", "result"), show="headings", height=12)
+        for c, h, w, st in (("n", "#", 70, False), ("what", "Step", 150, False),
+                            ("result", "What would happen", 470, True)):
+            tr.heading(c, text=h, anchor="w")
+            tr.column(c, width=w, minwidth=40, stretch=st, anchor="w")
+        tr.pack(fill="both", expand=True)
+        self.tree = tr
+        self.status = ttk.Label(f, style="Muted.TLabel", text="Checking the screen…")
+        self.status.pack(anchor="w", pady=(6, 0))
+        ttk.Button(self.footer, text="Close", command=self.destroy).pack(side="right")
+        self.finish()
+        restore = app.hide_all_windows(keep=None)
+
+        def work():
+            try:
+                lines = app.dry_run_steps(job)
+            except Exception as e:
+                lines = [("!", "Problem", f"couldn't finish the dry run ({e})")]
+            app.cmdq.put(lambda: done(lines))
+
+        def done(lines):
+            restore()
+            if not self.winfo_exists():
+                return
+            for n, w, r in lines:
+                self.tree.insert("", "end", values=(n, w, r))
+            bad = sum(1 for _, _, r in lines if "NOT" in r or r.startswith(("couldn't", "the ")))
+            self.status.configure(text=f"{len(lines)} step(s) checked." +
+                                  (f" {bad} may need attention." if bad else ""))
+        self.after(500, lambda: threading.Thread(target=work, daemon=True).start())
+
+
+class StepDebugger:
+    """Asks the step-through window before each step (runs on the input thread)."""
+
+    def __init__(self, app, win):
+        self.app, self.win = app, win
+        self.ev = threading.Event()
+        self.cmd = None
+        self.only_careful = False
+
+    def _ask(self, num, what, why, xy=None, careful=False):
+        if self.only_careful and not careful:
+            self.app.cmdq.put(lambda: self.win.show_running(num, what))
+            return
+        self.ev.clear()
+        self.cmd = None
+        self.app.cmdq.put(lambda: self.win.show_next(num, what, why, xy, careful))
+        while not self.ev.wait(0.2):
+            if self.app.stop.is_set() or self.app.run_cancel.is_set():
+                raise StopRun("stopped by you")
+        if self.cmd == "stop":
+            raise StopRun("stopped while stepping through")
+        if self.cmd == "run":
+            self.only_careful = True
+
+    def answer(self, cmd):
+        self.cmd = cmd
+        self.ev.set()
+
+    def before_main(self, job, x, y, how):
+        tgt = adapter_for(job)
+        self._ask("0", f"Click: {job.get('button', 'left')} at ({x}, {y})",
+                  f"Found {how}. {tgt.describe(job)}", (x, y))
+
+    def before(self, run, i, st):
+        w, d = describe_step(st, private=True, groups=run.groups)
+        t = st.get("type")
+        why, xy = "", None
+        try:
+            if t == "click":
+                a = adapter_for(st)
+                ok, x, y, msg, how = a.locate(st, activate=False, check_cover=False)
+                why = (f"Will click at ({x}, {y}), found {how}. " if ok else
+                       f"The target is NOT there right now ({msg}); the step will fail unless "
+                       f"it appears. ") + a.describe(st)
+                xy = (x, y) if ok else None
+            elif t in ("if", "repeat") and st.get("cond"):
+                if st["cond"].get("kind") == "var":
+                    res, note = run.eval_cond(dict(st["cond"], wait=0))
+                else:
+                    res, note = check_condition(st["cond"])
+                why = f"The condition is {'TRUE' if res else 'false'} right now ({note})."
+            elif t == "waitpic":
+                found, x, y, score, sc = picture_on_screen(st["png"], area=st.get("area"))
+                why = (f"The picture is showing now ({score:.0%})." if found else
+                       f"The picture isn't showing now; it waits up to "
+                       f"{fmt_dur(int(st.get('timeout', 60)))}.")
+            elif t in TEXT_STEPS:
+                fg = win_text(user32.GetForegroundWindow()) if IS_WIN else ""
+                why = ("The text goes to whatever has keyboard focus now"
+                       + (f": “{short_title(fg, 40)}”." if fg else ".") +
+                       " Check that it's the right field.")
+            elif t == "key":
+                why = "Keys go to whatever has keyboard focus now."
+        except Exception as e:
+            why = f"(couldn't check: {e})"
+        self._ask(run.num(i), f"{w}: {d}", why, xy, bool(st.get("careful")))
+
+    def after(self, run, i, st, ok, msg):
+        w, _ = describe_step(st, private=True, groups=run.groups)
+        self.app.cmdq.put(lambda: self.win.show_result(run.num(i), w, ok, msg))
+
+
+class DebugWindow(tk.Toplevel):
+    """Step through a job: see the next action, why its target was chosen, then run it."""
+
+    def __init__(self, app, job, on_close):
+        super().__init__(app.root)
+        self.app, self.job, self.on_close = app, job, on_close
+        self.dbg = None
+        self.title(f"Step through - {job.get('name', '')}")
+        self.attributes("-topmost", True)
+        self.resizable(True, True)
+        P = app.pal
+        self.configure(bg=P["bg"])
+        f = ttk.Frame(self, padding=12)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text=f"Stepping through “{job.get('name', '')}”",
+                  style="Section.TLabel").pack(anchor="w")
+        ttk.Label(f, style="Muted.TLabel", wraplength=460, justify="left", text=(
+            "Clickue stops before each step. Drag this window aside if it covers what Clickue "
+            "needs to click (it never clicks through its own windows).")).pack(anchor="w")
+        self.next_lbl = ttk.Label(f, text="Getting ready…", wraplength=460, justify="left",
+                                  style="Section.TLabel")
+        self.next_lbl.pack(anchor="w", pady=(10, 0))
+        self.why_lbl = ttk.Label(f, text="", wraplength=460, justify="left", style="Muted.TLabel")
+        self.why_lbl.pack(anchor="w", pady=(4, 0))
+        self.log = tk.Text(f, height=8, width=60, wrap="word", bd=0, padx=8, pady=6,
+                           bg=P["field"], fg=P["fg"], state="disabled")
+        self.log.pack(fill="both", expand=True, pady=(8, 0))
+        br = ttk.Frame(f)
+        br.pack(fill="x", pady=(10, 0))
+        self.next_btn = ttk.Button(br, text="▶  Run this step", style="Accent.TButton",
+                                   command=lambda: self.answer("next"))
+        self.next_btn.pack(side="left")
+        self.run_btn = ttk.Button(br, text="Run to the end", command=lambda: self.answer("run"))
+        self.run_btn.pack(side="left", padx=6)
+        ttk.Button(br, text="■  Stop", command=lambda: self.answer("stop")).pack(side="right")
+        ttk.Label(f, style="Muted.TLabel", wraplength=460, justify="left", text=(
+            "“Run to the end” still stops before steps marked ⚠ careful. The emergency stop "
+            f"hotkey ({app.settings.get('hk_stop') or 'off'}) works too.")).pack(anchor="w",
+                                                                                 pady=(6, 0))
+        self.protocol("WM_DELETE_WINDOW", lambda: self.answer("stop", close=True))
+        app.theme_window(self)
+        self.update_idletasks()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        w, h = 520, 440
+        self.geometry(f"{w}x{h}+{max(0, sw - w - 24)}+{max(0, sh - h - 80)}")
+        self.buttons(False)
+        self.done = False
+
+    def buttons(self, on):
+        for b in (self.next_btn, self.run_btn):
+            b.state(["!disabled"] if on else ["disabled"])
+
+    def write(self, line):
+        self.log.configure(state="normal")
+        self.log.insert("end", line + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def answer(self, cmd, close=False):
+        if self.dbg and not self.done:
+            self.dbg.answer(cmd)
+            if cmd == "stop":
+                self.app.stop_current_run("stopped while stepping through")
+        self.buttons(False)
+        if close or (cmd == "stop" and self.done):
+            self.close()
+
+    def show_next(self, num, what, why, xy, careful):
+        if not self.winfo_exists():
+            return
+        self.next_lbl.configure(text=f"Next: step {num} · {what}" + ("   ⚠ careful" if careful else ""))
+        self.why_lbl.configure(text=why)
+        self.buttons(True)
+        self.lift()
+        if xy:
+            self.app.flash_marker(xy[0], xy[1], f"step {num}", seconds=1.2)
+
+    def show_running(self, num, what):
+        if self.winfo_exists():
+            self.next_lbl.configure(text=f"Running: step {num} · {what}")
+            self.why_lbl.configure(text="")
+
+    def show_result(self, num, what, ok, msg):
+        if self.winfo_exists():
+            self.write(f"{'✔' if ok else '✖'} step {num} · {what}" + (f": {msg}" if msg else ""))
+
+    def finished(self, ok, msg):
+        self.done = True
+        if not self.winfo_exists():
+            return
+        self.buttons(False)
+        self.next_lbl.configure(text="Finished" if ok else "Stopped")
+        self.why_lbl.configure(text=msg or "")
+        self.write(("✔ " if ok else "✖ ") + (msg or ("done" if ok else "stopped")))
+        self.run_btn.configure(text="Close", command=self.close)
+        self.run_btn.state(["!disabled"])
+
+    def close(self):
+        try:
+            self.destroy()
+        finally:
+            if self.on_close:
+                cb, self.on_close = self.on_close, None
+                cb()
+
+
+class RecordDialog(Dialog):
+    """Options before recording a macro."""
+
+    def __init__(self, app):
+        super().__init__(app, "Record a macro")
+        s = app.settings
+        f = self.body
+        ttk.Label(f, style="Muted.TLabel", wraplength=560, justify="left", text=(
+            "Clickue hides, then records your mouse and keyboard until you press Stop on the "
+            "red recording bar (or the hotkey). Afterwards you get the steps to check, edit "
+            "and save as a job. Clickue's own windows and its own clicks are never "
+            "recorded.")).pack(anchor="w")
+        r = ttk.Frame(f)
+        r.pack(anchor="w", pady=(10, 0))
+        ttk.Label(r, text="Name").pack(side="left")
+        n = sum(1 for j in app.jobs if j.get("name", "").startswith("Recorded macro")) + 1
+        self.v_name = tk.StringVar(value=f"Recorded macro {n}")
+        ttk.Entry(r, textvariable=self.v_name, width=34).pack(side="left", padx=6)
+        self.v_moves = tk.BooleanVar(value=bool(s.get("rec_moves", True)))
+        ttk.Checkbutton(f, variable=self.v_moves, text=(
+            "Record mouse movement (simplified; useful for menus that open on hover)")).pack(
+            anchor="w", pady=(10, 0))
+        self.v_pics = tk.BooleanVar(value=bool(s.get("rec_pictures", True)) and HAVE_CV)
+        cb = ttk.Checkbutton(f, variable=self.v_pics, text=(
+            "Save a small picture of each clicked spot, so clicks find their target even if "
+            "it moves (recommended)"))
+        cb.pack(anchor="w", pady=(2, 0))
+        if not HAVE_CV:
+            cb.state(["disabled"])
+        self.v_timing = tk.BooleanVar(value=bool(s.get("rec_timing", True)))
+        ttk.Checkbutton(f, variable=self.v_timing, text=(
+            "Keep the pauses between actions (as waits you can edit)")).pack(anchor="w", pady=(2, 0))
+        self.v_pause = tk.BooleanVar(value=True)
+        ttk.Checkbutton(f, variable=self.v_pause, text=(
+            "Pause my other jobs while I record")).pack(anchor="w", pady=(2, 0))
+        ttk.Label(f, style="Warn.TLabel", wraplength=560, justify="left", text=(
+            "Everything you type is recorded, including passwords. Don't type secrets while "
+            "recording (add them afterwards as a Secret paste step). The recording stays on "
+            "this computer.")).pack(anchor="w", pady=(10, 0))
+        ttk.Label(f, style="Muted.TLabel", wraplength=560, justify="left", text=(
+            f"Hotkeys: {s.get('hk_record') or '(off)'} start/stop · {s.get('hk_rec_pause') or '(off)'} "
+            f"pause/resume · {s.get('hk_stop') or '(off)'} emergency stop (throws the recording "
+            f"away).")).pack(anchor="w", pady=(6, 0))
+        ttk.Button(self.footer, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(self.footer, text="⏺  Start recording", style="Accent.TButton",
+                   command=self.start).pack(side="right", padx=6)
+        self.finish()
+
+    def start(self):
+        s = self.app.settings
+        s.update(rec_moves=bool(self.v_moves.get()), rec_pictures=bool(self.v_pics.get()),
+                 rec_timing=bool(self.v_timing.get()))
+        self.app.save()
+        opts = dict(moves=bool(self.v_moves.get()), pictures=bool(self.v_pics.get()),
+                    timing=bool(self.v_timing.get()))
+        name, pause = self.v_name.get().strip() or "Recorded macro", bool(self.v_pause.get())
+        self.destroy()
+        self.app.start_recording(opts, name, pause_jobs=pause, countdown=3)
+
+
+class RecordingIndicator(tk.Toplevel):
+    """The small red bar shown while recording (it's never recorded itself)."""
+
+    def __init__(self, app, countdown=0):
+        super().__init__(app.root)
+        self.app = app
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        bg = "#1f2937"
+        self.configure(bg=bg, highlightthickness=1, highlightbackground="#ef4444")
+        row = tk.Frame(self, bg=bg)
+        row.pack(padx=10, pady=8)
+        self.dot = tk.Label(row, text="●", fg="#ef4444", bg=bg, font=(app.font_family, 14, "bold"))
+        self.dot.pack(side="left")
+        self.lbl = tk.Label(row, text="REC", fg="#ffffff", bg=bg, font=(app.font_family, 10, "bold"),
+                            width=38, anchor="w")
+        self.lbl.pack(side="left", padx=(4, 8))
+        self.pause_btn = tk.Button(row, text="⏸ Pause", command=app.toggle_recording_pause,
+                                   relief="flat", bg="#374151", fg="#ffffff", bd=0, padx=8)
+        self.pause_btn.pack(side="left", padx=2)
+        tk.Button(row, text="■ Stop", command=app.stop_recording, relief="flat", bg="#ef4444",
+                  fg="#ffffff", bd=0, padx=8).pack(side="left", padx=2)
+        tk.Button(row, text="✕", command=lambda: app.stop_recording(save=False), relief="flat",
+                  bg="#374151", fg="#ffffff", bd=0, padx=8).pack(side="left", padx=2)
+        self.drag = None
+        for w in (self, row, self.lbl, self.dot):
+            w.bind("<ButtonPress-1>", self._press)
+            w.bind("<B1-Motion>", self._motion)
+        self.update_idletasks()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"+{max(0, sw - self.winfo_reqwidth() - 24)}+{max(0, sh - self.winfo_reqheight() - 70)}")
+        self.countdown = countdown
+        self.blink = False
+        self.after(100, self.tick)
+
+    def _press(self, e):
+        self.drag = (e.x_root - self.winfo_rootx(), e.y_root - self.winfo_rooty())
+
+    def _motion(self, e):
+        if self.drag:
+            self.geometry(f"+{e.x_root - self.drag[0]}+{e.y_root - self.drag[1]}")
+
+    def rect(self):
+        try:
+            return [self.winfo_rootx() - 4, self.winfo_rooty() - 4, self.winfo_width() + 8,
+                    self.winfo_height() + 8]
+        except Exception:
+            return [0, 0, 0, 0]
+
+    def tick(self):
+        if not self.winfo_exists():
+            return
+        rec = self.app.recorder
+        if rec is not None:
+            r = self.rect()
+            if r not in rec.exclude:
+                rec.exclude.append(r)
+            st = rec.state
+            secs = int(rec.now()) if st in ("recording", "paused") else 0
+            if st == "paused":
+                txt = f"PAUSED {secs // 60}:{secs % 60:02d}"
+                self.pause_btn.configure(text="▶ Resume")
+                self.dot.configure(fg="#9ca3af")
+            else:
+                txt = (f"REC {secs // 60}:{secs % 60:02d} · {rec.counts['clicks']} clicks · "
+                       f"{rec.counts['keys']} keys")
+                self.pause_btn.configure(text="⏸ Pause")
+                self.blink = not self.blink
+                self.dot.configure(fg="#ef4444" if self.blink else "#7f1d1d")
+            if st == "full":
+                txt = "Recording is full - press Stop"
+            self.lbl.configure(text=txt)
+        self.after(500, self.tick)
+
+
+class GroupsDialog(Dialog):
+    """Reusable groups of steps (☰ Menu → Step groups)."""
+
+    def __init__(self, app):
+        super().__init__(app, "Step groups")
+        f = self.body
+        ttk.Label(f, style="Muted.TLabel", wraplength=560, justify="left", text=(
+            "A step group is a saved set of steps you can use in several jobs (“Use a step "
+            "group”). Change it here once and every job that uses it gets the change.")).pack(
+            anchor="w")
+        tf = ttk.Frame(f, style="Card.TFrame", padding=1)
+        tf.pack(fill="both", expand=True, pady=(8, 0))
+        self.tree = ttk.Treeview(tf, columns=("name", "steps", "used"), show="headings",
+                                 height=8, selectmode="browse")
+        for c, h, w in (("name", "Name", 260), ("steps", "Steps", 70), ("used", "Used by", 200)):
+            self.tree.heading(c, text=h, anchor="w")
+            self.tree.column(c, width=w, anchor="w")
+        self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<Double-1>", lambda e: self.edit())
+        br = ttk.Frame(f)
+        br.pack(fill="x", pady=(8, 0))
+        for text, cmd in (("New", self.new), ("Edit", self.edit), ("Duplicate", self.dup),
+                          ("Delete", self.delete)):
+            ttk.Button(br, text=text, style="Small.TButton", command=cmd).pack(side="left",
+                                                                              padx=(0, 4))
+        ttk.Button(self.footer, text="Close", command=self.destroy).pack(side="right")
+        self.fill()
+        self.finish()
+
+    def users(self, gid):
+        return [j["name"] for j in self.app.jobs
+                if any(s.get("group_id") == gid for s in j.get("steps") or [])]
+
+    def fill(self):
+        self.tree.delete(*self.tree.get_children())
+        for g in self.app.groups:
+            u = self.users(g["id"])
+            self.tree.insert("", "end", iid=g["id"], values=(
+                g["name"], len(g.get("steps") or []),
+                ", ".join(u[:3]) + (f" +{len(u) - 3}" if len(u) > 3 else "") if u else "not used"))
+
+    def selected(self):
+        sel = self.tree.selection()
+        return next((g for g in self.app.groups if sel and g["id"] == sel[0]), None)
+
+    def new(self):
+        GroupEditDialog(self.app, {"id": uuid.uuid4().hex, "name": f"Group {len(self.app.groups) + 1}",
+                                   "steps": []}, True, self)
+
+    def edit(self):
+        g = self.selected()
+        if g:
+            GroupEditDialog(self.app, g, False, self)
+
+    def dup(self):
+        g = self.selected()
+        if g:
+            with self.app.lock:
+                self.app.groups.append(dict(copy.deepcopy(g), id=uuid.uuid4().hex,
+                                            name=g["name"] + " (copy)"))
+            self.app.save()
+            self.fill()
+
+    def delete(self):
+        g = self.selected()
+        if not g:
+            return
+        u = self.users(g["id"])
+        msg = f"Delete the step group “{g['name']}”?"
+        if u:
+            msg += (f"\n\n{len(u)} job(s) use it ({', '.join(u[:5])}). Their “Use group” step "
+                    f"will fail until you change it.")
+        if messagebox.askyesno(APP_NAME, msg, parent=self):
+            with self.app.lock:
+                self.app.groups = [x for x in self.app.groups if x["id"] != g["id"]]
+            self.app.save()
+            self.fill()
+
+
+class GroupEditDialog(Dialog):
+    def __init__(self, app, group, is_new, owner):
+        super().__init__(app, "New step group" if is_new else f"Edit group - {group['name']}",
+                         owner)
+        self.group, self.is_new, self.owner = group, is_new, owner
+        self.steps = copy.deepcopy(group.get("steps") or [])
+        r = ttk.Frame(self.body)
+        r.pack(fill="x")
+        ttk.Label(r, text="Name", width=8).pack(side="left")
+        self.v_name = tk.StringVar(value=group["name"])
+        ttk.Entry(r, textvariable=self.v_name, width=40).pack(side="left")
+        self.stepsed = StepsEditor(app, self, self.body, self.steps, "Steps in this group",
+                                   "These run wherever a job uses this group, as if they were "
+                                   "written there.", allow_groups=False)
+        ttk.Button(self.footer, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(self.footer, text="Save", style="Accent.TButton", command=self.save).pack(
+            side="right", padx=6)
+        self.finish()
+
+    def save(self):
+        name = self.v_name.get().strip()[:MAX_NAME]
+        if not name:
+            messagebox.showerror(APP_NAME, "Give the group a name.", parent=self)
+            return
+        if not self.steps:
+            messagebox.showerror(APP_NAME, "Add at least one step.", parent=self)
+            return
+        errs = parse_blocks(self.steps)[1]
+        if errs:
+            messagebox.showerror(APP_NAME, f"Please fix the steps: {errs[0]}", parent=self)
+            return
+        app = self.app
+        with app.lock:
+            self.group.update(name=name, steps=copy.deepcopy(self.steps))
+            if self.is_new:
+                app.groups.append(self.group)
+        app.save()
+        self.destroy()
+        try:
+            self.owner.fill()
+        except Exception:
+            pass
+
+
+class RunHistoryDialog(Dialog):
+    """Every run, with its steps and results (no typed text), linked to its screen video."""
+
+    def __init__(self, app, job_name=None):
+        super().__init__(app, "Run history")
+        f = self.body
+        top = ttk.Frame(f)
+        top.pack(fill="x")
+        ttk.Label(top, text="Search").pack(side="left")
+        self.v_q = tk.StringVar()
+        e = ttk.Entry(top, textvariable=self.v_q, width=28)
+        e.pack(side="left", padx=6)
+        e.bind("<KeyRelease>", lambda ev: self.fill())
+        self.v_fail = tk.BooleanVar(value=False)
+        ttk.Checkbutton(top, text="Only failed runs", variable=self.v_fail,
+                        command=self.fill).pack(side="left", padx=8)
+        if job_name:
+            self.v_q.set(job_name)
+        tf = ttk.Frame(f, style="Card.TFrame", padding=1)
+        tf.pack(fill="both", expand=True, pady=(8, 0))
+        self.runs = ttk.Treeview(tf, columns=("time", "job", "len", "result", "video"),
+                                 show="headings", height=8, selectmode="browse")
+        for c, h, w, stv in (("time", "Started", 140, False), ("job", "Job", 160, False),
+                             ("len", "Took", 60, False), ("result", "Result", 260, True),
+                             ("video", "Video", 60, False)):
+            self.runs.heading(c, text=h, anchor="w")
+            self.runs.column(c, width=w, minwidth=40, stretch=stv, anchor="w")
+        self.runs.pack(fill="both", expand=True)
+        self.runs.bind("<<TreeviewSelect>>", lambda e: self.show_run())
+        ttk.Label(f, text="Steps of the selected run", style="Section.TLabel").pack(
+            anchor="w", pady=(10, 2))
+        tf2 = ttk.Frame(f, style="Card.TFrame", padding=1)
+        tf2.pack(fill="both", expand=True)
+        self.acts = ttk.Treeview(tf2, columns=("at", "pos", "step", "action", "result"),
+                                 show="headings", height=8, selectmode="browse")
+        for c, h, w, stv in (("at", "After", 60, False), ("pos", "Video", 60, False),
+                             ("step", "#", 60, False), ("action", "Action", 300, True),
+                             ("result", "Result", 200, True)):
+            self.acts.heading(c, text=h, anchor="w")
+            self.acts.column(c, width=w, minwidth=40, stretch=stv, anchor="w")
+        self.acts.pack(fill="both", expand=True)
+        self.acts.bind("<Double-1>", lambda e: self.play())
+        ttk.Label(f, style="Muted.TLabel", wraplength=640, justify="left", text=(
+            "Typed and pasted text is never stored here (only how many characters). Videos are "
+            "only recorded for jobs that ask for it, and stay on this computer.")).pack(
+            anchor="w", pady=(6, 0))
+        ttk.Button(self.footer, text="Close", command=self.destroy).pack(side="right")
+        ttk.Button(self.footer, text="▶  Play video from this step", style="Accent.TButton",
+                   command=self.play).pack(side="left")
+        ttk.Button(self.footer, text="Open video folder", command=self.open_folder).pack(
+            side="left", padx=6)
+        self.rows = read_runlog()
+        self.fill()
+        self.finish()
+
+    def grouped(self):
+        runs = {}
+        for r in self.rows:
+            runs.setdefault(r.get("run", ""), []).append(r)
+        return runs
+
+    def fill(self):
+        q = self.v_q.get().strip().lower()
+        self.runs.delete(*self.runs.get_children())
+        self.by_id = self.grouped()
+        for rid, rows in reversed(list(self.by_id.items())):
+            if not rid:
+                continue
+            end = next((r for r in reversed(rows) if r.get("action") == "Run finished"), None)
+            result = end.get("result", "") if end else "(still running or interrupted)"
+            if self.v_fail.get() and result == "ok":
+                continue
+            if q and not any(q in " ".join(str(v) for v in r.values()).lower() for r in rows):
+                continue
+            video = next((r.get("video") for r in rows if r.get("video")), "")
+            self.runs.insert("", "end", iid=rid, values=(
+                rows[0].get("time", ""), rows[0].get("job", ""),
+                fmt_secs(end.get("elapsed", 0)) if end else "", result, "yes" if video else ""))
+
+    def show_run(self):
+        sel = self.runs.selection()
+        self.acts.delete(*self.acts.get_children())
+        if not sel:
+            return
+        for k, r in enumerate(self.by_id.get(sel[0], [])):
+            pos = r.get("video_pos", "")
+            try:
+                pos = f"{int(float(pos)) // 60}:{int(float(pos)) % 60:02d}" if pos != "" else ""
+            except ValueError:
+                pos = ""
+            self.acts.insert("", "end", iid=str(k), values=(
+                fmt_secs(r.get("elapsed", 0)), pos, r.get("step", ""), r.get("action", ""),
+                r.get("result", "")))
+
+    def video_path(self, rows):
+        name = next((r.get("video") for r in rows if r.get("video")), "")
+        if not name or not VIDEO_FILE_RE.match(name):
+            return ""
+        return os.path.join(video_folder(self.app.settings), name)
+
+    def play(self):
+        sel = self.runs.selection()
+        if not sel:
+            return
+        rows = self.by_id.get(sel[0], [])
+        path = self.video_path(rows)
+        if not path:
+            messagebox.showinfo(APP_NAME, "This run has no screen video.", parent=self)
+            return
+        if not os.path.exists(path):
+            messagebox.showinfo(APP_NAME, f"The video file isn't there any more (old videos are "
+                                          f"deleted after a while):\n{path}", parent=self)
+            return
+        a = self.acts.selection()
+        pos = 0.0
+        if a:
+            try:
+                pos = float(rows[int(a[0])].get("video_pos") or 0)
+            except Exception:
+                pos = 0.0
+        VideoPlayer(self.app, path, pos, self)
+
+    def open_folder(self):
+        d = video_folder(self.app.settings)
+        try:
+            os.makedirs(d, exist_ok=True)
+            if IS_WIN:
+                os.startfile(d)
+        except Exception as e:
+            messagebox.showerror(APP_NAME, str(e), parent=self)
+
+
+class VideoPlayer(tk.Toplevel):
+    """Plays a run's video from a given second (local file, opened with OpenCV)."""
+
+    def __init__(self, app, path, start=0.0, parent=None):
+        super().__init__(parent or app.root)
+        self.app, self.path = app, path
+        self.title(f"Video - {os.path.basename(path)}")
+        self.cap = cv2.VideoCapture(path)
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 5
+        self.total = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        self.playing = False
+        self.img = None
+        self.lbl = ttk.Label(self, anchor="center")
+        self.lbl.pack(fill="both", expand=True)
+        bar = ttk.Frame(self, padding=8)
+        bar.pack(fill="x")
+        self.play_btn = ttk.Button(bar, text="▶ Play", command=self.toggle)
+        self.play_btn.pack(side="left")
+        ttk.Button(bar, text="−5 s", command=lambda: self.seek(self.pos() - 5)).pack(side="left", padx=4)
+        ttk.Button(bar, text="+5 s", command=lambda: self.seek(self.pos() + 5)).pack(side="left")
+        self.v_pos = tk.DoubleVar(value=start)
+        self.scale = ttk.Scale(bar, from_=0, to=max(1.0, self.total / self.fps), variable=self.v_pos,
+                               command=lambda v: self.seek(float(v), from_scale=True))
+        self.scale.pack(side="left", fill="x", expand=True, padx=8)
+        self.time_lbl = ttk.Label(bar, width=14)
+        self.time_lbl.pack(side="left")
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        app.theme_window(self)
+        self.geometry("980x620")
+        if not self.cap.isOpened():
+            self.lbl.configure(text="This video can't be opened.")
+            return
+        self.seek(start)
+
+    def pos(self):
+        return (self.cap.get(cv2.CAP_PROP_POS_FRAMES) or 0) / self.fps
+
+    def seek(self, secs, from_scale=False):
+        secs = max(0.0, min(secs, self.total / self.fps if self.total else secs))
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, int(secs * self.fps))
+        self.show_frame()
+        if not from_scale:
+            self.v_pos.set(secs)
+
+    def show_frame(self):
+        ok, frame = self.cap.read()
+        if not ok:
+            self.playing = False
+            self.play_btn.configure(text="▶ Play")
+            return False
+        img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        W = max(320, self.lbl.winfo_width() or 960)
+        H = max(200, self.lbl.winfo_height() or 540)
+        f = min(W / img.width, H / img.height, 1.0)
+        if f < 1:
+            img = img.resize((max(1, int(img.width * f)), max(1, int(img.height * f))))
+        self.img = ImageTk.PhotoImage(img)
+        self.lbl.configure(image=self.img)
+        p = self.pos()
+        self.time_lbl.configure(text=f"{int(p) // 60}:{int(p) % 60:02d} / "
+                                     f"{int(self.total / self.fps) // 60}:{int(self.total / self.fps) % 60:02d}")
+        return True
+
+    def toggle(self):
+        self.playing = not self.playing
+        self.play_btn.configure(text="⏸ Pause" if self.playing else "▶ Play")
+        if self.playing:
+            self.loop()
+
+    def loop(self):
+        if not self.playing or not self.winfo_exists():
+            return
+        if self.show_frame():
+            self.v_pos.set(self.pos())
+            self.after(int(1000 / self.fps), self.loop)
+
+    def close(self):
+        self.playing = False
+        try:
+            self.cap.release()
+        except Exception:
+            pass
         self.destroy()
 
 
@@ -6725,9 +11646,21 @@ class HelpDialog(Dialog):
             ("Screen watchers", "👁 New watcher → Draw box around the picture → choose to click "
              "when it disappears or appears → pick the button (or click the picture itself) → "
              "Save. Optionally search only an area, and add active hours."),
-            ("More steps & click chains", "Any job can do more after its click: click other "
-             "spots, wait, wait for a picture to appear (and click it) or go away, type text, "
-             "press keys - add them under “More steps” in Edit."),
+            ("Steps, conditions & loops", "Any job can do more after its click (or instead of "
+             "it): click other spots, wait, wait for a picture, type or paste text, press keys, "
+             "scroll, drag, branch with If / Otherwise / End, repeat with limits, set "
+             "variables, and reuse saved step groups - add them under “Steps” in Edit. Dry run "
+             "checks them without clicking; Step through runs them one at a time."),
+            ("Recording macros", "⏺ Record (or "
+             f"{app.settings.get('hk_record') or 'its hotkey'}) records your mouse and keyboard, "
+             "then shows the steps to edit. Don't type passwords while recording."),
+            ("Type or paste?", "Type text presses each key like a keyboard (works everywhere, "
+             "slower). Paste text puts it on the clipboard and presses Ctrl+V (fast, exact, "
+             "any language), then puts your clipboard back. Either way the text goes to "
+             "whatever has focus, so click the field first."),
+            ("One mouse, many jobs", "Only one job clicks or types at a time; the others wait "
+             "their turn (shown above the job list). Watchers keep watching meanwhile. "
+             f"Emergency stop: {app.settings.get('hk_stop') or '(set a hotkey)'}."),
             ("Tests", "🧪 Tests opens a popup with Show spot, Test click, Check picture, Dry run "
              "and scheduled tests. The whole app hides while a test runs."),
             ("Locked screen", "Windows blocks clicks and screenshots while locked or "
@@ -6743,6 +11676,9 @@ class HelpDialog(Dialog):
             ttk.Label(f, text=title, style="Section.TLabel").pack(anchor="w", pady=(8, 2))
             ttk.Label(f, text=text, style="Muted.TLabel", wraplength=560,
                       justify="left").pack(anchor="w")
+        ttk.Label(f, text="Please note", style="Section.TLabel").pack(anchor="w", pady=(8, 2))
+        ttk.Label(f, text=DISCLOSURE, style="Warn.TLabel", wraplength=560,
+                  justify="left").pack(anchor="w")
         ttk.Label(f, text="Every feature, with examples and pictures, is explained in the "
                           "complete guide on GitHub.", style="Muted.TLabel", wraplength=560,
                   justify="left").pack(anchor="w", pady=(12, 0))
@@ -6772,6 +11708,13 @@ class AboutDialog(Dialog):
             feats.append(("✔ " if ok else "✖ ") + name)
         ttk.Label(f, text="   ".join(feats), style="Muted.TLabel").pack(anchor="w", pady=(12, 2))
         ttk.Label(f, text=f"Your data: {DATA_DIR}", style="Muted.TLabel").pack(anchor="w")
+        ttk.Label(f, text="Planned (not in this version): " + ", ".join(
+            n for _, n, _ in PLANNED_ADAPTERS) + ".", style="Muted.TLabel", wraplength=520,
+            justify="left").pack(anchor="w", pady=(6, 0))
+        ttk.Label(f, text=DISCLOSURE, style="Warn.TLabel", wraplength=520,
+                  justify="left").pack(anchor="w", pady=(10, 0))
+        ttk.Label(f, text=f"Source code and security notes: {REPO_URL}", style="Muted.TLabel",
+                  wraplength=520, justify="left").pack(anchor="w", pady=(6, 0))
         ttk.Button(self.footer, text="Close", command=self.destroy).pack(side="right")
         self.finish()
 
@@ -6779,8 +11722,8 @@ class AboutDialog(Dialog):
 class SettingsDialog(Dialog):
     """Preferences, in tabs."""
     TABS = (("general", "General"), ("clicking", "Clicking"), ("watchers", "Watchers"),
-            ("hotkeys", "Hotkeys"), ("alerts", "Phone alerts"), ("look", "Appearance"),
-            ("data", "Data & backups"))
+            ("hotkeys", "Hotkeys"), ("alerts", "Phone alerts"), ("recording", "Recording & video"),
+            ("look", "Appearance"), ("data", "Data & backups"))
 
     def __init__(self, app):
         super().__init__(app, "Preferences")
@@ -6851,6 +11794,9 @@ class SettingsDialog(Dialog):
              "sec  (0 = off)")
         check(p, "restore_cursor", "Put the mouse back where it was after clicking")
         note(p, "Waiting for idle keeps Clickue from grabbing the mouse while you're using it.")
+        check(p, "warn_conflicts", "Warn me when two running jobs use the same window or spot")
+        note(p, "Only one job clicks or types at a time (Windows has one mouse and one keyboard "
+                "focus); the others wait their turn. Watchers keep watching meanwhile.")
 
         # Watchers
         p = self.pages["watchers"]
@@ -6865,6 +11811,12 @@ class SettingsDialog(Dialog):
         check(p, "hotkeys_on", "Use global hotkeys (they work even while Clickue is hidden)", IS_WIN)
         text(p, "hk_pause", "Pause / resume all", 20)
         text(p, "hk_show", "Show / hide Clickue", 20)
+        text(p, "hk_stop", "Emergency stop", 20)
+        text(p, "hk_record", "Start / stop recording", 20)
+        text(p, "hk_rec_pause", "Pause / resume recording", 20)
+        note(p, "Emergency stop ends the running job at once, drops queued clicks, lets go of "
+                "any held keys or buttons, throws away a recording in progress, and pauses "
+                "everything.")
         note(p, "Use at least one of Ctrl, Alt, Shift, Win plus a key, e.g. Ctrl+Alt+P. Leave a "
                 "box empty to turn that hotkey off.")
 
@@ -6874,9 +11826,15 @@ class SettingsDialog(Dialog):
         note(p, "Discord: in a server you own, Channel settings → Integrations → Webhooks → "
                 "New webhook → Copy URL. Telegram: create a bot with @BotFather (gives the "
                 "token), send it a message, then get your chat id from @userinfobot.")
-        text(p, "alert_discord", "Discord webhook URL", 52)
+        text(p, "alert_discord", "Discord webhook URL", 52, show="•")
         text(p, "alert_tg_token", "Telegram bot token", 52, show="•")
         text(p, "alert_tg_chat", "Telegram chat id", 20)
+        note(p, "Treat these like passwords: anyone who has them can post to your channel or "
+                "bot. Clickue only sends to discord.com and api.telegram.org over HTTPS, and "
+                "keeps them out of logs, backups and exported jobs.")
+        check(p, "protect_secrets", "Protect them with my Windows account (encrypted on disk; "
+                                    "after moving to another PC or account, enter them again)",
+              HAVE_DPAPI)
         ttk.Label(p, text="Send an alert when…").pack(anchor="w", pady=(8, 2))
         ev = s.get("alert_events") or {}
         self.ev_vars = {}
@@ -6890,6 +11848,64 @@ class SettingsDialog(Dialog):
         self.alert_result = ttk.Label(r, style="Muted.TLabel")
         self.alert_result.pack(side="left", padx=10)
         note(p, "Alerts need internet access from this computer.")
+
+        # Recording & video
+        p = self.pages["recording"]
+        ttk.Label(p, text="Macro recorder", style="Section.TLabel").pack(anchor="w")
+        check(p, "rec_moves", "Record mouse movement (simplified)")
+        check(p, "rec_pictures", "Save a picture of each clicked spot (so clicks can find "
+                                 "their target later)", HAVE_CV)
+        check(p, "rec_timing", "Keep the pauses between actions")
+        ttk.Label(p, text="Screen video of runs", style="Section.TLabel").pack(anchor="w",
+                                                                               pady=(10, 0))
+        check(p, "video_on", "Allow screen videos for jobs that ask for it (each job: Edit → "
+                             "Run options → Record the screen)", HAVE_CV)
+        r = ttk.Frame(p)
+        r.pack(anchor="w", pady=2)
+        ttk.Label(r, text="Quality").pack(side="left")
+        names = {k: v["label"].split(":")[0] for k, v in VIDEO_PRESETS.items()}
+        self.v_preset = tk.StringVar(value=names.get(s.get("video_preset"), "Standard"))
+        cb = ttk.Combobox(r, values=list(names.values()), state="readonly", width=10,
+                          textvariable=self.v_preset)
+        cb.pack(side="left", padx=6)
+        self.preset_note = ttk.Label(p, style="Muted.TLabel", wraplength=560, justify="left")
+        self.preset_note.pack(anchor="w")
+        cb.bind("<<ComboboxSelected>>", lambda e: self.preset_changed())
+        self.preset_changed()
+        r = ttk.Frame(p)
+        r.pack(anchor="w", pady=2, fill="x")
+        ttk.Label(r, text="Save videos in").pack(side="left")
+        self.v_vdir = tk.StringVar(value=s.get("video_dir") or "")
+        self.vdir_lbl = ttk.Label(r, style="Muted.TLabel")
+        self.vdir_lbl.pack(side="left", padx=6)
+        ttk.Button(r, text="Choose…", style="Small.TButton", command=self.choose_vdir).pack(
+            side="left")
+        ttk.Button(r, text="Default", style="Small.TButton",
+                   command=lambda: (self.v_vdir.set(""), self.show_vdir())).pack(side="left",
+                                                                                padx=4)
+        self.show_vdir()
+        spin(p, "video_keep_days", "Delete videos older than", 1, 3650, "days")
+        spin(p, "video_max_gb", "and keep at most", 1, 2000, "GB of them (oldest go first)")
+        check(p, "video_hide_text", "Black out the video while Clickue types or pastes text")
+        self.redact = [list(r) for r in (s.get("video_redact") or []) if _clean_rect(r)]
+        r = ttk.Frame(p)
+        r.pack(anchor="w", pady=(4, 0))
+        self.redact_lbl = ttk.Label(r)
+        self.redact_lbl.pack(side="left")
+        ttk.Button(r, text="Add an area to hide…", style="Small.TButton",
+                   command=self.add_redact).pack(side="left", padx=6)
+        ttk.Button(r, text="Clear", style="Small.TButton",
+                   command=lambda: (self.redact.clear(), self.show_redact())).pack(side="left")
+        self.show_redact()
+        note(p, "Videos stay on this computer: Clickue never uploads them. They show whatever "
+                "is on screen during a run, so keep them private. Only the run itself is "
+                "recorded, and a small red bar at the top of the screen shows while it is.")
+        ttk.Label(p, text="Run history", style="Section.TLabel").pack(anchor="w", pady=(10, 0))
+        check(p, "run_log_on", "Keep a run history: each step, its result and the video "
+                               "position (never the text typed or pasted)")
+        spin(p, "diag_keep", "Keep the newest", 1, 500, "failure screenshots")
+        ttk.Button(p, text="Run history & videos…", command=app.open_run_history).pack(
+            anchor="w", pady=(4, 0))
 
         # Appearance
         p = self.pages["look"]
@@ -6940,6 +11956,42 @@ class SettingsDialog(Dialog):
         self.app.settings["prefs_tab"] = key
         self.after(30, self._sync_scroll)
 
+    def preset_changed(self):
+        key = next((k for k, v in VIDEO_PRESETS.items()
+                    if v["label"].startswith(self.v_preset.get())), "standard")
+        self.preset_note.configure(text=VIDEO_PRESETS[key]["label"] + " Higher quality = bigger "
+                                   "files. Videos are MP4 (or AVI if MP4 isn't available).")
+
+    def preset_key(self):
+        return next((k for k, v in VIDEO_PRESETS.items()
+                     if v["label"].startswith(self.v_preset.get())), "standard")
+
+    def show_vdir(self):
+        d = self.v_vdir.get() or data_path("recordings")
+        self.vdir_lbl.configure(text=short_title(d, 48) + ("" if self.v_vdir.get() else " (default)"))
+
+    def choose_vdir(self):
+        d = filedialog.askdirectory(parent=self, title="Folder for screen videos",
+                                    mustexist=True)
+        if d:
+            if not os.access(d, os.W_OK):
+                messagebox.showerror(APP_NAME, "Clickue can't write to that folder.", parent=self)
+                return
+            self.v_vdir.set(os.path.abspath(d))
+            self.show_vdir()
+
+    def show_redact(self):
+        n = len(self.redact)
+        self.redact_lbl.configure(text=f"Always hidden in videos and failure screenshots: "
+                                       f"{n} area{'s' if n != 1 else ''}")
+
+    def add_redact(self):
+        def done(img, rect):
+            self.redact.append(rect)
+            self.show_redact()
+        self.app.draw_capture(self, "Drag a box around an area to always hide in videos", done,
+                              with_rect=True)
+
     def test_alert(self):
         settings = dict(self.app.settings)
         for k in ("alert_discord", "alert_tg_token", "alert_tg_chat"):
@@ -6954,7 +12006,8 @@ class SettingsDialog(Dialog):
                 pass
 
         def run():
-            show(send_alert(settings, "This is a test alert. If you can read this, alerts work!"))
+            show(send_alert(settings, "This is a test alert. If you can read this, alerts work!",
+                            limit=False))
         threading.Thread(target=run, daemon=True).start()
 
     def on_save(self):
@@ -6971,16 +12024,34 @@ class SettingsDialog(Dialog):
         except Exception:
             messagebox.showerror(APP_NAME, "Please check the numbers.", parent=self)
             return
-        for k in ("hk_pause", "hk_show"):
+        hks = ("hk_pause", "hk_show", "hk_stop", "hk_record", "hk_rec_pause")
+        for k in hks:
             if new[k]:
                 try:
                     parse_hotkey(new[k])
                 except ValueError as e:
                     messagebox.showerror(APP_NAME, f"Hotkey “{new[k]}”: {e}", parent=self)
                     return
-        if new["hk_pause"] and new["hk_pause"].lower() == new["hk_show"].lower():
-            messagebox.showerror(APP_NAME, "The two hotkeys must be different.", parent=self)
+        used = [new[k].replace(" ", "").lower() for k in hks if new[k]]
+        if len(used) != len(set(used)):
+            messagebox.showerror(APP_NAME, "Each hotkey must be different.", parent=self)
             return
+        if new["alert_discord"]:
+            good, why = check_discord_url(new["alert_discord"])
+            if not good:
+                messagebox.showerror(APP_NAME, f"Discord webhook URL: {why}.", parent=self)
+                return
+        if new["alert_tg_token"] or new["alert_tg_chat"]:
+            good, why = check_telegram(new["alert_tg_token"], new["alert_tg_chat"])
+            if not good:
+                messagebox.showerror(APP_NAME, f"Telegram: {why}.", parent=self)
+                return
+        new["video_preset"] = self.preset_key()
+        new["video_dir"] = self.v_vdir.get().strip()
+        new["video_redact"] = [list(r) for r in self.redact]
+        new["video_keep_days"] = max(1, new["video_keep_days"])
+        new["video_max_gb"] = max(1, new["video_max_gb"])
+        new["diag_keep"] = max(1, new["diag_keep"])
         new["log_max_mb"] = max(1, new["log_max_mb"])
         new["backups_keep"] = max(1, new["backups_keep"])
         new["default_watch_interval"] = max(1, new["default_watch_interval"])
@@ -6990,7 +12061,8 @@ class SettingsDialog(Dialog):
 
         old_start, old_mb, old_cards = (s.get("start_with_windows"), s.get("log_max_mb"),
                                         s.get("show_cards", True))
-        old_hk = (s.get("hotkeys_on"), s.get("hk_pause"), s.get("hk_show"))
+        old_hk = (s.get("hotkeys_on"), s.get("hk_pause"), s.get("hk_show"), s.get("hk_stop"),
+                  s.get("hk_record"), s.get("hk_rec_pause"))
         with app.lock:
             s.update(new)
         if new["start_with_windows"] != old_start or new["start_with_windows"]:
@@ -7003,7 +12075,8 @@ class SettingsDialog(Dialog):
         if bool(new["show_cards"]) != bool(old_cards):
             s["show_cards"] = old_cards
             app.toggle_cards()
-        if (new["hotkeys_on"], new["hk_pause"], new["hk_show"]) != old_hk:
+        if (new["hotkeys_on"], new["hk_pause"], new["hk_show"], new["hk_stop"], new["hk_record"],
+                new["hk_rec_pause"]) != old_hk:
             app.start_hotkeys()
         keep_awake(s["keep_awake"])
         app.apply_theme()

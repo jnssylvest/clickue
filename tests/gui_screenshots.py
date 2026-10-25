@@ -72,5 +72,59 @@ b = [x for x in root.winfo_children() if isinstance(x, ac.BackupsDialog)][0]; sh
 ac.AboutDialog(app); pump(400)
 b = [x for x in root.winfo_children() if isinstance(x, ac.AboutDialog)][0]; shot(b, "11_about"); b.destroy()
 root.geometry("760x700+0+0"); pump(800); shot(root, "12_main_narrow")
+root.geometry("1400x880+0+0"); pump(400)
+
+# ---- 4.5: recording, timeline, step types, dry run, step through, groups, run history
+steps = ac.finish_recording(ac.compress_recording([
+    ("down", 0.5, 412, 300, "left"), ("up", 0.55, 412, 300, "left"),
+    ("kdown", 1.2, 0x48, False, False), ("kup", 1.25, 0x48), ("kdown", 1.3, 0x49, False, False),
+    ("kup", 1.35, 0x49), ("kdown", 2.5, 0x0D, False, False), ("kup", 2.55, 0x0D),
+    ("wheel", 3.5, 700, 500, -3.0, False),
+    ("down", 5.0, 300, 420, "left"), ("move", 5.2, 380, 440), ("up", 5.6, 520, 460, "left")]))
+app.groups = [{"id": "g1", "name": "Sign in", "steps": [{"type": "key", "keys": "Tab"}]}]
+cond = {"kind": "var", "var": "count", "op": "<", "value": "10"}
+steps += [{"type": "set", "var": "count", "op": "add", "value": "1", "persist": True},
+          {"type": "if", "cond": cond}, {"type": "paste", "text": "Report {date}", "use_vars": True},
+          {"type": "else"}, {"type": "group", "group_id": "g1"}, {"type": "end"},
+          {"type": "repeat", "mode": "times", "times": 3}, {"type": "key", "keys": "Down"},
+          {"type": "end"}]
+rj = ac.new_job(9); rj.update(name="Recorded macro 1", main_click=False, steps=steps)
+ed = ac.JobEditor(app, rj, is_new=True, start_on=False); pump(400)
+ed.geometry("820x1000+20+0"); pump(200)
+ed.canvas.yview_moveto(0.62); pump(300); shot(ed, "13_timeline")
+for i, (kind, extra) in enumerate((("paste", {"text": "Line one\nLine two ✓", "use_vars": True}),
+                                    ("type", {"text": "hello"}), ("if", {"cond": cond}),
+                                    ("repeat", {"mode": "until", "cond": {"kind": "window", "title": "Export done"}}),
+                                    ("set", {"var": "count"}), ("group", {"group_id": "g1"}),
+                                    ("click", {"x": 412, "y": 300, "target_mode": "screen", "use_image": False}),
+                                    ("scroll", {"amount": -3}))):
+    sd = ac.StepDialog(app, ed.stepsed, dict({"type": kind}, **extra)); pump(400)
+    shot(sd, f"14_step_{kind}"); sd.destroy()
+ed.destroy()
+ac.RecordDialog(app); pump(400)
+d = [x for x in root.winfo_children() if isinstance(x, ac.RecordDialog)][0]; shot(d, "15_record_dialog"); d.destroy()
+class FakeRec:
+    state, counts, exclude = "recording", {"clicks": 5, "keys": 23}, []
+    def now(self): return 12.0
+app.recorder = FakeRec(); ind = ac.RecordingIndicator(app); pump(700); shot(ind, "16_recording_bar")
+ind.destroy(); app.recorder = None
+ac.GroupsDialog(app); pump(400)
+d = [x for x in root.winfo_children() if isinstance(x, ac.GroupsDialog)][0]; shot(d, "17_groups"); d.destroy()
+for k, (act, res, pos) in enumerate((("Run started", "", 0), ("Click: left at (412, 300), picture 97%", "ok", 0.4),
+                                     ("Type text: 2 characters", "ok", 1.2), ("Wait for picture: until it appears", "ok", 4.0),
+                                     ("Run finished", "ok", 6.1))):
+    ac.append_runlog({"run": "abc123", "time": "2026-10-24 18:30:00", "job": "Recorded macro 1",
+                      "elapsed": pos, "video_pos": pos, "step": str(k) if k else "", "action": act, "result": res,
+                      "video": "clickue_run_20261024_183000_Recorded-macro-1.mp4"})
+rh = ac.RunHistoryDialog(app); pump(400); rh.runs.selection_set("abc123"); pump(300); shot(rh, "18_run_history")
+rh.destroy()
+dw = ac.DebugWindow(app, rj, on_close=None); pump(300)
+dw.show_next("3", "Click: left double click at (412, 300), by picture",
+             "Will click at (412, 300), found picture 97%. Finds the saved picture; no fallback: if "
+             "the picture isn't found, nothing is clicked", None, False)
+dw.show_result("1", "Wait", True, "waited"); dw.show_result("2", "Type text", True, "typed")
+pump(300); shot(dw, "19_step_through"); dw.destroy()
+app.queue_status = lambda: ("Running “Daily login” · step 3 of 8 · 42s", ["Reconnect"])
+app.update_run_bar(); pump(500); shot(root, "20_main_running")
 app.stop.set(); root.destroy()
 print("done")

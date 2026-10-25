@@ -3,6 +3,11 @@ description: Something didn't work as expected
 title: "[Bug] "
 labels: ["bug"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security problem?** Please don't report it here; see [SECURITY.md](https://github.com/jnssylvest/clickue/blob/main/SECURITY.md).
+        **Never paste** Discord webhook URLs, Telegram bot tokens, passwords, or screenshots or videos that show them or other private information.
   - type: textarea
     id: what
     attributes:
@@ -29,7 +34,7 @@ body:
     attributes:
       label: Clickue version
       description: ☰ Menu → About
-      placeholder: "4.4"
+      placeholder: "4.5"
     validations:
       required: true
   - type: dropdown
@@ -51,5 +56,5 @@ body:
     id: log
     attributes:
       label: Log lines
-      description: ☰ Menu → Open log file. Copy the relevant lines and **remove anything private** (names, paths, webhook URLs, tokens).
+      description: ☰ Menu → Open log file (or Run history & videos). Copy the relevant lines and **remove anything private** (names, paths, webhook URLs, tokens). Clickue already hides alert credentials in its log, but check anyway.
       render: text

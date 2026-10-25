@@ -31,6 +31,8 @@ for n in ("showinfo", "showwarning", "showerror"):
     setattr(ac.messagebox, n, fake(n, "ok"))
 ac.messagebox.askyesno = ac._held(lambda *a, **k: (BOXES.append(("askyesno", a[1][:90] if len(a) > 1 else "")), ANSWER["askyesno"])[1])
 ac.messagebox.askyesnocancel = fake("askyesnocancel", True)
+ac.messagebox.askokcancel = fake("askokcancel", True)
+ac.filedialog.askdirectory = fake("askdirectory", "")
 EXPORT = os.path.join(HOME, "export.json")
 ac.filedialog.asksaveasfilename = fake("save", EXPORT)
 ac.filedialog.askopenfilename = fake("open", EXPORT)
@@ -362,23 +364,23 @@ def t_steps_and_hours():
     for kind, setup in (("wait", lambda sd: (sd.v_wmin.set(3), sd.v_wmax.set(5))),
                         ("type", lambda sd: sd.txt.insert("1.0", "hello")),
                         ("key", lambda sd: sd.v_keys.set("Ctrl+S"))):
-        btn(ed, {"wait": "+ Wait", "type": "+ Type text", "key": "+ Press keys"}[kind]).invoke(); pump(300)
+        ed.stepsed.tree.selection_set(*ed.stepsed.tree.get_children()[-1:]); ed.stepsed.add(kind); pump(300)
         sd = find_dialog(ac.StepDialog)
         ok(f"Step dialog opens ({kind})", sd is not None and sd.kind() == kind)
         if sd:
             check_comboboxes(sd, f"Step dialog ({kind})")
             setup(sd); btn(sd, "Save step").invoke(); pump(200)
-    ok("Editor: 3 steps listed", len(ed.steps) == 3 and len(ed.steps_tree.get_children()) == 3,
+    ok("Editor: 3 steps listed", len(ed.steps) == 3 and len(ed.stepsed.tree.get_children()) == 3,
        [s["type"] for s in ed.steps])
     # key validation
-    btn(ed, "+ Press keys").invoke(); pump(300)
+    ed.stepsed.add("key"); pump(300)
     sd = find_dialog(ac.StepDialog); sd.v_keys.set("Ctrl+Banana"); n = len(BOXES)
     btn(sd, "Save step").invoke(); pump(150)
     ok("Step dialog refuses unknown keys", sd.winfo_exists() and len(BOXES) > n)
     btn(sd, "Cancel").invoke(); pump(100)
-    ed.steps_tree.selection_set("2"); ed.move_step(-1); pump(50)
+    ed.stepsed.tree.selection_set("2"); ed.stepsed.move(-1); pump(50)
     ok("Editor: move step up", ed.steps[1]["type"] == "key")
-    ed.steps_tree.selection_set("0"); ed.remove_step(); pump(50)
+    ed.stepsed.tree.selection_set("0"); ed.stepsed.remove(); pump(50)
     ok("Editor: remove step", len(ed.steps) == 2 and ed.steps[0]["type"] == "key")
     ed.v_lim_on.set(True); ed.v_lim_n.set(5)
     btn(ed, "Save").invoke(); pump(300)
@@ -512,12 +514,146 @@ def t_remember_geometry():
        app.settings.get("main_geom"))
 
 
+def t_workflows_45():
+    """4.5: every step type's dialog, If/Repeat blocks, groups, dry run, recording UI, run
+    history, queue bar, emergency stop."""
+    app.add_job(); pump(300)
+    ed = find_dialog(ac.JobEditor)
+    ed.v_name.set("Workflow job")
+    ed.v_main.set(False); ed.main_toggled(); pump(50)
+    ok("Editor: steps-only disables the click controls",
+       any("disabled" in w.state() for w in widgets(ed.where_frame, ttk.Button)))
+    se = ed.stepsed
+    setups = {
+        "wait": lambda sd: (sd.v_wmin.set(0.5), sd.v_wmax.set(0.5)),
+        "type": lambda sd: sd.txt.insert("1.0", "hello"),
+        "paste": lambda sd: (sd.txt.insert("1.0", "line one\nline two ✓"), sd.v_vars.set(True)),
+        "key": lambda sd: sd.v_keys.set("Ctrl+S"),
+        "set": lambda sd: (sd.v_var.set("count"), sd.v_op.set("add"), sd.v_val.set("1")),
+        "scroll": lambda sd: sd.v_samt.set(3),
+        "keyhold": lambda sd: sd.v_hkey.set("Shift"),
+        "mouse": lambda sd: None,
+        "move": lambda sd: (sd.path_vars["move"]["endx"].set(50), sd.path_vars["move"]["endy"].set(60)),
+        "drag": lambda sd: (sd.path_vars["drag"]["endx"].set(80), sd.path_vars["drag"]["endy"].set(90)),
+        "if": lambda sd: (sd.v_cond.set("a variable has a value"), sd.cond_changed(), sd.v_cvar.set("count"),
+                          sd.v_cop.set(">"), sd.v_cval.set("0")),
+        "repeat": lambda sd: sd.v_rtimes.set(2),
+    }
+    for kind, setup in setups.items():
+        se.tree.selection_set(*se.tree.get_children()[-1:]); se.add(kind); pump(300)
+        sd = find_dialog(ac.StepDialog)
+        ok(f"Step dialog opens ({kind})", sd is not None and sd.kind() == kind)
+        if sd:
+            if kind in ("paste", "if", "repeat"):
+                check_comboboxes(sd, f"Step dialog ({kind})")
+                check_toggles(sd, f"Step dialog ({kind})")
+            setup(sd); btn(sd, "Save step").invoke(); pump(200)
+            ok(f"Step dialog saves ({kind})", not sd.winfo_exists(), BOXES[-1:] if sd.winfo_exists() else "")
+            if sd.winfo_exists():
+                btn(sd, "Cancel").invoke(); pump(100)
+    types_ = [st["type"] for st in ed.steps]
+    ok("Timeline: If and Repeat got their End", types_.count("end") == 2 and not se.errors(), types_)
+    k = next(i for i, st in enumerate(ed.steps) if st["type"] == "if")
+    se.tree.selection_set(str(k)); se.add("key"); pump(300)
+    sd = find_dialog(ac.StepDialog)
+    if sd:
+        sd.v_keys.set("Tab"); btn(sd, "Save step").invoke(); pump(200)
+    ok("Timeline: a step added inside the If is indented",
+       ed.steps[k + 1]["type"] == "key" and str(se.tree.item(str(k + 1), "values")[2]).startswith("    "),
+       se.tree.item(str(k + 1), "values"))
+    types_ = [st["type"] for st in ed.steps]
+    se.tree.selection_set("0"); se.add("else"); pump(100)
+    ok("Timeline: a stray Otherwise is reported", se.errors() and se.problem.winfo_ismapped(), se.errors())
+    se.tree.selection_set(str(next(i for i, st in enumerate(ed.steps) if st["type"] == "else")))
+    se.remove(); pump(50)
+    ok("Timeline: fixed again", not se.errors())
+    se.tree.selection_set("0", "1"); se.duplicate(); pump(50)
+    ok("Timeline: duplicate a selection", len(ed.steps) == len(types_) + 2)
+    se.remove(); pump(50)
+    se.scale_waits(2); pump(30)
+    ok("Timeline: make waits longer", ed.steps[0]["min"] == 1.0, ed.steps[0])
+    # save selected steps as a group
+    se.tree.selection_set("1"); pump(30)
+    ANSWER["askyesno"] = True
+    se.save_as_group(); pump(300)
+    tp = find_dialog(ac.TextPrompt)
+    ok("Save as group asks for a name", tp is not None)
+    if tp:
+        tp.v.set("GUI group"); tp.ok(); pump(300)
+    ok("Group saved and step replaced by 'Use group'", any(g["name"] == "GUI group" for g in app.groups)
+       and ed.steps[1]["type"] == "group")
+    # run options + save
+    ed.v_prio.set("High"); ed.v_yield.set(True)
+    btn(ed, "Save").invoke(); pump(400)
+    j = next((x for x in app.jobs if x["name"] == "Workflow job"), None)
+    ok("Workflow job saved (steps only, priority, options)", j and j["main_click"] is False
+       and j["priority"] == "high" and j["let_others_run"] and len(j["steps"]) >= 10, j and j["priority"])
+    # dry run dialog
+    ac.DryRunDialog(app, j); pump(2500)
+    dd = find_dialog(ac.DryRunDialog)
+    ok("Dry run dialog lists the steps", dd is not None and len(dd.tree.get_children()) >= 5,
+       dd and len(dd.tree.get_children()))
+    if dd:
+        btn(dd, "Close").invoke(); pump(100)
+    # groups dialog
+    ac.GroupsDialog(app); pump(300)
+    gd = find_dialog(ac.GroupsDialog)
+    ok("Step groups dialog shows the group and who uses it", gd and any(
+        "Workflow job" in str(gd.tree.item(i, "values")) for i in gd.tree.get_children()))
+    if gd:
+        gd.tree.selection_set(gd.tree.get_children()[0]); gd.edit(); pump(300)
+        ge = find_dialog(ac.GroupEditDialog)
+        ok("Group editor opens", ge is not None)
+        if ge:
+            btn(ge, "Save").invoke(); pump(200)
+        btn(gd, "Close").invoke(); pump(100)
+    # record dialog (starting needs Windows; just open, check and cancel)
+    app.toggle_recording(from_hotkey=False); pump(300)
+    rd = find_dialog(ac.RecordDialog)
+    ok("Record dialog opens", rd is not None)
+    if rd:
+        check_toggles(rd, "Record dialog")
+        btn(rd, "Cancel").invoke(); pump(100)
+    # run history
+    app.open_run_history(); pump(400)
+    rh = find_dialog(ac.RunHistoryDialog)
+    ok("Run history opens", rh is not None)
+    if rh:
+        rh.v_q.set("Workflow"); rh.fill(); pump(50)
+        btn(rh, "Close").invoke(); pump(100)
+    # run bar and emergency stop
+    app.queue_status = lambda: ("Running “X” · step 1 of 2 · 3s", ["Y"])
+    app.update_run_bar(); pump(100)
+    ok("Run bar shows what's running and waiting", app.run_bar.winfo_ismapped()
+       and "Waiting their turn: Y" in str(app.run_lbl.cget("text")))
+    del app.queue_status
+    app.update_run_bar(); pump(100)
+    ok("Run bar hides when idle", not app.run_bar.winfo_ismapped())
+    was = app.settings.get("paused")
+    app.emergency_stop(); pump(100)
+    ok("Emergency stop pauses everything", app.settings.get("paused"))
+    app.settings["paused"] = was
+    # about / help show the disclosure
+    ac.AboutDialog(app); pump(300)
+    ab = find_dialog(ac.AboutDialog)
+    ok("About shows the AI-assistance disclosure", ab and any("vibe-coded" in str(l.cget("text"))
+                                                            for l in widgets(ab, ttk.Label)))
+    if ab:
+        btn(ab, "Close").invoke(); pump(100)
+    ac.HelpDialog(app); pump(300)
+    hd = find_dialog(ac.HelpDialog)
+    ok("Help shows the disclosure", hd and any("vibe-coded" in str(l.cget("text"))
+                                               for l in widgets(hd, ttk.Label)))
+    if hd:
+        btn(hd, "Close").invoke(); pump(100)
+
+
 for name, fn in (("main", t_main), ("add click", add_click_job), ("edit/rows", t_edit_and_rows),
                  ("watcher", add_watcher), ("settings", t_settings), ("menu/dialogs", t_menu_and_dialogs),
                  ("steps/hours", t_steps_and_hours), ("watcher extras", t_watcher_extras),
                  ("tests window", t_tests_window),
                  ("test dialog", t_test_dialog_from_main), ("export/import", t_export_import),
-                 ("geometry", t_remember_geometry)):
+                 ("geometry", t_remember_geometry), ("workflows 4.5", t_workflows_45)):
     step(name, fn)
     pump(200)
 

@@ -3,15 +3,26 @@
 Read **[docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md)** first. It explains the
 architecture, data model, design decisions, tests, and the release process.
 
+Clickue is vibe-coded (developed with substantial AI assistance). Keep the disclosure from
+[SECURITY.md](SECURITY.md) prominent in the README, guides, in-app Help/About (`DISCLOSURE`),
+installer notice and release notes, and follow the security rules in the developer guide
+(section 11). Never claim Clickue is secure, audited or bug-free.
+
 Essentials:
 - The whole app is `src/clickue.py` (Python 3 + Tkinter, Windows via ctypes).
 - **Don't break saved data:** never rename or remove job/settings keys. Add new ones with
   defaults in `new_job()` / `DEFAULT_SETTINGS` (and `RUNTIME_KEYS` for runtime-only fields).
+  New step fields go into `sanitize_step()` too (imports drop unknown fields). jobs.json has
+  `"schema": 2`; bump `SCHEMA_VERSION` only with a migration and a backup.
+- Only the input thread may click or type (put work on `self.aq`); every wait/loop needs a
+  limit and `check_stop()`/`tick()`; held input goes through `HELD`.
+- Ways to find targets are `TargetAdapter`s in the source; no plugin loading from files.
 - Never call Tk from background threads. Use `self.log()` or `self.cmdq`.
 - No `grab_set()`. Popups close on click-outside (see `close_on_click_outside`).
 - Restore the main window with `restore_main()`, never `root.state("normal")`.
-- Before every release, run `python tests/test_watchers.py`,
-  `python tests/test_features.py` and `python tests/test_click_spot.py` (all must pass).
+- Before every release, run `python tests/test_watchers.py`, `python tests/test_features.py`,
+  `python tests/test_click_spot.py`, `python tests/test_workflows.py` and
+  `python tests/check_release.py` (all must pass), plus the GUI test when the UI changed.
 - **Release** = bump `VERSION` in `src/clickue.py`, add a `CHANGELOG.md` entry, update the
   docs if behaviour changed, then push to `main`. The GitHub workflow builds the exe, the
   portable zip and the installer, and creates the `v<VERSION>` release itself. Don't push tags;
@@ -20,4 +31,5 @@ Essentials:
   (complete list), `docs/GUIDE.md` (complete guide: every feature, setting and default, with
   scenarios and pictures; linked from ☰ Menu via `GUIDE_URL`), `docs/USER_GUIDE.md` (quick
   start), `CHANGELOG.md`. Guide pictures are drawn by `scripts/make_guide_images.py`.
-- Public docs must stay general: no personal details about the owner's own use.
+- Public docs must stay general: no personal details about the owner's own use (the release
+  check looks for some). Mark planned features as planned.

@@ -253,8 +253,8 @@ def note_box(p, x, y, w, h, color=ACCENT):
 
 # ---------------------------------------------------------------- pictures
 def main_window_layout():
-    p = Pic(980, 610, "The main window", "What each part of Clickue's main window is for.")
-    x0, y0, w, h = 32, 82, 700, 500
+    p = Pic(980, 650, "The main window", "What each part of Clickue's main window is for.")
+    x0, y0, w, h = 32, 82, 700, 540
     window(p, x0, y0, w, h, "Clickue")
     L = x0 + 16
     # 1 header
@@ -284,7 +284,7 @@ def main_window_layout():
     x = L
     for lbl, kind in (("+ New click", "primary"), ("New watcher", ""), ("Edit", ""),
                       ("Duplicate", ""), ("Delete", ""), ("Start", ""), ("Pause", ""),
-                      ("Pause all", ""), ("Tests", "")):
+                      ("Pause all", ""), ("Tests", ""), ("Record", "")):
         bb = button(p, x, ty, lbl, kind or "secondary", size=10, h=24, pad=8)
         x = bb[2] + 5
     button(p, x0 + w - 16 - 62, ty, "More", size=10, h=24, pad=12)
@@ -297,8 +297,14 @@ def main_window_layout():
         p.text(x + ww / 2, fy + 11, lbl, 10, "medium", fill="#ffffff" if i == 0 else FG,
                anchor="mm")
         x += ww + 3
+    # run bar (only while a job runs or waits)
+    ry0 = fy + 30
+    p.rect(L, ry0, L + w - 32, ry0 + 24, fill=WIN, outline=LINE, r=4)
+    p.text(L + 10, ry0 + 12, "▶ Running “Daily report” · step 3 of 8 · 42s · Waiting their turn: "
+                             "Reconnect", 10, fill=MUTED, anchor="lm")
+    button(p, L + w - 32 - 98, ry0 + 2, "Stop this run", size=9, h=20, pad=8)
     # 5 job list
-    gy = fy + 32
+    gy = ry0 + 34
     gw = w - 32
     p.rect(L, gy, L + gw, gy + 112, fill=WIN, outline=LINE, r=4)
     cols = (("Status", 0), ("Name", 92), ("Target", 210), ("Schedule", 330), ("Next click", 450),
@@ -336,16 +342,18 @@ def main_window_layout():
                                   ("14:02:12  [Refresh report] next click 16:04:12", MUTED))):
         p.text(L + 10, ay + 40 + i * 17, t, 10, "regular", fill=col)
     # 7 status bar
-    p.text(L, y0 + h - 18, "3 running · next click 16:04:12 · screen available", 10, fill=MUTED)
+    p.text(L, y0 + h - 18, "v4.5  ·  tray on  ·  Emergency stop: Ctrl+Alt+X  ·  Data: "
+                           "%APPDATA%\\Clickue  ·  Shortcuts: Ctrl+N new …", 10, fill=MUTED)
 
     # callouts
     notes = ((1, y0 + 58, "Header: Summary toggle, light/dark theme, and the Menu"),
              (2, cy + 31, "Summary cards: next click, active jobs, clicks today, screen"),
-             (3, ty + 12, "Toolbar. Buttons that don't fit fold into More"),
-             (4, fy + 11, "Filter: All, Scheduled clicks or Screen watchers"),
-             (5, gy + 56, "Job list. Double-click to edit, right-click for everything"),
-             (6, ay + 50, "Activity: a live log, filterable"),
-             (7, y0 + h - 18, "Status bar"))
+             (3, ty + 12, "Toolbar (overflow: More)"),
+             (4, fy + 4, "Filter: all, clicks or watchers"),
+             (5, ry0 + 16, "While a job runs: what's running and who's waiting"),
+             (6, gy + 56, "Job list. Double-click to edit, right-click for everything"),
+             (7, ay + 50, "Activity: a live log, filterable"),
+             (8, y0 + h - 18, "Status bar, with the emergency-stop hotkey"))
     for n, yy, t in notes:
         num(p, x0 + w + 22, yy, n)
         p.line([(x0 + w - 4, yy), (x0 + w + 10, yy)], ACCENT, 1.5)
@@ -864,9 +872,281 @@ def phone_alert():
     p.save("phone-alerts.png")
 
 
+# ---------------------------------------------------------------- 4.5 pictures
+def table(p, x, y, w, cols, rows, row_h=26, head=24, size=10, depth=None, sel=None):
+    """A Treeview-like table: cols = ((title, x offset), ...)."""
+    h = head + row_h * len(rows)
+    p.rect(x, y, x + w, y + h, fill=WIN, outline=LINE, r=4)
+    p.rect(x + 1, y + 1, x + w - 1, y + head, fill=SOFT)
+    for c, cx in cols:
+        p.text(x + 8 + cx, y + head / 2, c, size, "bold", fill=MUTED, anchor="lm")
+    for i, r in enumerate(rows):
+        ry = y + head + i * row_h
+        if sel == i:
+            p.rect(x + 1, ry, x + w - 1, ry + row_h, fill=TINT[ACCENT])
+        p.line([(x, ry), (x + w, ry)], "#eceff3", 1)
+        for k, ((c, cx), val) in enumerate(zip(cols, r)):
+            weight = "medium" if k == 2 and depth is not None else "regular"
+            p.text(x + 8 + cx, ry + row_h / 2, val, size, weight, anchor="lm",
+                   fill=MUTED if k == 1 else FG)
+    return y + h
+
+
+def caret(p, x, y, color=FG):
+    """The small ▾ of a drop-down button (drawn: the UI font has it, the picture font doesn't)."""
+    p.d.polygon([((x - 4) * S, (y - 2) * S), ((x + 4) * S, (y - 2) * S), (x * S, (y + 3) * S)],
+                fill=color)
+
+
+def small_buttons(p, x, y, labels, size=10):
+    for lbl in labels:
+        drop = lbl.endswith(" ▾")
+        name = lbl[:-2] if drop else lbl
+        if drop:
+            w = p.tw(name, size, "medium") + 30
+            p.rect(x, y, x + w, y + 24, fill=WIN, outline=LINE, r=6)
+            p.text(x + 8, y + 12, name, size, "medium", anchor="lm")
+            caret(p, x + w - 11, y + 12)
+            x = x + w + 5
+        else:
+            b = button(p, x, y, lbl, size=size, h=24, pad=8)
+            x = b[2] + 5
+    return x
+
+
+def record_macro():
+    p = Pic(1000, 520, "Recording a macro",
+            "Do the task once; the red bar shows you're recording. The steps then open in the "
+            "editor, ready to edit.")
+    x0, y0 = 32, 92
+    cx, cy = window(p, x0, y0, 420, 300, "Weekly report - Example App")
+    b = button(p, cx, cy + 4, "Reports", "secondary", 12, 28, 12)
+    click_target(p, b, pad=6)
+    p.rect(cx, cy + 56, cx + 300, cy + 86, fill=WIN, outline=ACCENT, width=1.5, r=5)
+    p.text(cx + 10, cy + 71, "Weekly", 12, anchor="lm")
+    bars(p, cx, cy + 110, (360, 300, 330), gap=20, h=8)
+    # the recording bar (RecordingIndicator)
+    rx, ry = x0 + 74, y0 + 236
+    p.rect(rx, ry, rx + 372, ry + 40, fill="#1f2937", outline="#ef4444", width=1.5, r=4)
+    p.circle(rx + 18, ry + 20, 6, fill="#ef4444")
+    p.text(rx + 32, ry + 20, "REC 0:12 · 5 clicks · 23 keys", 11, "bold", fill="#ffffff",
+           anchor="lm")
+    # ⏸ Pause
+    p.rect(rx + 222, ry + 8, rx + 282, ry + 32, fill="#374151", r=2)
+    p.rect(rx + 230, ry + 15, rx + 232, ry + 25, fill="#ffffff")
+    p.rect(rx + 235, ry + 15, rx + 237, ry + 25, fill="#ffffff")
+    p.text(rx + 242, ry + 20, "Pause", 10, "medium", fill="#ffffff", anchor="lm")
+    # ■ Stop
+    p.rect(rx + 286, ry + 8, rx + 338, ry + 32, fill="#ef4444", r=2)
+    p.rect(rx + 293, ry + 16, rx + 301, ry + 24, fill="#ffffff")
+    p.text(rx + 305, ry + 20, "Stop", 10, "medium", fill="#ffffff", anchor="lm")
+    # ✕ cancel
+    p.rect(rx + 342, ry + 8, rx + 364, ry + 32, fill="#374151", r=2)
+    p.line([(rx + 349, ry + 16), (rx + 357, ry + 24)], "#ffffff", 1.5)
+    p.line([(rx + 349, ry + 24), (rx + 357, ry + 16)], "#ffffff", 1.5)
+    p.text(x0, y0 + 322, "The red recording bar (Clickue's own windows are never recorded).", 11,
+           fill=MUTED)
+    p.arrow(470, 240, 506, 240, ACCENT, 3, 10)
+    # the timeline
+    ex = 516
+    p.text(ex, 96, "Steps (in the job editor)", 13, "bold")
+    cols = (("#", 0), ("At", 26), ("Step", 74), ("Details", 166))
+    rows = (("1", "0.5s", "Click", "left click at (412, 300), by picture"),
+            ("2", "0.9s", "Wait", "0.7s"),
+            ("3", "1.6s", "Type text", "Weekly"),
+            ("4", "2.4s", "Press keys", "Enter"),
+            ("5", "3.1s", "Scroll", "3 notches down at (700, 500)"),
+            ("6", "4.2s", "Drag", "left from (300, 420) to (520, 460) · 0.6s"))
+    yb = table(p, ex, 120, 452, cols, rows, size=10, sel=0)
+    small_buttons(p, ex, yb + 10, ("+ Add step ▾", "Edit", "Duplicate", "Remove", "▲", "▼"))
+    small_buttons(p, ex + 452 - 66, yb + 10, ("More ▾",))
+    note_box(p, ex, yb + 52, 452, 92, ACCENT)
+    p.para(ex + 14, yb + 62, "Clicks keep a small picture of their spot, so they're checked "
+                             "before clicking. Then: remove mouse movements, turn guessed waits "
+                             "into \"Wait for a picture\", and test with Dry run and Step "
+                             "through.", 11, 70)
+    p.save("record-macro.png")
+
+
+def type_vs_paste():
+    p = Pic(1000, 430, "Type text or Paste text?",
+            "Both send text to whatever has keyboard focus, so click the field first.")
+    for k, title in enumerate(("Type text", "Paste text")):
+        x0 = 32 + k * 488
+        p.text(x0, 90, title, 15, "bold")
+        p.text(x0, 112, ("presses one key per character, like a keyboard" if k == 0 else
+                         "uses the clipboard, then puts it back"), 11, fill=MUTED)
+        cx, cy = window(p, x0, 134, 450, 160, "New message - Example App")
+        p.rect(cx, cy + 6, cx + 420, cy + 96, fill=WIN, outline=ACCENT, width=1.5, r=5)
+        if k == 0:
+            p.text(cx + 10, cy + 22, "Hello Ann", 12, anchor="lm")
+            keys = "a", ",", "⏎"
+            for i, ch in enumerate(keys):
+                kx = cx + 140 + i * 40
+                p.rect(kx, cy + 50, kx + 30, cy + 80, fill=SOFT, outline=LINE, r=4)
+                p.text(kx + 15, cy + 65, ch, 12, "medium", anchor="mm")
+            p.text(cx + 270, cy + 65, "… one at a time", 11, fill=MUTED, anchor="lm")
+        else:
+            for i, ln in enumerate(("Hello Anna,", "The report for 2026-10-24 is attached.",
+                                    "Grüße · Привет · ✓")):
+                p.text(cx + 10, cy + 22 + i * 20, ln, 12, anchor="lm")
+            p.text(cx + 410, cy + 82, "all at once", 11, fill=MUTED, anchor="rm")
+        ny = 316
+        items = ((("~80 characters a second", "Works where pasting is blocked"),
+                  ("Up to 20,000 characters", "A new line presses Enter")) if k == 0 else
+                 (("1  Your clipboard is saved", "2  Text goes on it (kept out of Win+V history)"),
+                  ("3  Ctrl+V (or Shift+Insert)", "4  Your clipboard is put back")))
+        for row in range(2):
+            for col in range(2):
+                p.text(x0 + col * 230, ny + row * 22, items[row][col], 11,
+                       "medium" if k == 1 else "regular")
+    note_box(p, 32, 370, 936, 40, PURPLE)
+    p.text(46, 390, "Tick Secret for passwords: encrypted with your Windows account, hidden, "
+                    "never exported or logged. Tick Fill in {variables} for {date} and friends.",
+           11, anchor="lm")
+    p.save("type-vs-paste.png")
+
+
+def conditional_workflow():
+    p = Pic(1000, 470, "Steps with If, Otherwise and Repeat",
+            "Blocks are indented, so you can see which steps belong to which If or Repeat.")
+    cols = (("#", 0), ("At", 30), ("Step", 70), ("Details", 236))
+    rows = (("1", "", "Set variable", "{count} += “1”  · remembered between runs"),
+            ("2", "", "If", "the picture is showing"),
+            ("3", "", "    Click", "left click at (640, 410), by picture"),
+            ("4", "", "Otherwise", ""),
+            ("5", "", "    Use group", "“Sign in”"),
+            ("6", "", "End", ""),
+            ("7", "", "Repeat until", "the picture is showing · at most 50× / 10m 00s"),
+            ("8", "", "    Click", "left click at (300, 220), by picture"),
+            ("9", "", "    Wait for picture", "until it goes away · up to 30s, then stop the chain"),
+            ("10", "", "End", ""),
+            ("11", "", "Paste text", "Report {date}  · fills in {variables}"))
+    table(p, 32, 92, 640, cols, rows, row_h=29, size=11, depth=True)
+    notes = ((2, 175, "If: runs step 3 only when the picture is showing; Otherwise runs step 5"),
+             (7, 291, "Repeat until: again and again, at most 50 times and 10 minutes"),
+             (11, 407, "Variables: {count}, {date}, {loop}… filled into text when ticked"))
+    for n, yy, t in notes:
+        p.line([(676, yy), (700, yy)], ACCENT, 1.5)
+        num(p, 712, yy, n)
+        p.para(732, yy - 9, t, 11, 34)
+    p.save("conditional-workflow.png")
+
+
+def step_through():
+    p = Pic(1000, 470, "Step through: one step at a time",
+            "Before each step: what it will do, why that target, and where it will click.")
+    x0, y0 = 32, 92
+    cx, cy = window(p, x0, y0, 440, 300, "Weekly report - Example App")
+    bars(p, cx, cy + 10, (300, 260), gap=20, h=8)
+    b = button(p, cx + 20, cy + 70, "Export", "primary", 12, 30, 14)
+    crosshair(p, (b[0] + b[2]) / 2, (b[1] + b[3]) / 2, RED, 22)
+    p.rect(b[2] + 30, b[1] + 2, b[2] + 92, b[1] + 26, fill="#1f2937", r=4)
+    p.text(b[2] + 40, b[1] + 14, "step 3", 11, "bold", fill="#ffffff", anchor="lm")
+    # the step-through window
+    dx, dy, dw = 500, 92, 468
+    window(p, dx, dy, dw, 340, "Step through - Weekly report")
+    p.text(dx + 14, dy + 48, "Stepping through “Weekly report”", 12, "bold")
+    p.para(dx + 14, dy + 66, "Clickue stops before each step. Drag this window aside if it "
+                             "covers what Clickue needs to click.", 10, 78, MUTED)
+    p.text(dx + 14, dy + 112, "Next: step 3 · Click: left click at (412, 300), by picture", 11,
+           "bold")
+    p.para(dx + 14, dy + 132, "Will click at (412, 300), found picture 97%. Finds the saved "
+                              "picture; no fallback: if the picture isn't found, nothing is "
+                              "clicked.", 10, 80, MUTED)
+    p.rect(dx + 14, dy + 172, dx + dw - 14, dy + 246, fill=WIN, outline=LINE, r=4)
+    for i, t in enumerate(("✓ step 1 · Wait: waited", "✓ step 2 · Type text: typed")):
+        p.text(dx + 24, dy + 186 + i * 18, t, 10, fill=GREEN)
+    bb = button(p, dx + 14, dy + 258, "▶ Run this step", "primary", 11, 28, 12)
+    button(p, bb[2] + 6, dy + 258, "Run to the end", "secondary", 11, 28, 12)
+    button(p, dx + dw - 14 - 70, dy + 258, "■ Stop", "secondary", 11, 28, 12)
+    p.para(dx + 14, dy + 296, "“Run to the end” still stops before steps marked ⚠ careful.",
+           10, 80, MUTED)
+    p.save("step-through.png")
+
+
+def taking_turns():
+    p = Pic(1000, 430, "One mouse: jobs take turns",
+            "Clicks and keys from all jobs go through one queue. Watchers keep looking meanwhile.")
+    x0 = 32
+    p.rect(x0, 92, 968, 124, fill=WIN, outline=LINE, r=4)
+    p.text(x0 + 12, 108, "▶ Running “Daily report” · step 3 of 8 · 42s · Waiting their turn: "
+                         "Reconnect", 12, fill=MUTED, anchor="lm")
+    button(p, 968 - 128, 96, "■ Stop this run", size=11, h=24, pad=10)
+    lanes = (("Mouse & keyboard", 170), ("Watchers (only look)", 260))
+    for name, ly in lanes:
+        p.text(x0, ly, name, 12, "bold", anchor="lm")
+        p.line([(200, ly), (960, ly)], LINE, 1)
+    # input lane blocks
+    blocks = (("Daily report: click → wait for Export… → Save", 220, 640, ACCENT),
+              ("Reconnect", 652, 760, GREEN), ("Refresh", 772, 850, PURPLE))
+    for t, a, b, col in blocks:
+        p.rect(a, 152, b, 188, fill=TINT[col], outline=col, width=1.5, r=6)
+        p.text((a + b) / 2, 170, t, 11, "medium", fill=col, anchor="mm")
+    for t in range(230, 950, 40):
+        p.circle(t, 260, 5, fill=ACCENT)
+    p.text(430, 290, "checks continue every few seconds, even while a job uses the mouse", 11,
+           fill=MUTED, anchor="mm")
+    p.arrow(470, 250, 650, 194, GREEN, 2, 8)
+    p.text(668, 222, "Reconnect's watcher saw the change, so its click waits its turn", 10,
+           fill=GREEN, anchor="lm")
+    note_box(p, 32, 318, 936, 88, ACCENT)
+    p.para(46, 328, "Windows has one mouse pointer and one keyboard focus, so two jobs clicking "
+                    "at once would collide. Priority (High / Normal / Low) decides who goes first; "
+                    "\"Let other jobs click in between\" lets a waiting job step aside; Ctrl+Alt+X "
+                    "stops everything. Running jobs side by side on separate desktops or VMs is "
+                    "planned.", 11, 140)
+    p.save("taking-turns.png")
+
+
+def run_history():
+    p = Pic(1000, 520, "Run history and screen video",
+            "Every run and its steps, with where each step is in the run's video.")
+    x0, y0 = 32, 92
+    window(p, x0, y0, 620, 400, "Run history")
+    p.text(x0 + 14, y0 + 52, "Search", 11, anchor="lm")
+    p.rect(x0 + 64, y0 + 40, x0 + 260, y0 + 64, fill=WIN, outline=LINE, r=3)
+    p.rect(x0 + 276, y0 + 45, x0 + 290, y0 + 59, outline=MUTED, r=2)
+    p.text(x0 + 298, y0 + 52, "Only failed runs", 11, anchor="lm")
+    cols = (("Started", 0), ("Job", 140), ("Took", 280), ("Result", 330), ("Video", 530))
+    rows = (("2026-10-24 07:45:02", "Daily report", "6.1s", "ok", "yes"),
+            ("2026-10-23 07:45:01", "Daily report", "38s", "failed: step 3 (click): not found", "yes"),
+            ("2026-10-23 06:12:40", "Reconnect", "0.8s", "ok", ""))
+    yb = table(p, x0 + 14, y0 + 74, 592, cols, rows, row_h=24, size=10, sel=1)
+    p.text(x0 + 14, yb + 16, "Steps of the selected run", 11, "bold")
+    cols = (("After", 0), ("Video", 52), ("#", 104), ("Action", 134), ("Result", 430))
+    rows = (("0s", "0:00", "", "Run started", ""),
+            ("0.4s", "0:00", "0", "Click: left at (412, 300), picture 97%", "ok"),
+            ("1.2s", "0:01", "1", "Type text: 12 characters", "ok"),
+            ("31s", "0:31", "2", "Wait for picture: until it appears", "ok"),
+            ("38s", "0:38", "3", "Click: left click at (300, 220), by picture", "failed"))
+    yb2 = table(p, x0 + 14, yb + 30, 592, cols, rows, row_h=22, size=10, sel=4)
+    button(p, x0 + 14, yb2 + 10, "▶ Play video from this step", "primary", 11, 26, 12)
+    # the video player
+    vx, vy = 680, 92
+    window(p, vx, vy, 288, 230, "Video")
+    p.rect(vx + 12, vy + 42, vx + 276, vy + 180, fill="#d1d5db", r=3)
+    p.rect(vx + 60, vy + 60, vx + 230, vy + 160, fill=WIN, outline=LINE, r=4)
+    bars(p, vx + 72, vy + 76, (120, 90), gap=14, h=6)
+    p.rect(vx + 150, vy + 132, vx + 220, vy + 152, fill=TINT[RED], outline=RED, r=3)
+    p.rect(vx + 12, vy + 188, vx + 276, vy + 192, fill=LINE, r=2)
+    p.rect(vx + 12, vy + 188, vx + 175, vy + 192, fill=ACCENT, r=2)
+    p.text(vx + 14, vy + 210, "▶ Play  −5 s  +5 s", 10, "medium", anchor="lm")
+    p.text(vx + 274, vy + 210, "0:38 / 0:40", 10, fill=MUTED, anchor="rm")
+    # the recording indicator
+    p.rect(vx, 340, vx + 288, 364, fill="#7f1d1d", r=3)
+    p.text(vx + 8, 352, "● Recording the screen: Daily report", 9, "bold", fill="#ffffff",
+           anchor="lm")
+    p.para(vx, 378, "While a run is recorded, this red bar shows at the top of the screen, "
+                    "with Pause video and Stop video. Videos stay on this computer.", 10, 46,
+           MUTED)
+    p.save("run-history.png")
+
+
 if __name__ == "__main__":
     for fn in (main_window_layout, good_and_bad_spots, picture_sizes, schedule_timeline,
                active_hours, watcher_disappears, watcher_appears, strict_matching, search_area,
                flicker_protection, click_once, click_chain, multi_step_search, show_spot,
-               remote_sessions, phone_alert):
+               remote_sessions, phone_alert, record_macro, type_vs_paste, conditional_workflow,
+               step_through, taking_turns, run_history):
         fn()

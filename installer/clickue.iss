@@ -30,6 +30,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 LicenseFile=..\LICENSE
+InfoBeforeFile=before-install.txt
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
@@ -65,16 +66,47 @@ begin
   Result := GetDateTimeString('yyyymmddhhnnss', #0, #0);
 end;
 
+function HasParam(Name: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), Name) = 0 then
+      Result := True;
+end;
+
+procedure RemoveStartupEntry();
+var
+  Value: String;
+begin
+  { Clickue's own "Start with Windows" setting writes HKCU\...\Run\Clickue. Remove it only
+    if it points at this installation, so another copy (e.g. a portable one) isn't touched. }
+  if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Clickue', Value) then
+    if Pos(Lowercase(ExpandConstant('{app}')), Lowercase(Value)) > 0 then
+      RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Clickue');
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;
 begin
+  if CurUninstallStep = usUninstall then
+    RemoveStartupEntry();
   if CurUninstallStep = usPostUninstall then
   begin
+    { The program files, shortcuts and start-with-Windows entry are removed above. Your
+      jobs and other data are only deleted if you say so (Clickue's own Uninstall asks
+      first and passes /KEEPDATA when you chose to keep them). Only this one folder is
+      deleted, never anything else. }
     DataDir := ExpandConstant('{userappdata}\Clickue');
-    if DirExists(DataDir) and not UninstallSilent then
-      if MsgBox('Also delete your Clickue jobs, settings, history and backups?' + #13#10 + #13#10 +
-                'Choose No to keep them for a future reinstall.' + #13#10 + DataDir,
+    if DirExists(DataDir) and not UninstallSilent and not HasParam('/KEEPDATA') then
+      if MsgBox('Clickue has been removed from this computer.' + #13#10 + #13#10 +
+                'Also delete your Clickue data?' + #13#10 + DataDir + #13#10 +
+                '(jobs, settings, step groups, click and run history, logs, backups, failure ' +
+                'screenshots, and screen videos kept in that folder)' + #13#10 + #13#10 +
+                'Yes = delete it.  No = keep it for a future reinstall.' + #13#10 + #13#10 +
+                'Screen videos saved to a folder you chose yourself are not deleted.',
                 mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
         DelTree(DataDir, True, True, True);
   end;
