@@ -258,6 +258,37 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
   `grab_screen(move_cursor=True)` and `do_click` mutually exclusive, so a scheduler-thread
   re-check can never move the pointer in the middle of a click. `current_pointer()` returns
   None off Windows (tests patch it).
+- **4.5.4 matching.** `picture_candidates(..., limit, floor)`: a plain close-up (σ < 4)
+  scores like the whole picture (noise made it 0 before); same in `verify_exact`. Pictures
+  from 6 px work. **Exact (watchers, `picture_on_screen`)**: after the old checks,
+  `exact_tiles()` compares the picture tile by tile (`_tile_grid`): every tile's mean RGB
+  difference ≤ `EXACT_TILE_DIFF` (14, ×1.6 when scaled) and every detailed tile's correlation
+  ≥ `EXACT_TILE_CORR` (0.90; `EXACT_TILE_CORR_SCALED` 0.70 at other sizes: measured genuine
+  0.79+, changed text < 0.1), with ±1 px alignment. Before, a card whose price differed
+  passed (the changed part was outside the close-up). Click-spot matching (`spot_report`) is
+  unchanged. **Partial**: `partial_candidates()` searches the 16 most detailed tiles on their
+  own (TM_CCOEFF_NORMED ≥ 0.80, dilated ±2 px) and lets each hit vote for the picture's
+  origin; peaks become candidates (at the hint scale and 100 %), then `partial_fraction`
+  decides. Before, only the top whole-picture candidates within 0.15 of the best were
+  checked, so other copies with a different changing part were never considered.
+  `report` lists up to `MAX_MATCHES` places; Check now always outlines the ones that count.
+  Typical times (1920×1080, whole screen): exact 0.1–1.1 s, partial 1.4 s (2560×1440: 2.6 s).
+- **`BoxDrawer` (4.5.4)** is the one Draw-box overlay (watcher editor `_draw_overlay` and
+  `App.draw_capture`): view state `z`, `ox`, `oy` (screenshot px), `to_px` maps canvas →
+  pixel corners, so the box is always in real pixels; dimmed base re-rendered on zoom/pan
+  (NEAREST, grid from 8×), the undimmed selection as a second image, magnifier
+  (`show_loupe`, 15 px at 11 px each). Minimum box `PICTURE_MIN_PX` (8).
+- **Job list views (4.5.4):** all columns exist in the Treeview (`JOB_COLS`); `JOB_VIEWS`
+  picks the displayed ones per filter; `build_rows` returns `RowVals` (the classic 9-tuple,
+  still used by `tray_status`, plus `.cells` for every column). `apply_view` sets headings,
+  fits widths to text (`column_fit_width`, capped per column), gives the rest to *last*,
+  hides `VIEW_DROP` columns when narrow; it grows-only during the 1 s refresh and refits on
+  full refreshes, view changes and resizes (throttled to 3 s otherwise). User widths in
+  `col_widths` win. Divider: `nudge_split`, `SPLIT_MIN/MAX`, visible `Sash` style.
+- **Buttons:** disabled `TButton`/`Accent.TButton` map `relief` to `solid` with the `outline`
+  palette colour and no fill (clam draws no border with relief flat).
+- **Tests window (4.5.4):** sections `tests_section` (all/click/watch) with `test_kind(name)`;
+  per-section scope `tests_scopes`; no paned split any more (history right under the buttons).
 - **Draw box (watcher)** captures with the pointer moved aside and, 0.6 s later,
   `picture_changes()` captures the box again: if > 1 % of its pixels changed by > 24 grey
   levels, the user is warned (exact mode) that the box contains changing content.
@@ -461,8 +492,8 @@ pythonw src\clickue.py          rem or double-click scripts\Start Clickue.bat
   `scripts\make_version_file.py` for the exe's version details, then PyInstaller `--onefile
   --noconsole --icon assets\clickue.ico --version-file build\version_info.txt
   --hidden-import pystray._win32`).
-- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.5.3`, run
-  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.5.3.exe`. The installer shows
+- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.5.4`, run
+  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.5.4.exe`. The installer shows
   `installer/before-install.txt` first; its uninstaller removes the HKCU Run value only when it
   points at `{app}`, and deletes `%APPDATA%\Clickue` only if the user says Yes (skipped when
   Clickue's own Uninstall passes `/KEEPDATA`).
@@ -476,7 +507,7 @@ Run from the repository root.
 
 | Command | What | Expected |
 |---|---|---|
-| `python tests/test_watchers.py` | watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries), 4.5.3: search-area margin, partial matching, pointer on the picture, import of the match fields | `RESULT 34/34` |
+| `python tests/test_watchers.py` | watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries), 4.5.3: search-area margin, partial matching, pointer on the picture, import of the match fields; 4.5.4: every copy (exact and partial), one changed digit, compression/noise, 125/150 % scaling, a 15 px icon among 60 others | `RESULT 42/42` |
 | `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id, guide link + pictures, 4.5.3 batch actions / delete + undo / Edit together | `RESULT 71/71` |
 | `python tests/test_click_spot.py` | click-spot matching at 3 picture sizes × 8 screens (100–175 % scaling, moved, look-alikes), with exact matching and with tolerant matching | `0 of 48` failures |
 | `python tests/test_workflows.py` | 4.5: alert hardening (hosts, redirects, rate limit, redaction), secrets out of backups/exports, DPAPI flow (simulated), import validation, data-folder safety, variables, blocks, if/repeat/retries/groups/limits/cancel/pause, held-input release, dry run, the input queue (order, watchers keep checking, yielding, emergency stop), conflicts, recorder compression, paste/clipboard flow, video (lifecycle, no codec, disk full, capture failure, redaction), run history + video positions, failure screenshots, schema migration, adapters | `RESULT N/N` |
@@ -534,6 +565,12 @@ Run from the repository root.
      jobs → Pause / Resume / Stop / Delete + one Undo; Edit together → change Check every on
      two watchers; the h/m/s units sit next to their fields in both editors at 100 % and
      125–150 % scaling; ☐/☑ show in the first column.
+   - 4.5.4: Draw box → mouse wheel zooms around the pointer, magnifier shows position/colour,
+     middle-drag/arrows move, a 10 × 10 icon can be boxed and is found by Check now; a
+     picture on screen several times → Check now outlines all; exact watcher on a card whose
+     number changes → not found, partial → found on every card; the three filters show their
+     own columns, fitted to text; ▲ / ▼ and dragging the divider; disabled toolbar buttons
+     are outlines; Tests sections and their history scopes.
 
 ## 10. GitHub: repository, CI and releases
 

@@ -11,7 +11,7 @@
 
 This guide explains **every feature** of Clickue, with real-world scenarios and example
 pictures. Read it from top to bottom to learn everything, or jump to the part you need.
-In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.5.3.
+In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.5.4.
 
 > [!NOTE]
 > The example pictures show an invented "Example App" so the ideas are easy to see. Your own
@@ -124,7 +124,7 @@ From the [Releases page](https://github.com/jnssylvest/clickue/releases/latest):
   (shown as *Before a fresh start* in Backups), so nothing is lost.
 - **Upgrading.** Your jobs keep working. Every time a new version starts for the first time
   with your jobs, Clickue first saves a backup named *before-upgrade-&lt;version&gt;* (for
-  example *before-upgrade-4.5.3*), so you can always go back to the jobs as they were.
+  example *before-upgrade-4.5.4*), so you can always go back to the jobs as they were.
 - **Jobs file missing or damaged?** If `jobs.json` is gone or can't be read but backups exist,
   Clickue tells you and offers to **restore the newest backup** (it shows its date and the job
   names). Restored jobs start **stopped**, so nothing clicks until you start them.
@@ -164,26 +164,58 @@ While a job is running, or jobs are waiting their turn, a **bar above the job li
 which, with **■ Stop this run** ([section 11](#11-starting-pausing-stopping-and-taking-turns)).
 The status bar shows the **emergency stop** hotkey.
 
-Drag the divider between the job list and Activity to give either more room.
+**Making the job list or Activity taller.** Drag the divider between them (the dotted bar
+above *Activity*; it lights up when the mouse is on it), or use the **▲** / **▼** buttons at
+the right of the *Activity* heading (**Ctrl+Up** / **Ctrl+Down**). ▲ gives Activity more room,
+▼ gives the job list more room; either can be shrunk almost completely. Clickue remembers the
+split.
 
 ### The job list columns
+
+The filter above the list (**All**, **Scheduled clicks**, **Screen watchers**) also switches
+**which columns** are shown, so each kind of job shows what matters for it.
+
+**Scheduled clicks**
 
 | Column | Shows |
 |---|---|
 | **☐ / ☑** | The tick box for batch actions (ticked rows are also tinted) |
 | **Status** | What the job is doing (see below) |
 | **Name** | The job's name |
-| **Target** | Where it clicks and how it finds the spot (picture, window, or position), or *☰ N steps only* |
-| **Click** | Button and single/double, e.g. *Left ×2* |
-| **Schedule** | E.g. *every 8h + 10s–15m*, or *check every 30s* for watchers |
-| **Next click** | When the next click is due; for watchers, what was last seen |
+| **Clicks at** | Button and single/double, then where and how it finds the spot: *Left ×2 · ▣ Picture*, a window, a fixed position, or *☰ N steps only* |
+| **Schedule** | E.g. *Every 8h, +10s–15m*, or *Every 1h, exact* |
+| **Runs** | *Always*, or its active hours (*08:00–22:00 Mon–Fri*), plus limits (*max 10 clicks*, *until 2026-11-01 18:00*) |
+| **Next click** | When the next click is due |
 | **Starts in** | A live countdown |
 | **Clicks** | How many times the job has clicked |
 | **Last result** | The outcome of the latest click: *OK*, *Missed*, *Click FAILED*, *Finished…* |
 
+**Screen watchers**
+
+| Column | Shows |
+|---|---|
+| **☐ / ☑**, **Status**, **Name** | As above |
+| **Watching for** | *Disappears* or *Appears*, the picture's size, *area* when it only searches an area, and *exact* or the partial-match share (*75% match*) |
+| **Then** | What it does: *Left · ▣ Picture* (the button), *Left on the picture*, or *☰ 3 steps*, plus extra steps |
+| **Checks** | How often and how many checks in a row: *every 30s · 2 in a row · once* (*once* = click only once) |
+| **Picture** | What the last check saw: *Seen 13:49:58*, *Missing (1 of 2 checks)*, *Not showing*, *Can't tell: …* |
+| **Next check** | Countdown to the next look (*check in 12s*, *click in 3s*) |
+| **Clicks**, **Last result** | As above |
+
+**All** shows a compact mix: Status, **Type** (click or watcher), Name, **What it does** (its
+schedule or what it watches for, and what it clicks), **Next / last seen**, **In** (countdown),
+Clicks and Last result.
+
 ### Column widths
 
-Like in a spreadsheet:
+Since 4.5.4 the columns **fit their text automatically**: each one is as wide as its longest
+text (up to a sensible maximum, so one very long name doesn't push everything off screen),
+and **Last result** takes the rest of the row. While the list is only counting down, columns
+can grow but don't shrink, so nothing jumps around; they're fitted again when you switch
+views, add, edit or delete jobs, or resize the window. When the window is too narrow, the
+least important columns of that view are hidden first.
+
+To set a width yourself, like in a spreadsheet:
 
 - **Drag** the border between two column headings to make a column wider or narrower.
 - **Double-click** the border to the right of a column heading to **fit the column to its
@@ -192,8 +224,8 @@ Like in a spreadsheet:
   line.
 
 Clickue **remembers** the widths you set (fitted or dragged) and keeps them the next time it
-starts; the other columns share the remaining space. **☰ Menu → Reset column widths** goes back
-to the standard layout. Double-clicking a column border works the same way in every other
+starts; the other columns keep fitting their text. **☰ Menu → Reset column widths** goes back
+to automatic widths for every column. Double-clicking a column border works the same way in every other
 table in the app (steps, history, run history, backups), there without being remembered.
 
 ### Status values
@@ -491,7 +523,10 @@ button.
      prompt once so you can draw it).
    - Box something **distinctive**: text, an icon, a logo. Clickue warns you about plain areas
      and very big boxes (big boxes work, but each check is slower). The box must be at least
-     16 × 16.
+     8 × 8 pixels (since 4.5.4; it was 16 × 16).
+   - **Zoom in for small pictures** ([below](#zooming-in-while-you-draw)): the mouse wheel
+     magnifies the frozen screen up to 24×, and a magnifier next to the pointer shows the exact
+     pixels, so you can put the box's edges on exactly the right pixel.
    - The picture is saved at **full screen resolution** (lossless, never scaled down), with the
      mouse pointer moved aside for a moment so a hover highlight isn't saved with it.
    - A moment later Clickue looks at the same box again. If part of it **changed** (a number,
@@ -514,6 +549,30 @@ button.
    When the picture isn't found, the message and the test history say how close the best
    place came, and **Dry run** outlines the closest places on screen so you can see why.
 8. **Save.** Leave **Start watching when I save** ticked to start right away.
+
+### Zooming in while you draw
+
+![Drawing at 6x zoom: pixel grid, the box size, and the magnifier with position and colour](images/guide/draw-zoom.png)
+
+Every *Draw box* screen (watchers, *Wait for a picture* steps, If/Repeat picture conditions,
+video hidden areas) can zoom:
+
+| Do | To |
+|---|---|
+| **Mouse wheel** up / down, or **+** / **−** | Zoom in / out around the pointer: 1×, 2×, 3×, 4×, 6×, 8×, 12×, 16×, 24× |
+| **Middle mouse button** drag, or the **arrow keys** | Move around the zoomed screen (**Shift+arrow** moves one pixel) |
+| Drag near the edge while drawing | The view follows |
+| **0** | Back to the whole screen |
+| **Esc**, right-click or **✕ Cancel** | Cancel |
+
+- From 8× a **pixel grid** is drawn, so you see every pixel.
+- The **magnifier** next to the pointer always shows the 15 × 15 pixels around it, the pixel
+  under the pointer outlined, its **screen position** and **colour** (e.g. *#1e5ac8*), the
+  zoom, and while drawing the box size.
+- You can zoom in or out **while** dragging: start the box zoomed out, zoom in at the far
+  corner, and release exactly where you want.
+- Zooming only changes what you see. The saved picture is always the **real pixels** of the
+  screen at full resolution; the size shown (*37 × 22 px*) is its real size.
 
 ### Search only an area
 
@@ -543,18 +602,25 @@ look-alike doesn't count as "still there" either.
 
 ### Exact or partial matching
 
+Since 4.5.4 both modes look at **every place on the screen** (or the search area), so a picture
+that's on screen several times is found **every time**: **Check now** outlines each copy (the
+best one gets the marker), and the result says *on screen 3 times*.
+
 ![A box with a badge and a changing time: exact matching says gone, partial matching says found](images/guide/partial-matching.png)
 
 **Match** decides how much of the watched picture has to be on screen:
 
 | Choice | Counts as showing when… | Use it for | Default |
 |---|---|---|---|
-| **the exact picture** | the whole picture matches: shape, close-up detail and colour (see *Strict matching* above) | badges, buttons, labels that look the same every time | ✔ |
+| **the exact picture** | **every part** of the picture matches: shape, close-up detail and colour, checked tile by tile, so even one changed digit anywhere in the box means "not this picture" | badges, buttons, labels that look the same every time | ✔ |
 | **part of the picture is enough: N % of it** | at least N % of the picture matches (40–95 %) | a box that also contains something that changes: a price, a counter, a clock, a blinking cursor | 75 % |
 
 How partial matching works: the saved picture is cut into small tiles (about 24 × 24 pixels).
-Each tile is compared on its own, may sit a few pixels off, and must also have the same
-colour. The share of tiles that match is the score. *Check now*, *Dry run* and the test
+Each detailed tile is searched for on its own over the whole screen, and every place where
+enough tiles line up becomes a candidate, even where the changing part makes the picture as
+a whole look quite different. Each candidate is then checked tile by tile: a tile may sit a
+few pixels off and must also have the same colour. The share of tiles that match is the
+score. *Check now*, *Dry run* and the test
 history show it as *82 % of it matches, 75 % needed*. The same target marker shows where
 the picture was found, whichever mode you use.
 
@@ -1042,15 +1108,20 @@ maximized, if it was), with the window you were using on top.
 | **Show spot** | All jobs | Moves the mouse to where it would click right now, shows a pulsing crosshair, and says how it found the spot. Optionally outlines every similar picture too ([section 4](#checking-a-spot)). **No click** |
 | **Test click now** | All jobs | Clicks once right away, including the extra steps. The schedule isn't changed |
 | **Schedule test click…** | All jobs | Clicks once in X minutes (at least 5 s away). Follows the same rules as a real click: waits for the screen, retries, then reports |
-| **Check picture** | Watchers | Is the watched picture on screen (or in its area) right now? Marks it for the time set in Preferences → Clicking, and can outline similar pictures too |
+| **Check picture** | Watchers | Is the watched picture on screen (or in its area) right now? Marks it for the time set in Preferences → Clicking, outlines **every copy** it finds, and can outline similar pictures too |
 | **Dry run** | Watchers | Marks the watched picture, then the button, and says whether it **would** click now. **No click** |
 | **Schedule watcher test…** | Watchers | Runs the watcher check later, in the background. Optionally **really clicks** if the picture is missing |
 
+- **Sections (4.5.4).** **All tests**, **Click tests** and **Watcher tests** at the top of the
+  window. Each section shows only its own buttons and its own **history**, right under the
+  buttons, and each remembers whether it lists **This job** or **All jobs**. So *Watcher tests*
+  + *All jobs* lists every watcher check of every watcher, while *Click tests* + *This job*
+  lists only the selected job's click tests.
 - **Pending tests** show as **purple rows** in the job list with a countdown. Right-click them
   to **change the test time** or **cancel** them; **Cancel pending tests** in the Tests window
   cancels them all.
-- **Test history** lists every result for **This job** or **All jobs**. Select a line to see all
-  the details. **Clear** empties it.
+- **Test history** lists the section's results for **This job** or **All jobs**. Select a line
+  to see all the details. **Clear** empties it (all sections).
 - The same tests are on each job's **right-click menu**, and the editor has **Show spot**,
   **Check now** and **Dry run** buttons so you can test before saving.
 - **Test click now** goes through the same one-at-a-time queue as everything else, ahead of
@@ -1443,7 +1514,7 @@ writes the reason in the Activity log and shows a warning once, instead of faili
 - Backups contain your jobs, step groups and settings, but **never your phone-alert
   credentials**.
 - **Before an upgrade:** the first time a new version starts with your jobs, it saves a backup
-  named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.3*) before saving
+  named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.4*) before saving
   anything. Older jobs keep working exactly as before.
 - **☰ Menu → Backups…** lists them (Daily, Manual, Before a restore, Before an import, Before a
   fresh start, Before an upgrade) with how many jobs each holds.
@@ -1872,6 +1943,8 @@ Only in admin tools where your organisation allows automation:
 | Ctrl+T | Tests |
 | Ctrl+Z | Undo delete (a batch delete comes back all at once) |
 | X | Tick / untick the selected job (for batch actions) |
+| Ctrl+Up / Ctrl+Down | More room for Activity / for the job list |
+| Mouse wheel, + / −, 0, arrows, middle-drag | Zoom and move while drawing a box ([section 6](#zooming-in-while-you-draw)) |
 | Ctrl+A (in the job list) | Tick every job shown |
 | Ctrl+, | Preferences |
 | Del | Delete the selected job (or the selected steps, in the timeline) |
@@ -2001,6 +2074,9 @@ signed in as that user). If Clickue was ended abruptly, Windows may leave a temp
 | **Watcher says "Picture NOT on screen (best 77%)" but it is there** | Something inside the box changes (a number, a time, an animation), the box was drawn while the mouse made a button look different, or a search area was drawn tighter than the picture (fixed in 4.5.3). Run **Dry run**: the closest places are outlined. Then re-draw a box around a part that never changes, or choose **Match: part of the picture is enough** ([section 6](#exact-or-partial-matching)) |
 | **Watcher says "Can't tell: mouse pointer on the picture"** | The pointer rests on the watched picture, which can change how it looks. Move the mouse away; when the computer is idle for 20 s Clickue checks with the pointer moved aside |
 | **The Tests window showed no test buttons until I resized it** | Fixed in 4.5.3 |
+| **The picture is small and hard to box** | Zoom in with the mouse wheel while drawing (up to 24×); the magnifier shows the exact pixels ([section 6](#zooming-in-while-you-draw)) |
+| **Partial matching finds only one of several copies** | Fixed in 4.5.4: every copy whose matching share is high enough is found. **Check now** outlines them all |
+| **"Exact" matched a copy with a different number** | Fixed in 4.5.4: exact matching now checks every part of the picture |
 | **Watcher clicked once and never again** | *Click only once* is waiting for the picture to come back (or go away). Untick it to keep clicking |
 | **Watcher clicks on a flicker** | Raise *checks in a row* to 3, or check less often |
 | **Watcher never sees the change** | **Check now** while the picture is showing. Re-draw a tighter box around the most distinctive part. If the colour or text changes, that counts as "gone" |

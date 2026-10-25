@@ -307,17 +307,17 @@ def main_window_layout():
     gy = ry0 + 34
     gw = w - 32
     p.rect(L, gy, L + gw, gy + 112, fill=WIN, outline=LINE, r=4)
-    cols = (("Status", 26), ("Name", 112), ("Target", 222), ("Schedule", 338),
-            ("Next click", 458), ("Starts in", 550), ("Clicks", 626))
+    cols = (("Status", 26), ("Type", 112), ("Name", 180), ("What it does", 290),
+            ("Next / last seen", 458), ("In", 562), ("Clicks", 626))
     p.rect(L + 1, gy + 1, L + gw - 1, gy + 24, fill=SOFT)
     tickbox(p, L + 7, gy + 6)
     for c, cx in cols:
         p.text(L + 8 + cx, gy + 12, c, 10, "bold", fill=MUTED, anchor="lm")
-    rows = ((GREEN, "Running", "Refresh report", "picture", "every 8h +10s–15m", "16:04:12",
+    rows = ((GREEN, "Running", "Click", "Refresh report", "Every 8h → Left", "16:04:12",
              "2h 14m", "41"),
-            (ACCENT, "Watching", "Reconnect", "picture", "check every 30s", "Seen 13:49:58",
-             "check in 12s", "3"),
-            (AMBER, "Paused", "Weekly export", "window", "every 7d", "Paused", "—", "9"))
+            (ACCENT, "Watching", "Watcher", "Reconnect", "Disappears → Left", "Seen 13:49:58",
+             "12s", "3"),
+            (AMBER, "Paused", "Click", "Weekly export", "Every 7d → window", "Paused", "—", "9"))
     for i, r in enumerate(rows):
         ry = gy + 24 + i * 29
         p.line([(L, ry), (L + gw, ry)], LINE, 1)
@@ -353,8 +353,8 @@ def main_window_layout():
              (3, ty + 12, "Toolbar (overflow: More)"),
              (4, fy + 4, "Filter: all, clicks or watchers"),
              (5, ry0 + 16, "While a job runs: what's running and who's waiting"),
-             (6, gy + 56, "Job list. Tick boxes for batch actions; double-click to edit, "
-                          "right-click for everything"),
+             (6, gy + 56, "Job list: columns fit their text and change with the filter; "
+                          "tick boxes for batch actions"),
              (7, ay + 50, "Activity: a live log, filterable"),
              (8, y0 + h - 18, "Status bar, with the emergency-stop hotkey"))
     for n, yy, t in notes:
@@ -464,6 +464,48 @@ def partial_matching():
     p.text(40, 380, "Best fix when possible: draw the box around the badge only and keep exact "
                     "matching.", 12, fill=MUTED)
     p.save("partial-matching.png")
+
+
+def draw_zoom():
+    p = Pic(980, 470, "Zooming in while you draw",
+            "Mouse wheel: zoom up to 24x. The magnifier shows the exact pixels.")
+    x0, y0, W, H = 32, 82, 600, 340
+    p.rect(x0, y0, x0 + W, y0 + H, fill="#4b5563", r=6)
+    # zoomed view: big pixels of a small icon
+    cell = 20
+    icon = ["..........", "....##....", "...####...", "..######..", ".########.",
+            "....##....", "....##....", "....##....", "..........", ".........."]
+    gx, gy = x0 + 120, y0 + 40
+    for r_, row in enumerate(icon):
+        for c, ch in enumerate(row):
+            col = "#16a34a" if ch == "#" else "#e5e7eb"
+            p.rect(gx + c * cell, gy + r_ * cell, gx + (c + 1) * cell, gy + (r_ + 1) * cell,
+                   fill=col, outline="#9ca3af")
+    p.rect(gx + cell, gy + cell, gx + 9 * cell, gy + 8 * cell, outline=ACCENT, width=3)
+    p.text(gx + cell, gy - 6, "8 × 7 px", 11, "bold", fill="#ffffff", anchor="lb")
+    cursor(p, gx + 9 * cell, gy + 8 * cell)
+    # magnifier
+    lx, ly = gx + 10 * cell + 40, gy
+    p.rect(lx, ly, lx + 150, ly + 150, fill="#e5e7eb", outline=ACCENT, width=2)
+    for k in range(1, 15):
+        p.line([(lx + k * 10, ly), (lx + k * 10, ly + 150)], "#9ca3af", 1)
+        p.line([(lx, ly + k * 10), (lx + 150, ly + k * 10)], "#9ca3af", 1)
+    p.rect(lx + 70, ly + 70, lx + 80, ly + 80, outline="#ff00fe", width=2)
+    p.rect(lx, ly + 150, lx + 150, ly + 196, fill="#111827", r=0)
+    p.text(lx + 8, ly + 160, "512, 347   #e5e7eb", 10, fill="#ffffff")
+    p.text(lx + 8, ly + 176, "zoom 12×   box 8 × 7 px", 10, fill="#ffffff")
+    p.rect(x0 + 8, y0 + H - 30, x0 + W - 8, y0 + H - 8, fill="#1f2937", r=4)
+    p.text(x0 + 16, y0 + H - 19, "Zoom 12×  ·  wheel or + / − to zoom  ·  middle-drag or arrows "
+                                 "to move  ·  0 = whole screen", 10, fill="#e5e7eb", anchor="lm")
+    tx = 670
+    for i, t in enumerate(("Wheel up/down: zoom in/out around the pointer.",
+                           "From 8× a pixel grid shows every pixel.",
+                           "The magnifier shows position and colour.",
+                           "Zoom while dragging to place each edge exactly.",
+                           "The saved picture is always the real pixels.")):
+        num(p, tx, 120 + i * 60, i + 1)
+        p.para(tx + 22, 110 + i * 60, t, 12, 24)
+    p.save("draw-zoom.png")
 
 
 def good_and_bad_spots():
@@ -1400,5 +1442,5 @@ if __name__ == "__main__":
                flicker_protection, click_once, click_chain, multi_step_search, show_spot,
                remote_sessions, phone_alert, record_macro, type_vs_paste, conditional_workflow,
                step_through, taking_turns, run_history, exact_matching, similar_outlines,
-               pick_cancel, tray_status, batch_actions, partial_matching):
+               pick_cancel, tray_status, batch_actions, partial_matching, draw_zoom):
         fn()

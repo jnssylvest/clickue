@@ -1,5 +1,60 @@
 # Changelog
 
+## 4.5.4 - More accurate picture matching, zoom while drawing, smarter job list, cleaner Tests window
+
+> Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken
+> during development, but AI-assisted development does not guarantee bug-free or secure
+> software. Review the source and use normal precautions. Test automations safely, protect
+> notification credentials, and avoid unattended use for consequential actions.
+
+**Picture matching**
+- **Exact matching is now exact for watchers.** Every part of the picture is compared tile
+  by tile (colour and shape), so a single changed digit anywhere in the box means "not this
+  picture". Before, a copy with a different number could pass when the number was away from
+  the middle of the box. Compression noise of remote sessions and display scaling are still
+  tolerated (tested with JPEG 75, noise and 125/150 %).
+- **Partial matching finds every copy.** Each detailed piece of the picture is searched on
+  its own and the pieces vote for where the picture is, so copies whose changing part differs
+  (and look quite different as a whole) are found wherever they are. Before, only places
+  almost as good as the best one were considered, so other copies were missed.
+- **Check now outlines every copy** it finds and says how many times the picture is on screen.
+- Plain areas in the middle of a picture no longer make real matches fail on a slightly
+  noisy screen. Pictures down to 6–8 pixels work.
+
+**Drawing boxes**
+- **Zoom while drawing** on every Draw box screen: mouse wheel or + / − up to 24× around the
+  pointer, a pixel grid from 8×, middle-drag or arrow keys (Shift: one pixel) to move, 0 for
+  the whole screen; you can zoom while dragging. A **magnifier** next to the pointer shows
+  the exact pixels, their screen position and colour, and the box size. The saved picture is
+  always the real screen pixels. Boxes from **8 × 8** pixels (was 16 × 16).
+- Pictures for *Wait for a picture* steps and conditions are also captured with the mouse
+  pointer moved aside.
+
+**Job list**
+- **Columns per view.** *Scheduled clicks*: Clicks at, Schedule, Runs (active hours, limits),
+  Next click, Starts in. *Screen watchers*: Watching for (disappears/appears, size, area,
+  exact or % match), Then, Checks (interval, checks in a row, once), Picture (last seen),
+  Next check. *All*: Type, What it does, Next / last seen, In. Every view: tick box, Status,
+  Name, Clicks, Last result. Switch with the filter buttons.
+- **Columns fit their text** automatically (with sensible maximums); they don't jump around
+  while countdowns run. Widths you set yourself are kept; ☰ Menu → Reset column widths goes
+  back to automatic.
+- **Taller list or taller Activity:** a visible divider to drag, plus ▲ / ▼ next to Activity
+  (Ctrl+Up / Ctrl+Down). Either part can be made almost as small or as big as you like;
+  remembered.
+- **Buttons you can't use right now are outlines without fill**; usable buttons are filled.
+
+**Tests window**
+- **Sections:** All tests, Click tests, Watcher tests. Each shows its own buttons and its own
+  history, for this job or all jobs (remembered per section). The history now sits right
+  under the buttons instead of below empty space.
+
+**Data:** new settings `tests_section`, `tests_scopes`. No job or schema changes.
+
+**Docs:** guide sections 3 (views, columns, heights), 6 (zooming while drawing, exact and
+partial matching), 10 (Tests sections), 23, 26; new picture *draw-zoom*, updated
+*main-window*; feature list, quick start, README, developer guide.
+
 ## 4.5.3 - Tick boxes and batch editing, partial picture matching, watcher and layout fixes
 
 > Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken

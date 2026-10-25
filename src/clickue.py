@@ -58,7 +58,7 @@ except Exception:
 APP_NAME = "Clickue"
 APP_ID = "Clickue"
 OLD_APP_ID = "ScheduledAutoClicker"      # previous name - data is migrated from here
-VERSION = "4.5.3"
+VERSION = "4.5.4"
 REPO_URL = "https://github.com/jnssylvest/clickue"
 GUIDE_URL = REPO_URL + "/blob/main/docs/GUIDE.md"      # the complete guide (☰ Menu)
 DISCLOSURE = ("Clickue is vibe-coded and was developed with substantial AI assistance. Caution "
@@ -496,6 +496,9 @@ def picture_candidates(screen_gray, tmpl_gray, spot, scale_hint=None, limit=6, f
     cx0 = int(min(max(spot[0] - cw // 2, 0), tw0 - cw))
     cy0 = int(min(max(spot[1] - ch // 2, 0), th0 - ch))
     core = tmpl_gray[cy0:cy0 + ch, cx0:cx0 + cw]
+    # a plain close-up (almost one colour) can't be compared by shape: a little screen noise
+    # made it score 0 and hid real matches (4.5.4); the whole picture decides then
+    flat_core = float(core.std()) < 4.0
     scales = list(MATCH_SCALES)
     if scale_hint and abs(scale_hint - 1) > 0.02:
         scales = sorted(set(scales) | {round(scale_hint, 3)},
@@ -503,7 +506,7 @@ def picture_candidates(screen_gray, tmpl_gray, spot, scale_hint=None, limit=6, f
     cands = []
     for sc in scales:
         tw, th = round(tw0 * sc), round(th0 * sc)
-        if tw < 16 or th < 12 or tw > W or th > H:
+        if tw < 6 or th < 6 or tw > W or th > H:
             continue
         interp = cv2.INTER_AREA if sc < 1 else cv2.INTER_LINEAR
         t = tmpl_gray if sc == 1 else cv2.resize(tmpl_gray, (tw, th), interpolation=interp)
@@ -521,7 +524,9 @@ def picture_candidates(screen_gray, tmpl_gray, spot, scale_hint=None, limit=6, f
             x0, y0 = int(max(0, px - 4)), int(max(0, py - 4))
             win = screen_gray[y0:int(py) + c.shape[0] + 5, x0:int(px) + c.shape[1] + 5]
             cs = -1.0
-            if win.shape[0] >= c.shape[0] and win.shape[1] >= c.shape[1]:
+            if flat_core:
+                cs = float(v)
+            elif win.shape[0] >= c.shape[0] and win.shape[1] >= c.shape[1]:
                 cs = float(_match(win, c).max())
             cands.append((0.5 * float(v) + 0.5 * cs, lx + spot[0] * sc, ly + spot[1] * sc, sc,
                           float(v), cs))
@@ -599,7 +604,9 @@ def verify_exact(tmpl_gray, tmpl_rgb, spot, screen_gray, screen_rgb, cand):
         core = a[cy0:cy0 + ch, cx0:cx0 + cw]
         win = b[cy0:cy0 + ch + 2 * pad, cx0:cx0 + cw + 2 * pad]
         close = -1.0
-        if win.shape[0] >= core.shape[0] and win.shape[1] >= core.shape[1] and core.std() > 0:
+        if float(core.std()) < 4.0:              # a plain close-up: the whole picture decides
+            close = whole
+        elif win.shape[0] >= core.shape[0] and win.shape[1] >= core.shape[1]:
             close = float(np.nan_to_num(cv2.matchTemplate(win, core, cv2.TM_CCOEFF_NORMED)).max())
         ok = whole >= EXACT_SCALED_WHOLE_MIN and close >= EXACT_SCALED_CLOSEUP_MIN
     if ok:
@@ -795,6 +802,8 @@ PARTIAL_TILE = 24            # tile size in picture pixels (2-10 tiles per side)
 PARTIAL_TILE_MIN = 0.85      # a detailed tile matches when it correlates this well
 PARTIAL_FLAT_LIGHT = 12.0    # a plain tile matches when its brightness differs less...
 PARTIAL_TILE_COLOR = 18.0    # ...and its colour less than this (Lab units)
+SPLIT_MIN, SPLIT_MAX = 0.08, 0.94   # job list share of the main window's lower part (4.5.4)
+PICTURE_MIN_PX = 8           # smallest picture box (zoom in to draw small ones), 4.5.4
 POINTER_IDLE_S = 20          # a watcher may move the pointer aside after this much idle time
 AREA_PAD_MIN = 24            # a drawn search area is searched with this much margin (px)
 
@@ -809,6 +818,78 @@ def search_box(area, tw, th, scale=1.0):
     w, h = max(aw + 2 * pad, need_w), max(ah + 2 * pad, need_h)
     cx, cy = ax + aw / 2, ay + ah / 2
     return int(round(cx - w / 2)), int(round(cy - h / 2)), int(w), int(h)
+
+
+EXACT_TILE_DIFF = 14.0       # exact watcher match: average colour difference in any tile
+EXACT_TILE_CORR = 0.90       # ... and every detailed tile must still correlate this well
+EXACT_TILE_CORR_SCALED = 0.70  # (at another size; measured: same 0.79+, changed text < 0.1)
+
+
+def exact_tiles(t_rgb, s_rgb, cand, spot):
+    """Pixel-exact check for watchers (4.5.4): the picture is cut into the same small tiles
+    as for partial matching and EVERY tile must agree with the screen (colour difference and,
+    for detailed tiles, shape), so a single changed digit anywhere in the box counts as a
+    difference. At the drawn size the place may sit 1 px off; at another size the place is
+    scaled back first. Returns (ok, share of tiles that agree)."""
+    _, cx, cy, sc = cand[:4]
+    th, tw = t_rgb.shape[:2]
+    x0, y0 = cx - spot[0] * sc, cy - spot[1] * sc
+    H, W = s_rgb.shape[:2]
+    if abs(sc - 1) < 0.01:
+        X0, Y0 = int(round(x0)), int(round(y0))
+        best, reg = None, None
+        a16 = t_rgb.astype(np.int16)
+        for dy in (0, -1, 1):
+            for dx in (0, -1, 1):
+                X, Y = X0 + dx, Y0 + dy
+                if X < 0 or Y < 0 or Y + th > H or X + tw > W:
+                    continue
+                r = s_rgb[Y:Y + th, X:X + tw]
+                d = float(np.abs(r.astype(np.int16) - a16).mean())
+                if best is None or d < best:
+                    best, reg = d, r
+        if reg is None:
+            return False, 0.0
+    else:
+        best, reg = None, None
+        a16 = t_rgb.astype(np.int16)
+        for dy in (0, -1, 1):                    # the scaled place may sit 1 px off
+            for dx in (0, -1, 1):
+                X0, Y0 = int(round(x0)) + dx, int(round(y0)) + dy
+                X1, Y1 = X0 + int(round(tw * sc)), Y0 + int(round(th * sc))
+                if X0 < 0 or Y0 < 0 or X1 > W or Y1 > H or X1 - X0 < 4 or Y1 - Y0 < 4:
+                    continue
+                r = cv2.resize(np.ascontiguousarray(s_rgb[Y0:Y1, X0:X1]), (tw, th),
+                               interpolation=cv2.INTER_AREA if sc > 1 else cv2.INTER_LINEAR)
+                d = float(np.abs(r.astype(np.int16) - a16).mean())
+                if best is None or d < best:
+                    best, reg = d, r
+        if reg is None:
+            return False, 0.0
+    a = t_rgb.astype(np.float32)
+    b = reg.astype(np.float32)
+    if abs(sc - 1) >= 0.01:                   # resampling softens edges: compare blurred
+        a = cv2.GaussianBlur(a, (3, 3), 0)
+        b = cv2.GaussianBlur(b, (3, 3), 0)
+    ga, gb = a.mean(axis=2), b.mean(axis=2)
+    lim = EXACT_TILE_DIFF * (1.0 if abs(sc - 1) < 0.01 else 1.6)
+    corr_min = EXACT_TILE_CORR if abs(sc - 1) < 0.01 else EXACT_TILE_CORR_SCALED
+    tiles = _tile_grid(th, tw)
+    good = 0
+    for ty0, ty1, tx0, tx1 in tiles:
+        d = float(np.abs(a[ty0:ty1, tx0:tx1] - b[ty0:ty1, tx0:tx1]).mean())
+        same = d <= lim
+        ta = ga[ty0:ty1, tx0:tx1]
+        if same and float(ta.std()) >= 6.0:
+            tb = gb[ty0:ty1, tx0:tx1]
+            if float(tb.std()) < 1.0:
+                same = False
+            else:
+                c = float(np.corrcoef(ta.ravel(), tb.ravel())[0, 1])
+                same = np.isfinite(c) and c >= corr_min
+        good += same
+    n = len(tiles) or 1
+    return good == len(tiles), good / n
 
 
 def partial_fraction(t_rgb, t_gray, s_rgb, s_gray, cand, spot):
@@ -876,6 +957,69 @@ def partial_fraction(t_rgb, t_gray, s_rgb, s_gray, cand, spot):
     return good / total if total else 0.0
 
 
+PARTIAL_VOTE_TILES = 16      # most detailed tiles used to look for partial matches
+PARTIAL_VOTE_MIN = 0.80      # a tile "hits" a place when it correlates this well
+MAX_MATCHES = 24             # most places reported for one picture
+
+
+def _tile_grid(th, tw):
+    ny = int(min(10, max(2, round(th / PARTIAL_TILE))))
+    nx = int(min(10, max(2, round(tw / PARTIAL_TILE))))
+    ys = [round(k * th / ny) for k in range(ny + 1)]
+    xs = [round(k * tw / nx) for k in range(nx + 1)]
+    return [(ys[a], ys[a + 1], xs[b], xs[b + 1]) for a in range(ny) for b in range(nx)
+            if ys[a + 1] - ys[a] >= 3 and xs[b + 1] - xs[b] >= 3]
+
+
+def partial_candidates(tmpl_gray, screen_gray, spot, scale_hint=None, need=0.75,
+                       limit=MAX_MATCHES):
+    """Every place where a good share of the picture's detailed tiles is found (4.5.4).
+    Each tile is searched on its own over the whole screenshot, and every hit votes for
+    where the picture would start; places with enough votes are candidates. Unlike the
+    whole-picture search, this finds every copy whose changed part differs, wherever it is.
+    Returns [(votes share, x, y, scale, votes share, votes share)] with x, y = the spot."""
+    H, W = screen_gray.shape[:2]
+    th0, tw0 = tmpl_gray.shape[:2]
+    scales = [1.0]
+    if scale_hint and abs(scale_hint - 1) > 0.02:
+        scales = [round(scale_hint, 3), 1.0]
+    out = []
+    S = screen_gray.astype(np.float32)
+    for sc in scales:
+        th, tw = round(th0 * sc), round(tw0 * sc)
+        if tw < 6 or th < 6 or tw > W or th > H:
+            continue
+        t = tmpl_gray if sc == 1 else cv2.resize(
+            tmpl_gray, (tw, th), interpolation=cv2.INTER_AREA if sc < 1 else cv2.INTER_LINEAR)
+        t = t.astype(np.float32)
+        tiles = [(float(t[a:b, c:d].std()), a, b, c, d) for a, b, c, d in _tile_grid(th, tw)]
+        tex = sorted([x for x in tiles if x[0] >= 3.0], reverse=True)[:PARTIAL_VOTE_TILES]
+        if len(tex) < 2:
+            continue
+        Ho, Wo = H - th + 1, W - tw + 1
+        V = np.zeros((Ho, Wo), np.float32)
+        kern = np.ones((5, 5), np.uint8)
+        for _, a, b, c, d in tex:
+            R = cv2.matchTemplate(S, t[a:b, c:d], cv2.TM_CCOEFF_NORMED)
+            R = np.nan_to_num(R, nan=-1.0, posinf=-1.0, neginf=-1.0)
+            hits = cv2.dilate((R >= PARTIAL_VOTE_MIN).astype(np.uint8), kern)
+            V += hits[a:a + Ho, c:c + Wo]
+        n = len(tex)
+        thr = max(2.0, np.ceil(n * max(0.25, need - 0.4)))
+        for _ in range(limit * 2):
+            _, v, _, (ox, oy) = cv2.minMaxLoc(V)
+            if v < thr:
+                break
+            share = float(v) / n
+            out.append((share, ox + spot[0] * sc, oy + spot[1] * sc, sc, share, share))
+            V[max(0, oy - th // 2):oy + th // 2 + 1, max(0, ox - tw // 2):ox + tw // 2 + 1] = 0
+            if len(out) >= limit:
+                break
+        if out:
+            break
+    return out
+
+
 def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None, report=None,
                       partial=None):
     """Is this exact picture on the screen (or inside `area`) right now?
@@ -906,7 +1050,16 @@ def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None, report=Non
     spot = (tw0 // 2, th0 // 2)
     if partial:
         partial = min(PARTIAL_MAX_PCT, max(PARTIAL_MIN_PCT, float(partial) * 100)) / 100
-    cands = picture_candidates(full, tmpl, spot, scale_hint, floor=0.3 if partial else 0.5)
+    cands = picture_candidates(full, tmpl, spot, scale_hint, floor=0.3 if partial else 0.5,
+                               limit=MAX_MATCHES if report is not None else 6)
+    if partial:
+        # also every place where enough of its pieces are found (4.5.4): copies whose
+        # changing part differs score low as a whole and were missed before
+        near = 0.4 * min(tw0, th0)
+        for c in partial_candidates(tmpl, full, spot, scale_hint, partial):
+            if all((c[1] - o[1]) ** 2 + (c[2] - o[2]) ** 2 > (near * max(c[3], o[3])) ** 2
+                   for o in cands):
+                cands.append(c)
     if not cands:
         return False, 0, 0, 0.0, None
     chosen, checked = None, []
@@ -927,7 +1080,14 @@ def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None, report=Non
         if ok:
             chroma, light = color_difference(t_rgb, s_rgb, c[1], c[2], sc)
             ok = chroma <= WATCH_COLOR_MAX and light <= WATCH_LIGHT_MAX
-        checked.append((c, ok, max(0.0, min(c[4], c[5]))))
+        val = max(0.0, min(c[4], c[5]))
+        if ok or is_match(c):
+            # every part of the picture must agree, not just most of it (4.5.4)
+            ok2, share = exact_tiles(t_rgb, s_rgb, c, spot)
+            ok = ok and ok2
+            if not ok2:
+                val = min(val, share)
+        checked.append((c, ok, val))
         if ok and chosen is None:
             chosen = (c, checked[-1][2])
     if report is not None:
@@ -947,10 +1107,7 @@ def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None, report=Non
     if partial:
         r, _, score = max(checked, key=lambda k: k[2])
         return False, round(r[1] + vx), round(r[2] + vy), score, r[3]
-    r = max(cands, key=lambda c: (is_match(c), c[0]))
-    score = max(0.0, min(r[4], r[5]))
-    if is_match(r):
-        score = min(score, 0.5)
+    r, _, score = max(checked, key=lambda k: k[2])
     return False, round(r[1] + vx), round(r[2] + vy), score, r[3]
 
 
@@ -1052,6 +1209,96 @@ def resolution_note(job):
         return (f"the screen is {cur[0]}×{cur[1]} now but this spot was picked on "
                 f"{ps[0]}×{ps[1]}, so it may be off")
     return ""
+
+
+# ---- job list columns (4.5.4): each view (All / Scheduled clicks / Screen watchers) shows
+# the columns that matter for that kind of job; widths fit their text automatically
+JOB_COLS = {          # id: (heading, minimum width, widest automatic width, anchor)
+    "chk": ("☐", 38, 38, "center"),
+    "status": ("Status", 90, 180, "w"),
+    "kind": ("Type", 64, 110, "w"),
+    "name": ("Name", 90, 320, "w"),
+    "what": ("What it does", 140, 420, "w"),
+    "target": ("Clicks at", 100, 300, "w"),
+    "schedule": ("Schedule", 110, 260, "w"),
+    "hours": ("Runs", 80, 260, "w"),
+    "next": ("Next click", 100, 260, "w"),
+    "countdown": ("Starts in", 80, 160, "w"),
+    "watchfor": ("Watching for", 120, 340, "w"),
+    "then": ("Then", 100, 300, "w"),
+    "every": ("Checks", 90, 220, "w"),
+    "seen": ("Picture", 110, 280, "w"),
+    "nextcheck": ("Next check", 90, 170, "w"),
+    "count": ("Clicks", 56, 90, "center"),
+    "last": ("Last result", 110, 420, "w"),
+}
+JOB_VIEWS = {
+    "all": ("chk", "status", "kind", "name", "what", "next", "countdown", "count", "last"),
+    "click": ("chk", "status", "name", "target", "schedule", "hours", "next", "countdown",
+              "count", "last"),
+    "watch": ("chk", "status", "name", "watchfor", "then", "every", "seen", "nextcheck",
+              "count", "last"),
+}
+VIEW_HEADINGS = {"all": {"next": "Next / last seen", "countdown": "In"}}
+VIEW_DROP = {           # hidden first when the window is too narrow
+    "all": ("count", "kind", "countdown", "what"),
+    "click": ("count", "hours", "schedule", "countdown", "target"),
+    "watch": ("count", "every", "then", "nextcheck", "watchfor"),
+}
+
+
+class RowVals(tuple):
+    """A job-list row: the classic 9 values (status, name, target, button, schedule, next,
+    countdown, count, last), plus `cells`, every column's text for the views."""
+
+
+def test_vals(v):
+    """Row values for a pending test row, in every view's columns."""
+    status, name, pos, btn, sched, nxt, cd, count, last = v
+    r = RowVals(v)
+    r.cells = dict(status=status, kind="◆ Test", name=name, what=f"{sched} · {btn} · {pos}",
+                   target=f"{btn} · {pos}", schedule=sched, hours="", next=nxt, countdown=cd,
+                   watchfor="", then=f"{btn} · {pos}", every=sched, seen=nxt, nextcheck=cd,
+                   count=count, last=last)
+    return r
+
+
+def watch_summary(j):
+    """'Disappears · 120×40 · area · exact' - what a watcher looks for."""
+    what = "Appears" if j.get("watch_trigger") == "appears" else "Disappears"
+    size = ""
+    try:
+        if j.get("watch_png"):
+            w, h = b64_to_img(j["watch_png"]).size
+            size = f" · {w}×{h}"
+    except Exception:
+        pass
+    where = " · area" if j.get("watch_area") else ""
+    match = (f" · {int(j.get('watch_partial_pct', PARTIAL_DEFAULT_PCT))}% match"
+             if j.get("watch_match") == "partial" else " · exact")
+    return what + size + where + match
+
+
+def watch_then(j):
+    """What a watcher does when it fires."""
+    n = len(j.get("steps") or [])
+    steps = f" + {n} step{'s' if n != 1 else ''}" if n else ""
+    if not j.get("main_click", True):
+        return f"☰ {n} step{'s' if n != 1 else ''}"
+    btn = j["button"].capitalize() + (" ×2" if j.get("clicks") == 2 else "")
+    if j.get("watch_trigger") == "appears" and j.get("watch_click_picture"):
+        return f"{btn} on the picture{steps}"
+    return f"{btn} · {target_text(j)}{steps}"
+
+
+def run_rules(j):
+    """'Always', '08:00–22:00 Mon–Fri', plus limits - when a job may run."""
+    parts = [describe_hours(j) if j.get("hours_on") else "Always"]
+    if j.get("limit_clicks_on"):
+        parts.append(f"max {j.get('limit_clicks')} clicks")
+    if j.get("limit_until_on") and j.get("limit_until"):
+        parts.append(f"until {j['limit_until']}")
+    return " · ".join(parts)
 
 
 def describe_watch(j):
@@ -4598,6 +4845,8 @@ DEFAULT_SETTINGS = {
     "tests_geom": "",
     "tests_split": 0.0,
     "tests_hist_filter": "job",
+    "tests_section": "all",         # 4.5.4: Tests window section (all / click / watch)
+    "tests_scopes": {},             # 4.5.4: this job / all jobs, per section
     "stats_clicks": 0,
     "stats_missed": 0,
     # ---- Clickue 4
@@ -4761,13 +5010,13 @@ LIGHT = dict(bg="#f4f5f7", panel="#ffffff", panel_alt="#f7f8fa", head="#f0f1f4",
              btn_border="#d5d8de", btn_active="#eef0f3", accent="#2563eb",
              accent_active="#1d4ed8", sel="#dbe7ff", sel_fg="#0b1b3f", field="#ffffff",
              warn="#b45309", good="#15803d", bad="#c62828", test="#7c3aed", grid="#e2e5ea",
-             tick="#e8f0fe")
+             tick="#e8f0fe", outline="#b8bec8")
 DARK = dict(bg="#18191c", panel="#212226", panel_alt="#26282c", head="#1c1d21",
             fg="#e8e9ec", muted="#9097a1", border="#30333a", btn="#2a2c31",
             btn_border="#363940", btn_active="#34373d", accent="#3b82f6",
             accent_active="#2f6fe0", sel="#24406e", sel_fg="#ffffff", field="#26282c",
             warn="#f5a524", good="#4ade80", bad="#f87171", test="#c4a8ff", grid="#383b43",
-            tick="#1f2f4d")
+            tick="#1f2f4d", outline="#4b505a")
 
 
 def fmt_compact(sec):
@@ -5946,88 +6195,23 @@ class App:
 
         def start():
             try:
-                shot, (vx, vy) = grab_screen(move_cursor=False)
+                shot, (vx, vy) = grab_screen(move_cursor=True)
             except Exception as e:
                 restore()
                 messagebox.showerror(APP_NAME, f"Couldn't capture the screen:\n{e}",
                                      parent=parent or self.root)
                 return
-            W, H = shot.size
-            dim = Image.blend(shot, Image.new("RGB", shot.size, (0, 0, 0)), 0.5)
-            ov = tk.Toplevel(self.root)
-            ov.overrideredirect(True)
-            ov.attributes("-topmost", True)
-            ov.geometry(f"{W}x{H}+{vx}+{vy}")
-            cv = tk.Canvas(ov, width=W, height=H, highlightthickness=0, bd=0,
-                           cursor="crosshair", bg="#000000")
-            cv.pack()
-            imgs = [ImageTk.PhotoImage(dim)]
-            cv.create_image(0, 0, image=imgs[0], anchor="nw")
-            bright = cv.create_image(0, 0, anchor="nw")
-            rect = cv.create_rectangle(0, 0, 0, 0, outline="#3b82f6", width=2)
-            tw = cv.create_text(W // 2, 34, text=prompt + "   ·   Esc to cancel", fill="#ffffff",
-                                font=(self.font_family, 13, "bold"))
-            bx = cv.bbox(tw)
-            bg = cv.create_rectangle(bx[0] - 18, bx[1] - 10, bx[2] + 18, bx[3] + 10,
-                                     fill="#1f2937", outline="#3b82f6")
-            cv.tag_raise(tw, bg)
-            if IS_WIN:
-                try:
-                    ov.update_idletasks()
-                    hwnd = user32.GetParent(ov.winfo_id()) or ov.winfo_id()
-                    user32.SetWindowPos(hwnd, wt.HWND(-1), vx, vy, W, H, 0x0040)
-                except Exception:
-                    pass
-            st = {"x0": None, "y0": None}
 
-            def box(e):
-                return (max(0, min(st["x0"], e.x)), max(0, min(st["y0"], e.y)),
-                        min(W, max(st["x0"], e.x)), min(H, max(st["y0"], e.y)))
-
-            def down(e):
-                st["x0"], st["y0"] = e.x, e.y
-                cv.itemconfigure(bg, state="hidden")
-                cv.itemconfigure(tw, state="hidden")
-
-            def move(e):
-                if st["x0"] is None:
-                    return
-                b = box(e)
-                cv.coords(rect, *b)
-                if b[2] - b[0] > 2 and b[3] - b[1] > 2:
-                    ph = ImageTk.PhotoImage(shot.crop(b))
-                    imgs[1:] = [ph]
-                    cv.itemconfigure(bright, image=ph)
-                    cv.coords(bright, b[0], b[1])
-
-            def up(e):
-                if st["x0"] is None:
-                    return
-                b = box(e)
-                st["x0"] = None
-                if b[2] - b[0] < 16 or b[3] - b[1] < 16:
-                    cv.itemconfigure(bg, state="normal")
-                    cv.itemconfigure(tw, state="normal", text="Too small (at least 16 × 16) - "
-                                                              "drag again, or Esc to cancel")
-                    return
+            def done(b):
                 crop = shot.crop(b)
-                ov.destroy()
                 restore()
                 if with_rect:
                     on_done(crop, [vx + b[0], vy + b[1], b[2] - b[0], b[3] - b[1]])
                 else:
                     on_done(crop)
 
-            def cancel(e=None):
-                ov.destroy()
-                restore()
-
-            cv.bind("<ButtonPress-1>", down)
-            cv.bind("<B1-Motion>", move)
-            cv.bind("<ButtonRelease-1>", up)
-            cv.bind("<Button-3>", cancel)
-            ov.bind("<Escape>", cancel)
-            ov.focus_force()
+            self._drawer = BoxDrawer(self, shot, (vx, vy), prompt, done, restore,
+                                     min_size=PICTURE_MIN_PX)
         self.root.after(450, start)
 
     def execute(self, job, kind):
@@ -6280,28 +6464,20 @@ class App:
         self.paned.add(self.bottom_pane, weight=2)
         tf = ttk.Frame(top_pane, style="Card.TFrame", padding=1)
         tf.pack(fill="both", expand=True, pady=(0, 4))
-        cols = ("chk", "status", "name", "pos", "button", "schedule", "next", "countdown",
-                "count", "last")
-        spec = (("☐", 38, 38, "center"), ("Status", 105, 80, "w"), ("Name", 160, 90, "w"),
-                ("Target", 170, 90, "w"), ("Click", 75, 55, "w"),
-                ("Schedule", 190, 120, "w"), ("Next click", 160, 110, "w"),
-                ("Starts in", 100, 75, "w"), ("Clicks", 65, 50, "center"),
-                ("Last result", 190, 110, "w"))
+        cols = tuple(JOB_COLS)
         self.tree = ttk.Treeview(tf, columns=cols, show="headings", height=4,
                                  selectmode="browse")
         enable_column_fit(self.tree, self.col_width_changed)
-        self.col_base = {c: w for c, (h, w, minw, anchor) in zip(cols, spec)}
+        self.col_base = {c: JOB_COLS[c][1] for c in cols}
         self._shown_cols = None
-        for c, (h, w, minw, anchor) in zip(cols, spec):
+        self._auto_w = {}               # automatic (fit-to-text) widths, per column
+        self._fit_sig = None
+        for c in cols:
+            h, minw, _, anchor = JOB_COLS[c]
             self.tree.heading(c, text=h, anchor=anchor)
-            self.tree.column(c, width=w, minwidth=minw, stretch=(c != "chk"), anchor=anchor)
+            self.tree.column(c, width=minw, minwidth=min(minw, 56) if c != "chk" else 38,
+                             stretch=False, anchor=anchor)
         self.tree.heading("chk", command=self.toggle_check_all)
-        for c, w in (self.settings.get("col_widths") or {}).items():
-            if c in cols and c != "chk":
-                try:
-                    self.tree.column(c, width=max(30, min(1200, int(w))), stretch=False)
-                except Exception:
-                    pass
         tsb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
         self.grid_lines, self.grid_geom = [], []
 
@@ -6329,6 +6505,8 @@ class App:
         self.root.bind("<Control-N>", lambda e: self.add_watcher())
         self.root.bind("<Control-t>", lambda e: self.open_tests())
         self.root.bind("<Control-p>", lambda e: self.toggle_pause_all())
+        self.root.bind("<Control-Up>", lambda e: self.nudge_split(-0.12))
+        self.root.bind("<Control-Down>", lambda e: self.nudge_split(0.12))
         self.tree.bind("<p>", lambda e: self.toggle_pause_job())
         self.tree.bind("<Control-a>", lambda e: (self.set_checks(self.visible_job_ids()),
                                                  "break")[1])
@@ -6344,6 +6522,14 @@ class App:
             ttk.Radiobutton(ah, text=text, value=val, variable=self.v_actf,
                             style="Seg.TRadiobutton", command=self.activity_filter_changed).pack(
                 side="left", padx=(0, 2))
+        # 4.5.4: make the job list or Activity taller (or drag the divider above "Activity")
+        sz = ttk.Frame(ah)
+        sz.pack(side="right", padx=(8, 0))
+        ttk.Button(sz, text="▲", width=3, style="Small.TButton",
+                   command=lambda: self.nudge_split(-0.12)).pack(side="left")
+        ttk.Button(sz, text="▼", width=3, style="Small.TButton",
+                   command=lambda: self.nudge_split(0.12)).pack(side="left", padx=(2, 0))
+        self.size_btns = sz
         self.act_tools = ttk.Frame(ah)
         self.act_tools.pack(side="right")
         ttk.Button(self.act_tools, text="Clear view", style="Small.TButton",
@@ -6518,21 +6704,30 @@ class App:
         s.configure("TButton", background=p["btn"], foreground=p["fg"], padding=(12, 6),
                     bordercolor=p["btn_border"], lightcolor=p["btn"], darkcolor=p["btn"],
                     focusthickness=0, relief="flat")
+        # 4.5.4: a button that can't be used right now is only an outline (no fill); usable
+        # buttons are filled
         s.map("TButton",
               background=[("disabled", p["bg"]), ("pressed", p["btn_active"]),
                           ("active", p["btn_active"])],
               foreground=[("disabled", p["muted"])],
-              bordercolor=[("disabled", p["border"])],
-              lightcolor=[("pressed", p["btn_active"]), ("active", p["btn_active"])],
-              darkcolor=[("pressed", p["btn_active"]), ("active", p["btn_active"])])
+              bordercolor=[("disabled", p["outline"])],
+              relief=[("disabled", "solid")],
+              lightcolor=[("disabled", p["bg"]), ("pressed", p["btn_active"]),
+                          ("active", p["btn_active"])],
+              darkcolor=[("disabled", p["bg"]), ("pressed", p["btn_active"]),
+                         ("active", p["btn_active"])])
         s.configure("Small.TButton", padding=(8, 2), font=(F, 9))
         s.configure("Accent.TButton", background=p["accent"], foreground="#ffffff",
                     bordercolor=p["accent"], lightcolor=p["accent"], darkcolor=p["accent"],
                     font=(F, 10, "bold"))
         s.map("Accent.TButton",
-              background=[("pressed", p["accent_active"]), ("active", p["accent_active"])],
-              lightcolor=[("active", p["accent_active"])],
-              darkcolor=[("active", p["accent_active"])])
+              background=[("disabled", p["bg"]), ("pressed", p["accent_active"]),
+                          ("active", p["accent_active"])],
+              foreground=[("disabled", p["muted"])],
+              bordercolor=[("disabled", p["outline"])],
+              relief=[("disabled", "solid")],
+              lightcolor=[("disabled", p["bg"]), ("active", p["accent_active"])],
+              darkcolor=[("disabled", p["bg"]), ("active", p["accent_active"])])
         s.configure("Card.TFrame", background=p["panel"], bordercolor=p["border"],
                     relief="solid", borderwidth=1, lightcolor=p["border"],
                     darkcolor=p["border"])
@@ -6615,8 +6810,10 @@ class App:
         s.configure("TSeparator", background=p["border"])
         s.configure("TSizegrip", background=p["bg"])
         s.configure("TPanedwindow", background=p["bg"])
-        s.configure("Sash", sashthickness=8, gripcount=0, background=p["bg"],
-                    lightcolor=p["border"], darkcolor=p["border"], bordercolor=p["bg"])
+        # 4.5.4: a visible, easy-to-grab divider between the job list and Activity
+        s.configure("Sash", sashthickness=12, gripcount=24, background=p["bg"],
+                    lightcolor=p["outline"], darkcolor=p["outline"], bordercolor=p["bg"])
+        s.map("Sash", background=[("active", p["sel"])])
 
         self.root.option_add("*TCombobox*Listbox.background", p["field"])
         self.root.option_add("*TCombobox*Listbox.foreground", p["fg"])
@@ -6728,8 +6925,17 @@ class App:
                 status, sched, nxt, cd, state = self.watch_row(j, now, paused)
                 if state == "running" and last.startswith("Click FAILED"):
                     state = "bad"
-                rows.append((j["id"], (status, j["name"], pos, btn, sched, nxt, cd,
-                                       j.get("count", 0), last), state))
+                vals = RowVals((status, j["name"], pos, btn, sched, nxt, cd,
+                                j.get("count", 0), last))
+                vals.cells = dict(status=status, kind="👁 Watcher", name=j["name"],
+                                  what=f"{watch_summary(j)} → {watch_then(j)}",
+                                  watchfor=watch_summary(j), then=watch_then(j),
+                                  every=f"every {fmt_compact(j.get('watch_interval_s', 30))} · "
+                                        f"{int(j.get('watch_confirm', 2))} in a row"
+                                        + (" · once" if j.get("watch_once", True) else ""),
+                                  seen=nxt, nextcheck=cd, next=nxt, countdown=cd,
+                                  count=j.get("count", 0), last=last)
+                rows.append((j["id"], vals, state))
                 if j.get("test_at"):
                     rows.append(self.test_row(j, now, pos, btn))
                 if j.get("wtest_at"):
@@ -6753,8 +6959,14 @@ class App:
                 nxt, cd = fmt_time(j["next_run"]), fmt_dur(j["next_run"] - now)
                 if last.startswith(("Missed", "Test FAILED")):
                     state = "bad"
-            rows.append((j["id"], (status, j["name"], pos, btn, self.describe_schedule(j),
-                                   nxt, cd, j.get("count", 0), last), state))
+            sched = self.describe_schedule(j)
+            vals = RowVals((status, j["name"], pos, btn, sched, nxt, cd, j.get("count", 0),
+                            last))
+            vals.cells = dict(status=status, kind="⏱ Click", name=j["name"],
+                              what=f"{sched} → {btn} · {pos}", target=f"{btn} · {pos}",
+                              schedule=sched, hours=run_rules(j), next=nxt, countdown=cd,
+                              count=j.get("count", 0), last=last)
+            rows.append((j["id"], vals, state))
             if j.get("test_at"):
                 rows.append(self.test_row(j, now, pos, btn))
         return rows
@@ -6765,9 +6977,10 @@ class App:
         cd = "retrying…" if waiting else fmt_dur(at - now)
         what = ("checks, clicks if missing" if j.get("wtest_click")
                 else "checks only, no click")
-        return ("wtest:" + j["id"], ("◆  Watch test", f"   ↳ {j['name']} (watch test)", pos,
-                                     btn, "One time only", fmt_time(at), cd, "",
-                                     f"Temporary — {what}"), "test")
+        return ("wtest:" + j["id"], test_vals(("◆  Watch test",
+                                                f"   ↳ {j['name']} (watch test)", pos, btn,
+                                                "One time only", fmt_time(at), cd, "",
+                                                f"Temporary — {what}")), "test")
 
     def test_row(self, j, now, pos, btn):
         tw = self.wait_msgs.get((j["id"], "test"))
@@ -6777,8 +6990,9 @@ class App:
         else:
             t_nxt, t_cd = fmt_time(j["test_at"]), fmt_dur(j["test_at"] - now)
             t_last = "Temporary — doesn't change the schedule"
-        return ("test:" + j["id"], ("◆  Test", f"   ↳ {j['name']} (test)", pos, btn,
-                                    "One time only", t_nxt, t_cd, "", t_last), "test")
+        return ("test:" + j["id"], test_vals(("◆  Test", f"   ↳ {j['name']} (test)", pos, btn,
+                                              "One time only", t_nxt, t_cd, "", t_last)),
+                "test")
 
     def refresh_tree(self, full=False):
         now = time.time()
@@ -6790,9 +7004,12 @@ class App:
                 self.tree.delete(iid)
         sel = set(self.tree.selection())
         self.checked &= {j["id"] for j in self.jobs}
-        for idx, (iid, vals, state) in enumerate(rows):
-            vals = tuple(v if i == 7 else f"  {v}" for i, v in enumerate(vals))
-            vals = (("☑" if iid in self.checked else "☐") if ":" not in iid else "",) + vals
+        for idx, (iid, row, state) in enumerate(rows):
+            cells = getattr(row, "cells", {})
+            vals = tuple(
+                (("☑" if iid in self.checked else "☐") if ":" not in iid else "") if c == "chk"
+                else (str(cells.get(c, "")) if c == "count" else f"  {cells.get(c, '')}")
+                for c in JOB_COLS)
             tags = [state]
             if iid not in sel:
                 tags.insert(0, "ticked" if iid in self.checked else ("odd" if idx % 2 else "even"))
@@ -6819,7 +7036,75 @@ class App:
             if str(rb.cget("text")) != want_text:
                 rb.configure(text=want_text)
         self.update_batch_bar()
+        self.apply_view(force=full)
         self.draw_grid()
+
+    def view_key(self):
+        v = self.v_filter.get() if hasattr(self, "v_filter") else "all"
+        return v if v in JOB_VIEWS else "all"
+
+    def apply_view(self, force=False):
+        """Show the current view's columns, sized to their text (4.5.4). Columns you sized
+        yourself keep their width; the others fit their longest text up to a sensible
+        maximum, and Last result takes the rest of the row. While the list is just ticking
+        (countdowns), columns only grow, so nothing jumps around."""
+        view = self.view_key()
+        t = self.tree
+        W = t.winfo_width()
+        n_rows = len(t.get_children())
+        sig = (view, W, n_rows)
+        now = time.time()
+        full = force or sig != self._fit_sig
+        if not full and now - getattr(self, "_fit_at", 0) < 3:
+            return
+        self._fit_at = now
+        self._fit_sig = sig
+        heads = VIEW_HEADINGS.get(view, {})
+        for c in JOB_VIEWS[view]:
+            want = heads.get(c, JOB_COLS[c][0])
+            if c != "chk" and t.heading(c, "text") != want:
+                t.heading(c, text=want)
+        fixed = self.settings.get("col_widths") or {}
+        widths = {}
+        for c in JOB_VIEWS[view]:
+            h, minw, maxw, _ = JOB_COLS[c]
+            if c == "chk":
+                widths[c] = 38
+            elif c in fixed:
+                widths[c] = max(30, min(1200, int(fixed[c])))
+            else:
+                fit = column_fit_width(t, c, limit=maxw)
+                fit = max(minw, fit)
+                old = self._auto_w.get(c)
+                if old and not full and fit < old:
+                    fit = old                       # grow only while ticking
+                widths[c] = fit
+        self._auto_w.update({c: w for c, w in widths.items() if c not in fixed})
+        shown = list(JOB_VIEWS[view])
+        if W > 1:
+            drop = list(VIEW_DROP[view])
+            while drop and sum(max(JOB_COLS[c][1], min(widths[c], 160)) for c in shown) > W:
+                shown.remove(drop.pop(0))
+            total = sum(widths[c] for c in shown)
+            if total < W - 4:                      # Last result takes the free room
+                widths["last"] = widths["last"] + (W - 4 - total)
+            elif total > W:                        # squeeze the widest automatic columns
+                over = total - W
+                for c in sorted((c for c in shown if c not in fixed and c != "chk"),
+                                key=lambda c: -widths[c]):
+                    if over <= 0:
+                        break
+                    give = min(over, widths[c] - JOB_COLS[c][1])
+                    if give > 0:
+                        widths[c] -= give
+                        over -= give
+        for c in shown:
+            if int(t.column(c, "width")) != widths[c]:
+                t.column(c, width=widths[c], stretch=(c == "last" and "last" not in fixed))
+        if tuple(shown) != self._shown_cols:
+            self._shown_cols = tuple(shown)
+            t["displaycolumns"] = shown
+        self.root.after_idle(self.draw_grid)
 
     def col_width_changed(self, col, width):
         """A job-list column was fitted (double-click on its border) or dragged: keep it."""
@@ -6831,22 +7116,14 @@ class App:
 
     def reset_col_widths(self):
         self.settings["col_widths"] = {}
-        for c, w in self.col_base.items():
-            self.tree.column(c, width=w, stretch=True)
+        self._auto_w = {}
         self.save()
-        self.root.after_idle(self.draw_grid)
+        self.apply_view(force=True)
 
     def on_tree_resize(self):
-        """Hide the least important columns when the table gets narrow."""
-        W = self.tree.winfo_width()
-        if W > 1:
-            shown = list(self.tree["columns"])
-            drop = ["count", "button", "schedule", "pos", "countdown"]
-            while drop and sum(self.col_base[c] for c in shown) * 0.72 > W:
-                shown.remove(drop.pop(0))
-            if tuple(shown) != self._shown_cols:
-                self._shown_cols = tuple(shown)
-                self.tree["displaycolumns"] = shown
+        """Fit the columns again when the table changes size (hides the least important
+        ones when the window gets narrow)."""
+        self.apply_view()
         self.draw_grid()
 
     def draw_grid(self):
@@ -7090,8 +7367,23 @@ class App:
             self.root.update_idletasks()
             h = self.paned.winfo_height()
             if h > 50:
-                frac = min(0.8, max(0.2, float(self.settings.get("split", 0.45))))
+                frac = min(SPLIT_MAX, max(SPLIT_MIN, float(self.settings.get("split", 0.45))))
                 self.paned.sashpos(0, int(h * frac))
+        except Exception:
+            pass
+
+    def nudge_split(self, delta):
+        """▲ / ▼ next to Activity (and Ctrl+Up / Ctrl+Down): give the job list or the
+        Activity panel more room. The divider can also be dragged; it's remembered."""
+        try:
+            h = self.paned.winfo_height()
+            if h <= 50:
+                return
+            frac = self.paned.sashpos(0) / h + delta
+            frac = min(SPLIT_MAX, max(SPLIT_MIN, frac))
+            self.paned.sashpos(0, int(h * frac))
+            self.root.after_idle(self.draw_grid)
+            self.remember_split()
         except Exception:
             pass
 
@@ -7241,6 +7533,7 @@ class App:
     def filter_changed(self):
         self.settings["view_filter"] = self.v_filter.get()
         self.save()
+        self._auto_w = {}
         self.refresh_tree(full=True)
         self.update_buttons()
 
@@ -8766,14 +9059,18 @@ class App:
         restore = self.hide_app(parent)
 
         def run():
-            similar = [] if self.settings.get("show_similar") else None
+            every = []
             try:
-                (found, x, y, score, sc), wnote, _ = watched_picture(job, report=similar,
+                (found, x, y, score, sc), wnote, _ = watched_picture(job, report=every,
                                                                      move_ok=True)
             except Exception as e:
                 restore()
                 messagebox.showerror(APP_NAME, f"Couldn't check the screen:\n{e}", parent=owner)
                 return
+            # every place that counts is always outlined (4.5.4); look-alikes that don't
+            # count only with "point out every similar picture" on
+            similar = every if self.settings.get("show_similar") else [m for m in every if m[6]]
+            n_found = sum(1 for m in every if m[6])
             part = watch_partial(job)
             best = (f"best: {score:.0%} of it matches, {part:.0%} needed" if part
                     else f"best {score:.0%}") + (f"; {wnote}" if wnote else "")
@@ -8809,6 +9106,7 @@ class App:
                 return
             size = "" if not sc or abs(sc - 1) < 0.01 else f" at {sc:.0%} size"
             got = (f"{score:.0%} of it matches" if part else f"{score:.0%}") + size + \
+                (f"; on screen {n_found} times, all outlined" if n_found > 1 else "") + \
                 (f"; {wnote}" if wnote else "")
             self.log(f"[{job['name']}] check: watched picture found at ({x}, {y}), {got}")
             self.record_test(job["name"], "Check picture now",
@@ -9251,6 +9549,373 @@ def spin_unit(parent, var, lo, hi, unit, width=5, command=None, lead=0, incremen
     ul = ttk.Label(parent, text=unit, **({"style": unit_style} if unit_style else {}))
     ul.pack(side="left", padx=(0, UNIT_AFTER))
     return sp, ul
+
+
+class BoxDrawer:
+    """The frozen, dimmed screenshot on which a box is dragged (4.5.4: zoom and magnifier).
+    Mouse wheel or + / - zooms (up to 24x, pixel-exact, with a pixel grid from 8x), the
+    middle button or the arrow keys move the view, 0 shows the whole screen again. A
+    magnifier next to the pointer shows the exact pixels, their position and colour.
+    The box is kept in screenshot pixels, so zooming and moving never change what's saved.
+    on_done((x0, y0, x1, y1)) gets the box in screenshot pixels; on_cancel() on Esc."""
+    ZOOMS = (1, 2, 3, 4, 6, 8, 12, 16, 24)
+    LOUPE_PX = 15          # pixels shown in the magnifier (odd: one in the middle)
+    LOUPE_SIZE = 165       # its size on screen
+
+    def __init__(self, app, shot, origin, prompt, on_done, on_cancel, min_size=8):
+        self.app, self.shot = app, shot
+        self.vx, self.vy = origin
+        self.W, self.H = W, H = shot.size
+        self.on_done, self.on_cancel = on_done, on_cancel
+        self.min_size = min_size
+        self.z, self.ox, self.oy = 1, 0, 0
+        self.anchor = self.sel = None
+        self.pan = None
+        self.done = False
+        self._pend = {}
+        self.dim = Image.blend(shot, Image.new("RGB", shot.size, (0, 0, 0)), 0.5)
+        self.imgs = {}
+        F = app.font_family
+        ov = tk.Toplevel(app.root)
+        self.ov = ov
+        ov.overrideredirect(True)
+        ov.attributes("-topmost", True)
+        ov.geometry(f"{W}x{H}+{self.vx}+{self.vy}")
+        cv = tk.Canvas(ov, width=W, height=H, highlightthickness=0, bd=0, cursor="crosshair",
+                       bg="#000000")
+        self.cv = cv
+        cv.pack()
+        self.base = cv.create_image(0, 0, anchor="nw")
+        self.bright = cv.create_image(0, 0, anchor="nw")
+        self.rect = cv.create_rectangle(0, 0, 0, 0, outline="#3b82f6", width=2)
+        self.size_txt = cv.create_text(0, 0, anchor="sw", fill="#ffffff", font=(F, 10, "bold"))
+        self.prompt_txt = cv.create_text(W // 2, 34, text=prompt, fill="#ffffff",
+                                         font=(F, 13, "bold"))
+        bx = cv.bbox(self.prompt_txt)
+        self.prompt_bg = cv.create_rectangle(bx[0] - 18, bx[1] - 10, bx[2] + 18, bx[3] + 10,
+                                             fill="#1f2937", outline="#3b82f6")
+        cv.tag_raise(self.prompt_txt, self.prompt_bg)
+        cbtn = tk.Label(cv, text="✕  Cancel (Esc)", font=(F, 10, "bold"), bg="#374151",
+                        fg="#ffffff", padx=12, pady=6, cursor="hand2", bd=0)
+        cbtn.bind("<Button-1>", lambda e: self.cancel())
+        cbtn.bind("<Enter>", lambda e: cbtn.configure(bg="#dc2626"))
+        cbtn.bind("<Leave>", lambda e: cbtn.configure(bg="#374151"))
+        self.cancel_win = cv.create_window(bx[2] + 30, 34, window=cbtn, anchor="w")
+        # help / zoom line at the bottom
+        self.help_bg = cv.create_rectangle(0, 0, 0, 0, fill="#1f2937", outline="#374151")
+        self.help_txt = cv.create_text(16, H - 18, anchor="w", fill="#e5e7eb", font=(F, 10))
+        # magnifier
+        self.loupe_img = cv.create_image(0, 0, anchor="nw", state="hidden")
+        self.loupe_box = cv.create_rectangle(0, 0, 0, 0, outline="#3b82f6", width=2,
+                                             state="hidden")
+        self.loupe_bg = cv.create_rectangle(0, 0, 0, 0, fill="#111827", outline="#3b82f6",
+                                            state="hidden")
+        self.loupe_txt = cv.create_text(0, 0, anchor="nw", fill="#ffffff", font=(F, 9),
+                                        state="hidden")
+        if IS_WIN:
+            try:
+                ov.update_idletasks()
+                hwnd = user32.GetParent(ov.winfo_id()) or ov.winfo_id()
+                user32.SetWindowPos(hwnd, wt.HWND(-1), self.vx, self.vy, W, H, 0x0040)
+            except Exception:
+                pass
+        cv.bind("<ButtonPress-1>", self.down)
+        cv.bind("<B1-Motion>", self.move)
+        cv.bind("<ButtonRelease-1>", self.up)
+        cv.bind("<Motion>", self.hover)
+        cv.bind("<Leave>", lambda e: self.hide_loupe())
+        cv.bind("<Button-3>", lambda e: self.cancel())
+        cv.bind("<ButtonPress-2>", self.pan_start)
+        cv.bind("<B2-Motion>", self.pan_move)
+        cv.bind("<ButtonRelease-2>", lambda e: setattr(self, "pan", None))
+        ov.bind("<MouseWheel>", self.wheel)
+        ov.bind("<Shift-MouseWheel>", self.wheel_pan)
+        cv.bind("<Button-4>", lambda e: self.zoom_at(e.x, e.y, +1))   # Linux
+        cv.bind("<Button-5>", lambda e: self.zoom_at(e.x, e.y, -1))
+        ov.bind("<Escape>", lambda e: self.cancel())
+        for k in ("<plus>", "<equal>", "<KP_Add>"):
+            ov.bind(k, lambda e: self.zoom_key(+1))
+        for k in ("<minus>", "<KP_Subtract>"):
+            ov.bind(k, lambda e: self.zoom_key(-1))
+        ov.bind("<Key-0>", lambda e: self.set_view(1, 0, 0))
+        for k, d in (("<Left>", (-1, 0)), ("<Right>", (1, 0)), ("<Up>", (0, -1)),
+                     ("<Down>", (0, 1))):
+            ov.bind(k, lambda e, d=d: self.pan_keys(*d, fine=False))
+            ov.bind("<Shift-" + k[1:], lambda e, d=d: self.pan_keys(*d, fine=True))
+        self.render_base()
+        self._esc_watch()
+        ov.focus_force()
+
+    # ---- coordinates
+    def to_px(self, x, y):
+        """Canvas point -> screenshot pixel corner (rounded), clamped to the screenshot."""
+        px = int(round(self.ox + x / self.z))
+        py = int(round(self.oy + y / self.z))
+        return min(max(px, 0), self.W), min(max(py, 0), self.H)
+
+    def pixel_at(self, x, y):
+        """Canvas point -> the screenshot pixel under it."""
+        return (min(max(int(self.ox + x / self.z), 0), self.W - 1),
+                min(max(int(self.oy + y / self.z), 0), self.H - 1))
+
+    def to_canvas(self, px, py):
+        return (px - self.ox) * self.z, (py - self.oy) * self.z
+
+    def clamp_view(self):
+        vw, vh = self.W / self.z, self.H / self.z
+        self.ox = int(min(max(self.ox, 0), max(0, self.W - vw)))
+        self.oy = int(min(max(self.oy, 0), max(0, self.H - vh)))
+
+    # ---- drawing
+    def later(self, key, fn, ms=25):
+        if self._pend.get(key):
+            return
+        self._pend[key] = True
+
+        def run():
+            self._pend[key] = False
+            if not self.done:
+                fn()
+        self.ov.after(ms, run)
+
+    def render_base(self):
+        z, W, H = self.z, self.W, self.H
+        if z == 1:
+            img = self.dim
+        else:
+            vw, vh = -(-W // z) + 1, -(-H // z) + 1
+            reg = self.dim.crop((self.ox, self.oy, self.ox + vw, self.oy + vh))
+            img = reg.resize((reg.width * z, reg.height * z), Image.NEAREST).crop((0, 0, W, H))
+            if z >= 8:                               # pixel grid
+                d = ImageDraw.Draw(img)
+                for x in range(0, W, z):
+                    d.line([(x, 0), (x, H)], fill=(40, 40, 40))
+                for y in range(0, H, z):
+                    d.line([(0, y), (W, y)], fill=(40, 40, 40))
+        self.imgs["base"] = ImageTk.PhotoImage(img)
+        self.cv.itemconfigure(self.base, image=self.imgs["base"])
+        self.render_sel()
+        self.render_help()
+
+    def render_sel(self):
+        cv = self.cv
+        if not self.sel:
+            cv.coords(self.rect, 0, 0, 0, 0)
+            cv.itemconfigure(self.bright, image="")
+            cv.itemconfigure(self.size_txt, text="")
+            return
+        x0, y0, x1, y1 = self.sel
+        c0, c1 = self.to_canvas(x0, y0), self.to_canvas(x1, y1)
+        cv.coords(self.rect, c0[0], c0[1], c1[0], c1[1])
+        cv.coords(self.size_txt, max(0, c0[0]), max(14, c0[1] - 4))
+        cv.itemconfigure(self.size_txt, text=f"{x1 - x0} × {y1 - y0} px")
+        # the selected part, undimmed, only what is in view
+        z = self.z
+        vx0, vy0 = max(x0, self.ox), max(y0, self.oy)
+        vx1 = min(x1, self.ox + -(-self.W // z) + 1)
+        vy1 = min(y1, self.oy + -(-self.H // z) + 1)
+        if vx1 - vx0 < 1 or vy1 - vy0 < 1:
+            cv.itemconfigure(self.bright, image="")
+            return
+        part = self.shot.crop((vx0, vy0, vx1, vy1))
+        if z > 1:
+            part = part.resize((part.width * z, part.height * z), Image.NEAREST)
+        self.imgs["bright"] = ImageTk.PhotoImage(part)
+        cv.itemconfigure(self.bright, image=self.imgs["bright"])
+        cv.coords(self.bright, *self.to_canvas(vx0, vy0))
+        cv.tag_raise(self.rect)
+        cv.tag_raise(self.size_txt)
+
+    def render_help(self):
+        t = (f"Zoom {self.z}×   ·   mouse wheel or + / − to zoom   ·   middle-drag or arrow keys "
+             f"to move   ·   0 = whole screen   ·   Esc to cancel")
+        cv = self.cv
+        cv.itemconfigure(self.help_txt, text=t)
+        b = cv.bbox(self.help_txt)
+        if b:
+            cv.coords(self.help_bg, b[0] - 10, b[1] - 6, b[2] + 10, b[3] + 6)
+        cv.tag_raise(self.help_bg)
+        cv.tag_raise(self.help_txt)
+
+    def hide_loupe(self):
+        for it in (self.loupe_img, self.loupe_box, self.loupe_bg, self.loupe_txt):
+            self.cv.itemconfigure(it, state="hidden")
+
+    def show_loupe(self, x, y):
+        """Magnifier next to the pointer: the exact pixels around it, with a grid, the pixel
+        under the pointer outlined, and its position and colour."""
+        n, size = self.LOUPE_PX, self.LOUPE_SIZE
+        px, py = self.pixel_at(x, y)
+        h = n // 2
+        reg = Image.new("RGB", (n, n), (0, 0, 0))
+        src = self.shot.crop((max(0, px - h), max(0, py - h),
+                              min(self.W, px + h + 1), min(self.H, py + h + 1)))
+        reg.paste(src, (max(0, h - px), max(0, h - py)))
+        cell = size // n
+        big = reg.resize((cell * n, cell * n), Image.NEAREST)
+        d = ImageDraw.Draw(big)
+        for k in range(n + 1):
+            d.line([(k * cell, 0), (k * cell, n * cell)], fill=(70, 70, 70))
+            d.line([(0, k * cell), (n * cell, k * cell)], fill=(70, 70, 70))
+        d.rectangle((h * cell, h * cell, (h + 1) * cell, (h + 1) * cell), outline=(255, 0, 254),
+                    width=2)
+        self.imgs["loupe"] = ImageTk.PhotoImage(big)
+        r, g, b = self.shot.getpixel((px, py))[:3]
+        sx, sy = px + self.vx, py + self.vy
+        sel = ""
+        if self.anchor is not None and self.sel:
+            sel = f"\nbox {self.sel[2] - self.sel[0]} × {self.sel[3] - self.sel[1]} px"
+        txt = f"{sx}, {sy}   #{r:02x}{g:02x}{b:02x}\nzoom {self.z}×{sel}"
+        L = cell * n
+        lx, ly = x + 28, y + 28
+        if lx + L + 4 > self.W:
+            lx = x - 28 - L
+        if ly + L + 52 > self.H:
+            ly = y - 28 - L - 52
+        cv = self.cv
+        cv.itemconfigure(self.loupe_img, image=self.imgs["loupe"], state="normal")
+        cv.coords(self.loupe_img, lx, ly)
+        cv.coords(self.loupe_box, lx, ly, lx + L, ly + L)
+        cv.coords(self.loupe_bg, lx, ly + L, lx + L, ly + L + 48)
+        cv.coords(self.loupe_txt, lx + 8, ly + L + 6)
+        cv.itemconfigure(self.loupe_txt, text=txt, state="normal")
+        for it in (self.loupe_box, self.loupe_bg):
+            cv.itemconfigure(it, state="normal")
+        for it in (self.loupe_img, self.loupe_box, self.loupe_bg, self.loupe_txt):
+            cv.tag_raise(it)
+
+    # ---- view
+    def set_view(self, z, ox, oy):
+        self.z, self.ox, self.oy = z, ox, oy
+        self.clamp_view()
+        self.render_base()
+
+    def zoom_at(self, x, y, step):
+        zs = self.ZOOMS
+        i = zs.index(self.z) if self.z in zs else 0
+        i = min(max(i + step, 0), len(zs) - 1)
+        nz = zs[i]
+        if nz == self.z:
+            return
+        fx, fy = self.ox + x / self.z, self.oy + y / self.z      # keep this point in place
+        self.set_view(nz, int(round(fx - x / nz)), int(round(fy - y / nz)))
+        self.show_loupe(x, y)
+
+    def zoom_key(self, step):
+        try:
+            x = self.ov.winfo_pointerx() - self.ov.winfo_rootx()
+            y = self.ov.winfo_pointery() - self.ov.winfo_rooty()
+        except Exception:
+            x, y = self.W // 2, self.H // 2
+        self.zoom_at(x, y, step)
+
+    def wheel(self, e):
+        x = e.x_root - self.ov.winfo_rootx()
+        y = e.y_root - self.ov.winfo_rooty()
+        self.zoom_at(x, y, 1 if e.delta > 0 else -1)
+
+    def wheel_pan(self, e):
+        self.ox -= (1 if e.delta > 0 else -1) * max(1, self.W // (8 * self.z))
+        self.clamp_view()
+        self.later("base", self.render_base, 15)
+
+    def pan_keys(self, dx, dy, fine=False):
+        step = 1 if fine else max(1, self.W // (8 * self.z))
+        self.ox += dx * step
+        self.oy += dy * step
+        self.clamp_view()
+        self.render_base()
+
+    def pan_start(self, e):
+        self.pan = (e.x, e.y, self.ox, self.oy)
+
+    def pan_move(self, e):
+        if not self.pan:
+            return
+        x0, y0, ox, oy = self.pan
+        self.ox, self.oy = ox - (e.x - x0) / self.z, oy - (e.y - y0) / self.z
+        self.clamp_view()
+        self.later("base", self.render_base, 15)
+
+    # ---- the box
+    def hover(self, e):
+        self.later("loupe", lambda: self.show_loupe(e.x, e.y), 15)
+
+    def down(self, e):
+        self.anchor = self.to_px(e.x, e.y)
+        self.sel = None
+        for it in (self.prompt_bg, self.prompt_txt, self.cancel_win):
+            self.cv.itemconfigure(it, state="hidden")
+        self.render_sel()
+
+    def norm(self, a, b):
+        return (min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1]))
+
+    def move(self, e):
+        if self.anchor is None:
+            return
+        # dragging near an edge while zoomed in moves the view along
+        if self.z > 1:
+            m, step = 24, max(1, 16 // self.z)
+            dx = -step if e.x < m else step if e.x > self.W - m else 0
+            dy = -step if e.y < m else step if e.y > self.H - m else 0
+            if dx or dy:
+                self.ox += dx
+                self.oy += dy
+                self.clamp_view()
+                self.later("base", self.render_base, 30)
+        self.sel = self.norm(self.anchor, self.to_px(e.x, e.y))
+        self.later("sel", self.render_sel, 25)
+        self.later("loupe", lambda: self.show_loupe(e.x, e.y), 15)
+
+    def up(self, e):
+        if self.anchor is None:
+            return
+        b = self.norm(self.anchor, self.to_px(e.x, e.y))
+        self.anchor = None
+        m = self.min_size
+        if b[2] - b[0] < m or b[3] - b[1] < m:
+            self.sel = None
+            self.render_sel()
+            self.cv.itemconfigure(self.prompt_txt, state="normal",
+                                  text=f"That box is too small (at least {m} × {m} pixels). Zoom "
+                                       f"in with the mouse wheel for small pictures, then drag "
+                                       f"again, or press Esc to cancel")
+            bx = self.cv.bbox(self.prompt_txt)
+            self.cv.coords(self.prompt_bg, bx[0] - 18, bx[1] - 10, bx[2] + 18, bx[3] + 10)
+            for it in (self.prompt_bg, self.cancel_win):
+                self.cv.itemconfigure(it, state="normal")
+            self.cv.coords(self.cancel_win, bx[2] + 30, 34)
+            return
+        self.close()
+        self.on_done(b)
+
+    def close(self):
+        self.done = True
+        try:
+            self.ov.destroy()
+        except Exception:
+            pass
+        self.imgs = {}
+
+    def cancel(self):
+        if self.done:
+            return
+        self.close()
+        self.on_cancel()
+
+    def _esc_watch(self):
+        if self.done:
+            return
+        try:
+            if not self.ov.winfo_exists():
+                return
+        except Exception:
+            return
+        if key_down(VK_ESCAPE):
+            self.cancel()
+            return
+        self.ov.after(80, self._esc_watch)
 
 
 class Dialog(tk.Toplevel):
@@ -10279,90 +10944,11 @@ class JobEditor(Dialog):
             restore()
             messagebox.showerror(APP_NAME, f"Couldn't capture the screen:\n{e}", parent=self)
             return
-        W, H = shot.size
-        dim = Image.blend(shot, Image.new("RGB", shot.size, (0, 0, 0)), 0.5)
-        ov = tk.Toplevel(app.root)
-        ov.overrideredirect(True)
-        ov.attributes("-topmost", True)
-        ov.geometry(f"{W}x{H}+{vx}+{vy}")
-        cv = tk.Canvas(ov, width=W, height=H, highlightthickness=0, bd=0, cursor="crosshair",
-                       bg="#000000")
-        cv.pack()
-        self._ov_imgs = [ImageTk.PhotoImage(dim)]
-        cv.create_image(0, 0, image=self._ov_imgs[0], anchor="nw")
-        bright = cv.create_image(0, 0, anchor="nw")
-        rect = cv.create_rectangle(0, 0, 0, 0, outline="#3b82f6", width=2)
-        size_txt = cv.create_text(0, 0, anchor="sw", fill="#ffffff",
-                                  font=(app.font_family, 10, "bold"))
-        msg = ("Drag a box around the picture to watch   ·   release to save   ·   "
-               "Esc to cancel") if mode == "picture" else (
-            "Drag a box around the AREA to search in   ·   release to save   ·   Esc to cancel")
-        tw = cv.create_text(W // 2, 34, text=msg, fill="#ffffff",
-                            font=(app.font_family, 13, "bold"))
-        bx = cv.bbox(tw)
-        bg = cv.create_rectangle(bx[0] - 18, bx[1] - 10, bx[2] + 18, bx[3] + 10,
-                                 fill="#1f2937", outline="#3b82f6")
-        cv.tag_raise(tw, bg)
-        if IS_WIN:
-            try:
-                ov.update_idletasks()
-                hwnd = user32.GetParent(ov.winfo_id()) or ov.winfo_id()
-                user32.SetWindowPos(hwnd, wt.HWND(-1), vx, vy, W, H, 0x0040)  # SHOWWINDOW
-            except Exception:
-                pass
-        st = {"x0": None, "y0": None, "box": None, "pending": False}
+        msg = ("Drag a box around the picture to watch   ·   release to save") \
+            if mode == "picture" else "Drag a box around the AREA to search in   ·   release to save"
 
-        def norm(x0, y0, x1, y1):
-            return (max(0, min(x0, x1)), max(0, min(y0, y1)),
-                    min(W, max(x0, x1)), min(H, max(y0, y1)))
-
-        def redraw():
-            st["pending"] = False
-            b = st["box"]
-            if not b or b[2] - b[0] < 2 or b[3] - b[1] < 2:
-                return
-            ph = ImageTk.PhotoImage(shot.crop(b))
-            self._ov_imgs[1:] = [ph]
-            cv.itemconfigure(bright, image=ph)
-            cv.coords(bright, b[0], b[1])
-
-        def down(e):
-            st["x0"], st["y0"] = e.x, e.y
-            st["box"] = None
-            cv.itemconfigure(bg, state="hidden")
-            cv.itemconfigure(tw, state="hidden")
-
-        def move(e):
-            if st["x0"] is None:
-                return
-            b = norm(st["x0"], st["y0"], e.x, e.y)
-            st["box"] = b
-            cv.coords(rect, *b)
-            cv.coords(size_txt, b[0], max(14, b[1] - 4))
-            cv.itemconfigure(size_txt, text=f"{b[2] - b[0]} × {b[3] - b[1]}")
-            if not st["pending"]:
-                st["pending"] = True
-                ov.after(30, redraw)
-
-        def up(e):
-            if st["x0"] is None:
-                return
-            b = norm(st["x0"], st["y0"], e.x, e.y)
-            st["x0"] = None
-            if b[2] - b[0] < 16 or b[3] - b[1] < 16:
-                cv.itemconfigure(bg, state="normal")
-                cv.itemconfigure(tw, state="normal",
-                                 text="That box is too small (at least 16 × 16). Drag again, "
-                                      "or press Esc to cancel")
-                bx2 = cv.bbox(tw)
-                cv.coords(bg, bx2[0] - 18, bx2[1] - 10, bx2[2] + 18, bx2[3] + 10)
-                cv.coords(rect, 0, 0, 0, 0)
-                cv.itemconfigure(bright, image="")
-                cv.itemconfigure(size_txt, text="")
-                return
+        def done(b):
             if mode == "area":
-                ov.destroy()
-                self._ov_imgs = []
                 vx2, vy2, vw2, vh2 = virtual_screen()
                 self.watch_area = [b[0] + vx, b[1] + vy, b[2] - b[0], b[3] - b[1]]
                 self.watch_area_screen = [vw2, vh2]
@@ -10373,8 +10959,6 @@ class JobEditor(Dialog):
                         f"({self.watch_area[0]}, {self.watch_area[1]})")
                 return
             crop = shot.crop(b)
-            ov.destroy()
-            self._ov_imgs = []
             self.watch_png = img_to_b64(crop)        # full screen resolution, lossless
             self.update_watch_thumb()
             # look once more a moment later: does anything inside the box change?
@@ -10405,41 +10989,8 @@ class JobEditor(Dialog):
                                               "takes longer. A smaller box around the most "
                                               "distinctive part is faster.", parent=self)
 
-        def cancel(e=None):
-            try:
-                if not ov.winfo_exists():
-                    return
-            except Exception:
-                return
-            ov.destroy()
-            self._ov_imgs = []
-            restore()
-
-        cv.bind("<ButtonPress-1>", down)
-        cv.bind("<B1-Motion>", move)
-        cv.bind("<ButtonRelease-1>", up)
-        cv.bind("<Button-3>", cancel)
-        ov.bind("<Escape>", cancel)
-        # a visible Cancel button next to the instructions (4.5.1)
-        cbtn = tk.Label(cv, text="✕  Cancel (Esc)", font=(app.font_family, 10, "bold"),
-                        bg="#374151", fg="#ffffff", padx=12, pady=6, cursor="hand2", bd=0)
-        cbtn.bind("<Button-1>", cancel)
-        cbtn.bind("<Enter>", lambda e: cbtn.configure(bg="#dc2626"))
-        cbtn.bind("<Leave>", lambda e: cbtn.configure(bg="#374151"))
-        cv.create_window(bx[2] + 30, 34, window=cbtn, anchor="w")
-
-        def esc_watch():
-            try:
-                if not ov.winfo_exists():
-                    return
-            except Exception:
-                return
-            if key_down(VK_ESCAPE):
-                cancel()
-                return
-            ov.after(80, esc_watch)
-        esc_watch()
-        ov.focus_force()
+        self._drawer = BoxDrawer(app, shot, (vx, vy), msg, done, restore,
+                                 min_size=PICTURE_MIN_PX if mode == "picture" else 16)
 
     # ---- helpers
     def mode_changed(self):
@@ -11185,6 +11736,14 @@ class TestDialog(Dialog):
         self.destroy()
 
 
+WATCH_TEST_NAMES = ("Check picture now", "Dry run (no click)", "Scheduled watcher test")
+
+
+def test_kind(name):
+    """'watch' for watcher tests, 'click' for click tests (the Tests window's sections)."""
+    return "watch" if name in WATCH_TEST_NAMES or "watcher" in name.lower() else "click"
+
+
 class TestsWindow(tk.Toplevel):
     """Floating, resizable window with every test action and the test history.
     The main window steps aside while it's open; this window hides itself during each test."""
@@ -11229,15 +11788,21 @@ class TestsWindow(tk.Toplevel):
         self.kind_lbl = ttk.Label(main, style="Muted.TLabel")
         self.kind_lbl.pack(anchor="w", pady=(6, 0))
 
-        # ---- draggable split: test buttons (top) / history (bottom)
-        self.paned = ttk.PanedWindow(main, orient="vertical")
-        self.paned.pack(fill="both", expand=True, pady=(8, 0))
-        ctl = ttk.Frame(self.paned)
+        # ---- sections (4.5.4): All tests / Click tests / Watcher tests. Each shows its own
+        # buttons and its own history, for this job or for all jobs (remembered per section)
+        secrow = ttk.Frame(main)
+        secrow.pack(fill="x", pady=(10, 0))
+        self.v_sec = tk.StringVar(value=app.settings.get("tests_section", "all"))
+        if self.v_sec.get() not in ("all", "click", "watch"):
+            self.v_sec.set("all")
+        for val, text in (("all", "All tests"), ("click", "Click tests"),
+                          ("watch", "Watcher tests")):
+            ttk.Radiobutton(secrow, text=text, value=val, variable=self.v_sec,
+                            style="Seg.TRadiobutton", command=self.section_changed).pack(
+                side="left", padx=(0, 2))
+        ctl = ttk.Frame(main)
+        ctl.pack(fill="x", pady=(8, 0))
         self.ctl = ctl
-        hist = ttk.Frame(self.paned)
-        self.paned.add(ctl, weight=0)
-        self.paned.add(hist, weight=1)
-
         self.groups = ttk.Frame(ctl)
         self.groups.pack(fill="x")
         self.btns_any, self.btns_watch = [], []
@@ -11254,8 +11819,7 @@ class TestsWindow(tk.Toplevel):
                 bucket.append(b)
                 btns.append(b)
             # lay the buttons out right away (one row): on Windows a frame that has nothing
-            # in it yet may never get a <Configure> event, which left the buttons invisible
-            # until the window was resized (4.5.3)
+            # in it yet may never get a <Configure> event (4.5.3)
             for i, b in enumerate(btns):
                 b.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 4, 0))
                 g.columnconfigure(i, weight=1, uniform="b")
@@ -11272,33 +11836,30 @@ class TestsWindow(tk.Toplevel):
         ), self.btns_any)
         group("Watcher tests", (
             ("Check picture", lambda: self.run("check"), "is the watched picture on screen "
-                                                         "right now?"),
+                                                         "right now? (every copy is outlined)"),
             ("Dry run", lambda: self.run("dry"), "marks the watched picture, then the button "
                                                  "it would click (no click)"),
             ("Schedule watcher test…", lambda: self.run("wsched"), "runs the check later, in "
                                                                    "the background"),
         ), self.btns_watch)
-        for i, (g, _) in enumerate(self.group_frames):    # side by side to start with
-            g.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))
-            self.groups.columnconfigure(i, weight=1, uniform="tg")
-        self._narrow = False
-        self.groups.bind("<Configure>", lambda e: (self.flow_groups(),
-                                                   self.after(60, self.keep_buttons_visible)))
+        self._narrow = None
+        self.groups.bind("<Configure>", lambda e: self.flow_groups())
         self.hint = ttk.Label(ctl, text=default_hint, style="Muted.TLabel")
-        self.hint.pack(anchor="w", pady=(6, 0))
+        self.hint.pack(anchor="w", pady=(4, 0))
         self.pending_lbl = ttk.Label(ctl, style="Warn.TLabel")
         self.pending_row = ttk.Frame(ctl)
-        self.pending_row.pack(fill="x", pady=(4, 0))
         self.pending_lbl.pack(in_=self.pending_row, side="left")
         self.cancel_btn = ttk.Button(self.pending_row, text="Cancel pending tests",
                                      style="Small.TButton", command=self.cancel_pending)
 
-        # ---- history
+        # ---- history, right under the buttons, taking the rest of the window
+        hist = ttk.Frame(main)
+        hist.pack(fill="both", expand=True, pady=(8, 0))
         hh = ttk.Frame(hist)
-        hh.pack(fill="x", pady=(10, 4))
-        ttk.Label(hh, text="Test history", style="Section.TLabel").pack(side="left",
-                                                                       padx=(0, 10))
-        self.v_hf = tk.StringVar(value=app.settings.get("tests_hist_filter", "job"))
+        hh.pack(fill="x", pady=(0, 4))
+        self.hist_title = ttk.Label(hh, text="Test history", style="Section.TLabel")
+        self.hist_title.pack(side="left", padx=(0, 10))
+        self.v_hf = tk.StringVar(value=self.scope_for(self.v_sec.get()))
         for val, text in (("job", "This job"), ("all", "All jobs")):
             ttk.Radiobutton(hh, text=text, value=val, variable=self.v_hf,
                             style="Seg.TRadiobutton", command=self.hist_filter_changed).pack(
@@ -11329,6 +11890,7 @@ class TestsWindow(tk.Toplevel):
         self.detail.pack(fill="x", pady=(6, 0))
         hist.bind("<Configure>", lambda e: self.detail.configure(wraplength=max(200, e.width)))
         self.hist_rows = []
+        self.show_section()
 
         self.retheme()
         g = fit_geometry(app.settings.get("tests_geom"), 380, 420)
@@ -11342,10 +11904,8 @@ class TestsWindow(tk.Toplevel):
         self.deiconify()
         self.lift()
         self.focus_force()
-        self.after(200, self.restore_split)
         for ms in (60, 250, 700):                   # re-flow once the window has its size
             self.after(ms, self.relayout)
-        self.paned.bind("<ButtonRelease-1>", lambda e: self.after(50, self.remember_split))
         self._gjob = None
         self.bind("<Configure>", self.on_configure, add="+")
         close_on_click_outside(self, app, self.close)
@@ -11369,27 +11929,36 @@ class TestsWindow(tk.Toplevel):
             pass
 
     # ---------------------------------------------------------------- layout
+    def visible_groups(self):
+        sec = self.v_sec.get() if hasattr(self, "v_sec") else "all"
+        want = {"all": (0, 1), "click": (0,), "watch": (1,)}.get(sec, (0, 1))
+        return [gb for i, gb in enumerate(self.group_frames) if i in want]
+
     def flow_groups(self):
-        """Side by side when there's room, stacked when narrow."""
+        """Side by side when there's room, stacked when narrow (only this section's)."""
         W = self.groups.winfo_width()
         if W <= 1:
             W = self.winfo_width() - 28
         if W <= 1:
             return
-        need = sum(sum(b.winfo_reqwidth() for b in btns) + 40 for _, btns in self.group_frames)
+        vis = self.visible_groups()
+        need = sum(sum(b.winfo_reqwidth() for b in btns) + 40 for _, btns in vis)
         narrow = W < need + 10
-        if narrow == self._narrow:
+        sig = (narrow, tuple(id(g) for g, _ in vis))
+        if sig == self._narrow:
             return
-        self._narrow = narrow
-        for i, (g, _) in enumerate(self.group_frames):
+        self._narrow = sig
+        for g, _ in self.group_frames:
             g.grid_forget()
+        for i, (g, _) in enumerate(vis):
             if narrow:
                 g.grid(row=i, column=0, sticky="ew", pady=(0 if i == 0 else 8, 0))
             else:
                 g.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))
-        self.groups.columnconfigure(0, weight=1, uniform="tg" if not narrow else "")
-        self.groups.columnconfigure(1, weight=0 if narrow else 1,
-                                    uniform="" if narrow else "tg")
+        single = len(vis) == 1
+        self.groups.columnconfigure(0, weight=1, uniform="" if (narrow or single) else "tg")
+        self.groups.columnconfigure(1, weight=0 if (narrow or single) else 1,
+                                    uniform="" if (narrow or single) else "tg")
 
     def relayout(self):
         """Re-flow the test buttons for the window's real size (doesn't rely on <Configure>
@@ -11410,8 +11979,8 @@ class TestsWindow(tk.Toplevel):
         """One row of buttons if they fit, otherwise one per line."""
         W = g.winfo_width()
         if W <= 1:
-            W = (self.groups.winfo_width() if self._narrow
-                 else self.groups.winfo_width() // max(1, len(self.group_frames))) - 20
+            W = (self.groups.winfo_width() if (self._narrow and self._narrow[0])
+                 else self.groups.winfo_width() // max(1, len(self.visible_groups()))) - 20
         if W <= 1:
             return
         one_row = sum(b.winfo_reqwidth() for b in btns) + 8 * len(btns) <= W
@@ -11441,34 +12010,33 @@ class TestsWindow(tk.Toplevel):
             self.hist["displaycolumns"] = shown
 
     def keep_buttons_visible(self):
-        """If the buttons were re-flowed (window got narrower), grow their pane to fit."""
-        try:
-            need = self.ctl.winfo_reqheight() + 4
-            if self.paned.sashpos(0) < need:
-                self.paned.sashpos(0, need)
-        except Exception:
-            pass
+        """(4.5.3) Kept for callers; the buttons and the history no longer share a split."""
 
-    def restore_split(self):
-        """Give the test buttons the room they need (or the user's saved split, if bigger)."""
-        try:
-            self.update_idletasks()
-            h = self.paned.winfo_height()
-            need = self.ctl.winfo_reqheight() + 4
-            frac = float(self.app.settings.get("tests_split") or 0)
-            pos = int(h * frac) if h > 50 and 0.15 < frac < 0.85 else 0
-            self.paned.sashpos(0, min(max(pos, need), max(need, h - 120)))
-        except Exception:
-            pass
+    def scope_for(self, sec):
+        scopes = self.app.settings.get("tests_scopes") or {}
+        v = scopes.get(sec) or "job"
+        return v if v in ("job", "all") else "job"
 
-    def remember_split(self):
-        try:
-            h = self.paned.winfo_height()
-            if h > 50:
-                self.app.settings["tests_split"] = round(self.paned.sashpos(0) / h, 3)
-                self.app.save()
-        except Exception:
-            pass
+    def section_changed(self):
+        sec = self.v_sec.get()
+        self.app.settings["tests_section"] = sec
+        self.v_hf.set(self.scope_for(sec))
+        self.app.save()
+        self.show_section()
+        self.flow_columns(self.hist.winfo_width())
+        self.refresh(force=True)
+
+    def show_section(self):
+        """Show the buttons of the chosen section: both groups, or only one."""
+        sec = self.v_sec.get()
+        want = {"all": (0, 1), "click": (0,), "watch": (1,)}[sec]
+        for i, (g, _) in enumerate(self.group_frames):
+            if i not in want:
+                g.grid_remove()
+        self._narrow = None
+        self.flow_groups()
+        self.hist_title.configure(text={"all": "Test history", "click": "Click test history",
+                                        "watch": "Watcher test history"}[sec])
 
     def retheme(self):
         p = self.app.pal
@@ -11502,6 +12070,9 @@ class TestsWindow(tk.Toplevel):
 
     def hist_filter_changed(self):
         self.app.settings["tests_hist_filter"] = self.v_hf.get()
+        scopes = dict(self.app.settings.get("tests_scopes") or {})
+        scopes[self.v_sec.get()] = self.v_hf.get()
+        self.app.settings["tests_scopes"] = scopes
         self.app.save()
         self.flow_columns(self.hist.winfo_width())
         self.refresh(force=True)
@@ -11561,8 +12132,10 @@ class TestsWindow(tk.Toplevel):
             self.cancel_btn.pack_forget()
 
         flt = self.v_hf.get()
-        rows = [e for e in hist if flt == "all" or not job or e["job"] == job["name"]]
-        sig = (len(hist), hist[0]["t"] if hist else 0, flt, job["name"] if job else "")
+        sec = self.v_sec.get()
+        rows = [e for e in hist if (flt == "all" or not job or e["job"] == job["name"])
+                and (sec == "all" or test_kind(e.get("test", "")) == sec)]
+        sig = (len(hist), hist[0]["t"] if hist else 0, flt, sec, job["name"] if job else "")
         if force or dirty or sig != self._hist_sig:
             self._hist_sig = sig
             app.tests_dirty = False
@@ -11577,8 +12150,9 @@ class TestsWindow(tk.Toplevel):
             if rows:
                 self.hist_empty.place_forget()
             else:
-                self.hist_empty.configure(text="No tests for this job yet" if flt == "job"
-                                          else "No tests yet")
+                what = {"all": "tests", "click": "click tests", "watch": "watcher tests"}[sec]
+                self.hist_empty.configure(text=f"No {what} for this job yet" if flt == "job"
+                                          else f"No {what} yet")
                 self.hist_empty.place(relx=0.5, rely=0.5, anchor="center")
             self.detail.configure(text="Select a result to see all the details.")
 
@@ -13400,13 +13974,18 @@ class HelpDialog(Dialog):
              "spot is saved, so it's found even if windows move or the screen size changes. "
              "With “Only the exact picture” (on by default) a similar-looking spot is never "
              "clicked."),
-            ("Screen watchers", "👁 New watcher → Draw box around the picture → choose to click "
+            ("Screen watchers", "👁 New watcher → Draw box around the picture (mouse wheel "
+             "zooms in, up to 24×, with a magnifier showing the exact pixels) → choose to click "
              "when it disappears or appears → pick the button (or click the picture itself) → "
              "Save. Optionally search only an area (searched with a small margin), and add "
              "active hours. Match: “the exact picture” (default) or “part of the picture is "
              "enough” (a share you choose, e.g. 75 %) when a number or animation inside the "
              "box changes. A watcher doesn't count the picture as gone while the mouse "
              "pointer rests on it (hovering can change how it looks)."),
+            ("The job list", "All, Scheduled clicks and Screen watchers each show their own "
+             "columns, sized to fit their text (drag or double-click a border to set a width "
+             "yourself; ☰ Menu → Reset column widths). Drag the divider above Activity, or "
+             "use ▲ / ▼ (Ctrl+Up / Ctrl+Down), to give the list or Activity more room."),
             ("Several jobs at once", "Tick the box at the start of a row (or press X; Ctrl+A "
              "ticks every job shown, the heading box ticks or unticks all). A bar appears: "
              "Start, Stop, Pause, Resume, Duplicate or Delete the ticked jobs, or “Edit "
@@ -13428,7 +14007,9 @@ class HelpDialog(Dialog):
              "their turn (shown above the job list). Watchers keep watching meanwhile. "
              f"Emergency stop: {app.settings.get('hk_stop') or '(set a hotkey)'}."),
             ("Tests", "🧪 Tests opens a popup with Show spot, Test click, Check picture, Dry run "
-             "and scheduled tests. The whole app hides while a test runs. Preferences → "
+             "and scheduled tests, in three sections (All tests, Click tests, Watcher tests), "
+             "each with its own history for this job or all jobs. Check picture outlines "
+             "every copy of the picture it finds. The whole app hides while a test runs. Preferences → "
              "Clicking sets how long the marker stays and can outline every similar picture."),
             ("Tray icon", "Point at Clickue's tray icon to see whether your jobs are running fine; "
              "right-click it → Job status for every job."),

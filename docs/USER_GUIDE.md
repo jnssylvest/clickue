@@ -38,8 +38,9 @@
   Tests, Record, Import, Export. Buttons that don't fit go into **More ▾**.
 - **Running bar:** while a job runs (or others wait their turn), a bar above the list shows
   which, with **Stop this run**.
-- **Job list:** one row per job, with status, target, schedule, next click, a countdown, clicks
-  and last result. Double-click to edit; right-click for everything else. Use the filter above
+- **Job list:** one row per job. The filter (All / Scheduled clicks / Screen watchers) also
+  picks the columns, so each kind of job shows what matters for it; columns fit their text.
+  Drag the divider above Activity (or ▲ / ▼) to make the list or Activity taller. Double-click to edit; right-click for everything else. Use the filter above
   it to show all jobs, only scheduled clicks or only watchers.
 - **Tick boxes:** tick jobs at the start of their rows (or press **X**; the heading box ticks
   all). A bar appears to **Start, Stop, Pause, Resume, Duplicate or Delete** them together, or
@@ -74,7 +75,8 @@ A watcher looks at the screen every so often and clicks when something changes.
 2. Choose **Click when the picture disappears** or **when the picture appears**.
 3. Click **▢ Draw box around picture…**. The screen freezes; drag a box around the picture
    to watch (something distinctive, with text or an icon), then release.
-   Draw it around something that **doesn't change**. If something inside the box changes (a
+   Small picture? Turn the **mouse wheel** to zoom in (up to 24×); the magnifier shows the
+   exact pixels. Draw it around something that **doesn't change**. If something inside the box changes (a
    number, a time), Clickue warns you right after drawing.
 4. Optional: **Search only an area** → **Draw area…** to limit where it looks.
    **Match:** keep **the exact picture**, or choose **part of the picture is enough** (e.g.
@@ -303,6 +305,7 @@ To keep Clickue working while you're away:
 | "Picture not found" | Is the spot on screen? Re-pick with text or an icon near the spot, or use a Large picture. **Show spot** (with similar pictures outlined) to check |
 | Clicks the wrong place | Keep **Only the exact picture** ticked. **Show spot**. Re-pick if the app's look changed. Make sure the target isn't covered |
 | Watcher shows "Can't tell: Clickue window open" | Minimize Clickue or send it to the tray |
+| Picture too small to box | Zoom in with the mouse wheel while drawing |
 | Watcher says the picture is NOT there, but it is | **Dry run** outlines the closest places. Re-draw the box around a part that never changes, or choose **Match: part of the picture is enough** |
 | Watcher never clicks again | "Click only once" is waiting for the picture to come back; untick it to keep clicking |
 | Nothing happens while away | The screen was locked or disconnected; see [above](#locked-screens-and-remote-sessions) |

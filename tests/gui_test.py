@@ -882,13 +882,81 @@ def is_watch_job(j):
     return j.get("kind") == "watch"
 
 
+def t_fixes_454():
+    # views: each filter shows its own columns, sized to their text
+    for v, must in (("click", ("target", "schedule", "hours")), ("watch", ("watchfor", "then", "seen")),
+                    ("all", ("kind", "what"))):
+        app.v_filter.set(v); app.filter_changed(); pump(300)
+        dc = tuple(app.tree["displaycolumns"])
+        ok(f"4.5.4 {v} view shows its own columns", all(c in dc for c in must) and dc[0] == "chk", dc)
+    t = app.tree
+    W = t.winfo_width()
+    tot = sum(int(t.column(c, "width")) for c in t["displaycolumns"])
+    ok("4.5.4 columns fill the table without overflowing", abs(tot - W) <= 8 or tot <= W, (tot, W))
+    names = [t.set(i, "name").strip() for i in t.get_children() if ":" not in i]
+    f = ac.tkfont.Font(font=ac.ttk.Style(t).lookup("Treeview", "font"))
+    need = max(f.measure(n) for n in names) if names else 0
+    ok("4.5.4 Name column fits the longest name", int(t.column("name", "width")) >= min(need + 10, 320),
+       (int(t.column("name", "width")), need))
+    # split between jobs and activity
+    h = app.paned.winfo_height(); p0 = app.paned.sashpos(0)
+    app.nudge_split(-0.2); pump(100); p1 = app.paned.sashpos(0)
+    app.nudge_split(0.4); pump(100); p2 = app.paned.sashpos(0)
+    ok("4.5.4 job list / Activity height can be changed and is remembered",
+       p1 < p0 < p2 and abs(app.settings["split"] - p2 / h) < 0.02, (p0, p1, p2))
+    # disabled buttons are outlines
+    st = ac.ttk.Style(root)
+    ok("4.5.4 disabled buttons: outline, no fill",
+       str(st.lookup("TButton", "relief", ["disabled"])) == "solid"
+       and str(st.lookup("TButton", "background", ["disabled"])).lower() == app.pal["bg"].lower(),
+       (st.lookup("TButton", "relief", ["disabled"]), st.lookup("TButton", "background", ["disabled"])))
+    # Tests window sections
+    app.open_tests(); pump(400)
+    tw = app.tests_win
+    tw.v_sec.set("click"); tw.section_changed(); pump(300)
+    ok("4.5.4 Tests: click section shows only click tests",
+       all(b.winfo_ismapped() for b in tw.btns_any) and not any(b.winfo_ismapped() for b in tw.btns_watch))
+    rows = [tw.hist.set(i, "test") for i in tw.hist.get_children()]
+    ok("4.5.4 Tests: click history only lists click tests", all(ac.test_kind(r) == "click" for r in rows), rows)
+    tw.v_hf.set("all"); tw.hist_filter_changed(); pump(100)
+    tw.v_sec.set("watch"); tw.section_changed(); pump(300)
+    ok("4.5.4 Tests: watcher section has its own job/all setting",
+       tw.v_hf.get() == "job" and not any(b.winfo_ismapped() for b in tw.btns_any))
+    tw.v_sec.set("click"); tw.section_changed(); pump(100)
+    ok("4.5.4 Tests: click section remembers All jobs", tw.v_hf.get() == "all")
+    tw.v_sec.set("all"); tw.section_changed(); pump(300)
+    ok("4.5.4 Tests: All tests shows every button", all(b.winfo_ismapped() for b in tw.btns_any + tw.btns_watch))
+    low = max(b.winfo_rooty() + b.winfo_height() for b in tw.btns_any + tw.btns_watch)
+    gap = tw.hist.winfo_rooty() - low
+    ok("4.5.4 Tests: history right under the buttons", gap < 120, gap)
+    tw.close(); pump(200)
+    # zoomed box drawing: the box is kept in real screen pixels
+    img = ac.Image.new("RGB", (800, 600), (200, 200, 200))
+    got = []
+    bd = ac.BoxDrawer(app, img, (0, 0), "test", lambda b: got.append(b), lambda: got.append("x"))
+    pump(100)
+    bd.zoom_at(400, 300, 1); bd.zoom_at(400, 300, 1); bd.zoom_at(400, 300, 1)   # 4x
+    z = bd.z
+    px = bd.to_px(400, 300)
+    ok("4.5.4 zoom keeps the point under the mouse in place", z == 4 and abs(px[0] - 400) <= 1 and abs(px[1] - 300) <= 1, (z, px))
+    bd.down(type("E", (), {"x": 400, "y": 300})()); bd.move(type("E", (), {"x": 448, "y": 340})())
+    bd.up(type("E", (), {"x": 448, "y": 340})())
+    ok("4.5.4 a 12x10 box drawn at 4x zoom is 12x10 screen pixels", got and got[0] == (px[0], px[1], px[0] + 12, px[1] + 10), got)
+    bd2 = ac.BoxDrawer(app, img, (0, 0), "test", lambda b: got.append(b), lambda: got.append("x"))
+    pump(50); bd2.show_loupe(100, 100); pump(50)
+    ok("4.5.4 magnifier shows pixel position and colour", "#c8c8c8" in bd2.cv.itemcget(bd2.loupe_txt, "text"))
+    bd2.cancel(); pump(50)
+    ok("4.5.4 Esc/cancel closes the drawing", got[-1] == "x")
+
+
 for name, fn in (("main", t_main), ("add click", add_click_job), ("edit/rows", t_edit_and_rows),
                  ("watcher", add_watcher), ("settings", t_settings), ("menu/dialogs", t_menu_and_dialogs),
                  ("steps/hours", t_steps_and_hours), ("watcher extras", t_watcher_extras),
                  ("tests window", t_tests_window),
                  ("test dialog", t_test_dialog_from_main), ("export/import", t_export_import),
                  ("geometry", t_remember_geometry), ("workflows 4.5", t_workflows_45),
-                 ("fixes 4.5.1", t_fixes_451), ("fixes 4.5.3", t_fixes_453)):
+                 ("fixes 4.5.1", t_fixes_451), ("fixes 4.5.3", t_fixes_453),
+                 ("fixes 4.5.4", t_fixes_454)):
     step(name, fn)
     pump(200)
 

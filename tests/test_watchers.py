@@ -1,4 +1,4 @@
-"""Screen-watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries). Expect: RESULT 34/34"""
+"""Screen-watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries). Expect: RESULT 42/42"""
 import os
 exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_helpers.py")).read())
 import time, threading, queue, tempfile, random
@@ -111,4 +111,51 @@ check2(); expect("30 pointer elsewhere, hover look not involved -> normal check"
 ac.current_pointer=lambda:None; ac.idle_seconds=lambda:100
 j3=ac.sanitize_job(dict(ac.new_watch(3), watch_match="fuzzy", watch_partial_pct=3))[0]
 expect("31 import: bad match mode/percent cleaned", j3["watch_match"]=="exact" and j3["watch_partial_pct"]==ac.PARTIAL_MIN_PCT, (j3["watch_match"], j3["watch_partial_pct"]))
+
+# ---- 4.5.4: every copy on screen, pixel-exact matching, small pictures, noisy screens
+import io as _io, numpy as _np
+def card(d,x,y,price,col=(22,163,74),badge="● LIVE"):
+    d.rectangle((x,y,x+300,y+70),fill=(250,250,250),outline=(200,200,200))
+    d.text((x+10,y+8),"Account card",fill=(20,20,20),font=F(15))
+    d.rounded_rectangle((x+10,y+36,x+90,y+60),radius=5,fill=col); d.text((x+18,y+40),badge,fill="white",font=F(12))
+    d.text((x+200,y+38),price,fill=(20,20,20),font=F(15))
+CPOS=[(100,100),(500,300),(1200,150),(300,700),(1500,800)]
+def cards(prices, red=None):
+    im=Image.new("RGB",(1920,1080),(32,34,38)); d=ImageDraw.Draw(im)
+    for i,((x,y),p) in enumerate(zip(CPOS,prices)):
+        card(d,x,y,p,*(((200,40,40),"✖ DOWN") if red==i else ()))
+    return im
+base=cards(("101.25","98.40","77.10","101.25","5"))
+cpic=ac.img_to_b64(base.crop((100,100,401,171)))
+def look(im, part=None, hint=None):
+    rep=[]; r=ac.picture_on_screen(cpic,hint,shot=(im,(0,0)),report=rep,partial=part)
+    return r, sorted((x[0],x[1]) for x in rep if x[6])
+r,m=look(base)
+expect("32 exact: both identical copies found, never the ones with another number",
+       r[0] and m==[(100,100),(300,700)], m)
+r,m=look(cards(("55.55","98.40","77.10","12.05","5")))
+expect("33 exact: one changed digit anywhere in the box -> not found", not r[0] and not m, (r, m))
+r,m=look(base, 0.75)
+expect("34 partial 75%: every card found wherever it is, numbers differing", len(m)==5, m)
+r,m=look(cards(("101.25","98.40","77.10","101.25","5"), red=2), 0.75)
+expect("35 partial: the card whose badge turned red is not counted", (1200,150) not in m and len(m)==4, m)
+def jpeg(im,q):
+    b=_io.BytesIO(); im.save(b,"JPEG",quality=q); return Image.open(_io.BytesIO(b.getvalue())).convert("RGB")
+noisy=Image.fromarray(_np.clip(_np.asarray(base).astype(_np.int16)+_np.random.RandomState(1).normal(0,5,_np.asarray(base).shape).astype(_np.int16),0,255).astype(_np.uint8))
+r1,m1=look(jpeg(base,75)); r2,m2=look(noisy)
+expect("36 exact copies still found on a compressed or noisy screen (remote sessions)", m1==[(100,100),(300,700)] and m2==m1, (m1,m2))
+for scl in (1.25,1.5):
+    big=base.resize((int(1920*scl),int(1080*scl)),Image.LANCZOS)
+    r,m=look(big)
+    expect(f"37 exact at {scl:.0%} display scaling: only the identical copies", r[0] and len(m)==2, m)
+icons=Image.new("RGB",(1920,1080),(240,240,240)); di=ImageDraw.Draw(icons); rr=random.Random(3)
+for k in range(60):
+    x,y=rr.randint(0,1900),rr.randint(0,1060); kind=rr.choice(["down","dot","sq"])
+    if kind=="down": di.polygon([(x,y),(x+5,y+10),(x+10,y)],fill=(200,40,40))
+    elif kind=="dot": di.ellipse((x,y,x+10,y+10),fill=(22,163,74))
+    else: di.rectangle((x,y,x+10,y+10),fill=(22,163,74))
+for x,y in ((400,400),(1000,600),(1500,200)): di.polygon([(x,y+10),(x+5,y),(x+10,y+10)],fill=(22,163,74))
+ipic=ac.img_to_b64(icons.crop((398,398,413,413)))
+rep=[]; r=ac.picture_on_screen(ipic,None,shot=(icons,(0,0)),report=rep)
+expect("38 a tiny 15x15 icon: all three copies, none of the 60 other icons", sorted((x[0],x[1]) for x in rep if x[6])==[(398,398),(998,598),(1498,198)], [x[:2] for x in rep if x[6]])
 print(f"RESULT {sum(res)}/{len(res)}")

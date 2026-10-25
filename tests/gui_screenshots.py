@@ -131,5 +131,26 @@ app.set_checks([c["id"], w["id"]]); pump(500); shot(root, "21_main_ticked")
 be = ac.BatchEditDialog(app, app.checked_jobs()); pump(500)
 be.geometry("760x900+20+0"); pump(300); shot(be, "22_edit_together"); be.destroy()
 app.set_checks([])
+# ---- 4.5.4: the three job-list views, Tests sections, zoomed box drawing
+for v in ("click", "watch", "all"):
+    app.v_filter.set(v); app.filter_changed(); pump(600); shot(root, f"23_view_{v}")
+app.open_tests(); pump(600)
+for sec in ("all", "click", "watch"):
+    app.tests_win.v_sec.set(sec); app.tests_win.section_changed(); pump(400)
+    shot(app.tests_win, f"24_tests_{sec}")
+app.tests_win.close(); pump(200)
+img = ac.Image.new("RGB", (1400, 880), (240, 240, 240))
+d = ac.ImageDraw.Draw(img)
+for k in range(12):
+    d.rectangle((100 + k * 90, 300, 160 + k * 90, 330), fill=(30, 90, 200))
+bd = ac.BoxDrawer(app, img, (0, 0), "Drag a box around the picture to watch   ·   release to save",
+                  lambda b: None, lambda: None)
+pump(300)
+bd.zoom_at(400, 315, 1); bd.zoom_at(400, 315, 1); bd.zoom_at(400, 315, 1); bd.zoom_at(400, 315, 1)
+pump(200)
+bd.down(type("E", (), {"x": 300, "y": 200})()); bd.move(type("E", (), {"x": 520, "y": 420})())
+pump(300); bd.show_loupe(520, 420); pump(200)
+ImageGrab.grab(bbox=(0, 0, 1400, 880), xdisplay=":99").save(f"{OUT}/25_draw_zoom.png")
+bd.close()
 app.stop.set(); root.destroy()
 print("done")

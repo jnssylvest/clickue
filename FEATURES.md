@@ -80,6 +80,10 @@ Everything below is available in Clickue 4.5 unless it's under
   watch (shows the size while dragging). Saved at **full screen resolution**, lossless, with
   the mouse pointer moved aside so hover highlights aren't saved. Clickue looks again a moment
   later and **warns if part of the box changes** (a number, a clock, an animation).
+- **Zoom while drawing** (every Draw box screen): mouse wheel or + / − up to **24×**,
+  pixel-exact with a **pixel grid** from 8×, middle-drag or arrow keys to move (Shift+arrow:
+  one pixel), 0 for the whole screen; a **magnifier** next to the pointer shows the exact
+  pixels, their screen position and colour. Boxes down to **8 × 8 pixels**.
 - Click **when the picture disappears** or **when it appears**.
 - For "appears": optionally **click the picture itself** where it was found, instead of a
   separate button.
@@ -87,10 +91,15 @@ Everything below is available in Clickue 4.5 unless it's under
   elsewhere, scales with the screen size). The area is searched **with a small margin**, so a
   picture at its edge, or an area drawn tightly around the picture, still counts.
 - **Match the exact picture** (default, strict): shape, close-up detail and colour must all
-  agree. A same-shaped badge in a different colour, or with changed text, counts as changed.
+  agree, and **every part** of the box is compared tile by tile, so one changed digit
+  anywhere counts as changed. Tolerates compression noise of remote sessions and display
+  scaling.
 - Or **part of the picture is enough: N %** (40–95 %, default 75 %): the picture is compared
   tile by tile (colour included) and counts as showing when at least N % of it matches, so a
   changing value inside the box doesn't make it "gone". Results show *82 % of it matches*.
+  Each detailed tile is also searched on its own, so **every copy** on screen is found, even
+  copies whose changing part makes them look quite different as a whole.
+- **Every copy:** Check now outlines every place the picture is found and says how many.
 - **Mouse pointer on the picture:** hovering can change how a button looks, so tests re-check
   with the pointer moved aside, and a running watcher doesn't count the picture as missing
   while you rest the pointer on it (it re-checks with the pointer moved aside once the
@@ -215,7 +224,11 @@ All tests hide the whole app while they run, so nothing is in the way.
   as you choose in Preferences → Clicking (also for Check picture / Check now).
 - **Test click now.** Clicks once, without changing the schedule.
 - **Schedule test click.** Clicks once in X minutes (e.g. after you disconnect) and reports.
-- **Check picture.** Is the watched picture on screen (or in its area) right now?
+- **Sections:** All tests, Click tests, Watcher tests, each with its own buttons and its own
+  history for this job or all jobs (remembered per section); the history sits right under the
+  buttons.
+- **Check picture.** Is the watched picture on screen (or in its area) right now? Every copy
+  is outlined.
 - **Dry run.** Marks the watched picture, then the button it would click, and says whether it
   would click now. When the picture isn't found, outlines the closest places with how close
   they came. No click.
@@ -247,6 +260,15 @@ All tests hide the whole app while they run, so nothing is in the way.
 - Separate **scheduled clicks** and **screen watchers**, with a filter: All / Scheduled clicks
   / Screen watchers.
 - Add, edit (double-click), duplicate, delete with **undo** (Ctrl+Z), start/stop, pause/resume.
+- **Columns per view:** *Scheduled clicks* shows Clicks at, Schedule, Runs (active hours and
+  limits), Next click, Starts in; *Screen watchers* shows Watching for (disappears/appears,
+  size, area, exact or N % match), Then, Checks (interval, checks in a row, once), Picture
+  (last seen), Next check; *All* shows Type, What it does, Next / last seen, In. All views:
+  Status, Name, Clicks, Last result.
+- **Columns fit their text** automatically (with sensible maximums; no jumping while
+  countdowns run); widths you set yourself are kept.
+- **Adjustable heights:** drag the divider above Activity (visible grip) or use ▲ / ▼
+  (Ctrl+Up / Ctrl+Down); remembered.
 - **Tick boxes** in the job list (click the box, **X**, **Ctrl+A**, or the heading box for all
   shown). A bar for the ticked jobs: **Start, Stop, Pause, Resume, Duplicate, Delete** (one
   Undo restores them all) and **Edit together**.
@@ -352,6 +374,8 @@ All tests hide the whole app while they run, so nothing is in the way.
   contents (like a spreadsheet), in every table. The job list remembers its widths;
   ☰ Menu → Reset column widths.
 - Clear grid with column lines, status icons and colour coding.
+- Buttons that can't be used right now are shown as an **outline without fill**; usable ones
+  are filled.
 - Number fields keep their **units right next to them** (h, m, s, seconds, %), with the same
   spacing everywhere.
 
