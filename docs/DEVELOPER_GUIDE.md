@@ -120,9 +120,11 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
   runtime `base_next, next_run, deadline`
 - Watcher: `watch_png, watch_trigger ("gone"|"appears"), watch_click_picture, watch_area,
   watch_area_screen, watch_interval_s, watch_confirm, watch_random_on, watch_delay_min_s,
-  watch_delay_max_s, watch_cooldown_on, watch_cooldown_s, watch_once`; runtime `next_check,
+  watch_delay_max_s, watch_cooldown_on, watch_cooldown_s, watch_once, watch_match
+  ("exact"|"partial", 4.5.3), watch_partial_pct (40-95, default 75)`; runtime `next_check,
   last_check, last_seen, miss_count, watch_state ("seen"|"missing"|"unknown"), armed,
-  pending_click_at, pending_since, watch_scale, watch_note, found_xy, once_logged`
+  pending_click_at, pending_since, watch_scale, watch_note, found_xy, once_logged,
+  pointer_logged`
 - Rules: `hours_on, hours_from, hours_to, hours_days [0=Mon..6=Sun], hours_outside
   ("wait"|"skip"), limit_clicks_on, limit_clicks, limit_until_on, limit_until
   ("YYYY-MM-DD HH:MM")`; runtime `run_clicks`
@@ -230,6 +232,35 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
   and the Lab colour difference must be ≤ 15 (brightness ≤ 25). Grayscale-only matching once
   counted a red "OFFLINE" badge as the green "CONNECTED" one. At other scales (4.5.1) the
   candidate must also pass `verify_exact`.
+- **Watchers go through `watched_picture(job, report, move_ok)` (4.5.3)**, never
+  `picture_on_screen` directly: it applies the search area, the match mode
+  (`watch_partial(job)`) and the pointer rule, and returns `((found, x, y, score, scale), note,
+  pointer)`. Real cause of a "Picture NOT on screen (best 77%)" report: before 4.5.3 an area
+  drawn as big as (or a few px smaller than) the watched picture left `matchTemplate` no room
+  at scale 1, so only shrunken scales were tried. `search_box()` now pads the area by
+  `max(AREA_PAD_MIN, 25 % of the picture)` and makes it at least picture + padding.
+- **Partial matching** (`partial_fraction`, opt-in per watcher): the region at the candidate
+  (scaled back to the picture's size, ±4 px) is compared in ~24 px tiles (2-10 per side). A
+  detailed tile matches at TM_CCOEFF_NORMED ≥ `PARTIAL_TILE_MIN` (0.85) within ±4 px, a plain
+  tile (σ < 3) when its brightness differs ≤ 12; both must also pass a per-tile Lab check
+  (chroma ≤ 18, lightness ≤ 24). Tiles off the screen don't match. Score = matched / all
+  tiles; found when ≥ `watch_partial_pct`. Candidates use a lower first-stage floor (0.3).
+  Tested in `tests/test_watchers.py` 22-26 (changing number seen, badge gone/red missing,
+  no false positives on unrelated screens).
+- **Mouse pointer (4.5.3).** Hover changes a button's look. `grab_screen(move_cursor=True)`
+  (pointer moved to the virtual-screen corner for 0.3 s) is used for Draw box (watcher) and
+  for re-checks. `watched_picture`: if not found and `pointer_near_watch` (pointer within 30 px
+  of the best candidate, the last-seen box or the search area), re-grab with the pointer
+  moved when `move_ok` (tests, Check now, Dry run; scheduled checks only when
+  `may_move_pointer()`: idle ≥ `POINTER_IDLE_S` (20 s), input thread idle, `HELD` empty);
+  otherwise the scheduled check returns `pointer=True` and `watch_check` doesn't count a miss
+  ("mouse pointer on the picture", logged once via `pointer_logged`). `CURSOR_LOCK` makes
+  `grab_screen(move_cursor=True)` and `do_click` mutually exclusive, so a scheduler-thread
+  re-check can never move the pointer in the middle of a click. `current_pointer()` returns
+  None off Windows (tests patch it).
+- **Draw box (watcher)** captures with the pointer moved aside and, 0.6 s later,
+  `picture_changes()` captures the box again: if > 1 % of its pixels changed by > 24 grey
+  levels, the user is warned (exact mode) that the box contains changing content.
 
 **Windows hiding and coming back (4.5.1)**
 - Never `withdraw()` / `deiconify()` app windows directly for picks and tests. Use
@@ -262,6 +293,32 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
   double-clicks to the tree (`_grid_forward`), because they sit right on the separators.
 - `ui_tick` reschedules itself on the second (`1000 - now_ms % 1000`) so countdowns don't
   skip; `tray_tick` (every 250 ms) changes the tooltip only when its text changes.
+- **Tick boxes (4.5.3).** The job list's first column `chk` shows ☐/☑ (`App.checked`, a set of
+  job ids; UI state only, never saved; pruned in `refresh_tree`). `on_tree_click` toggles on a
+  click in display column `#1` (returns "break" so the selection doesn't move); `on_double`
+  forwards a quick second click there instead of opening the editor; the heading's command is
+  `toggle_check_all`; X and Ctrl+A in the tree. Ticked rows get the `ticked` tag (palette key
+  `tick`). The **batch bar** (`build_batch_bar`, `flow_batch_bar`: placed buttons that wrap
+  onto more rows, nothing hidden) is packed above the paned list while anything is ticked
+  (`update_batch_bar`, from `refresh_tree`). Actions: `batch_action(what)` (start / stop /
+  pause / resume / duplicate; skips jobs where it doesn't apply and logs how many),
+  `batch_delete` → `delete_jobs(jobs)` pushes **one list entry** on `undo_stack` (entries are a
+  `(job, idx, was_on)` tuple or a list of them; `undo_delete` and `show_undo_bar` handle both).
+  **Edit together:** `BatchEditDialog` collects only the rows whose tick box is on and calls
+  `apply_batch_edit(jobs, changes)`: `clean_batch_changes` (whitelist `BATCH_LABELS`, then
+  `sanitize_job` so values are validated like an import), `batch_applies(key, job)`
+  (`BATCH_CLICK_ONLY` keys only for scheduled clicks, `watch_*` only for watchers), fixes a
+  delay range that became inverted, reschedules running click jobs (`schedule_first`) and
+  restarts running watchers (`start_job`) when timing/watch keys changed, keeping `paused`.
+- **Number fields (4.5.3):** every spin box with a unit uses `spin_unit()` (or
+  `padx=(6, UNIT_GAP)`), so units sit `UNIT_GAP` (4 px) after their field everywhere.
+  `JobEditor.hms_row` puts the three h/m/s fields in one frame spanning the grid's columns
+  (they used to be separate grid columns, which other rows widened); an optional `suffix`
+  label follows them.
+- **Tests window layout (4.5.3):** the test buttons and the two groups are gridded when they're
+  created, and `relayout()` runs at 60/250/700 ms. Before, they were only placed from
+  `<Configure>` events of a still-empty frame, which Windows didn't always send, so the
+  buttons stayed invisible until the window was resized.
 - `enable_column_fit(tree, on_change)` (every Treeview): a `ColumnFit` bind tag in front of
   the widget's own tags handles double-clicks on a column separator (fit to contents) and on
   headings, returning `"break"` so the row's double-click action doesn't run. The job list
@@ -404,8 +461,8 @@ pythonw src\clickue.py          rem or double-click scripts\Start Clickue.bat
   `scripts\make_version_file.py` for the exe's version details, then PyInstaller `--onefile
   --noconsole --icon assets\clickue.ico --version-file build\version_info.txt
   --hidden-import pystray._win32`).
-- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.5.1`, run
-  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.5.1.exe`. The installer shows
+- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.5.3`, run
+  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.5.3.exe`. The installer shows
   `installer/before-install.txt` first; its uninstaller removes the HKCU Run value only when it
   points at `{app}`, and deletes `%APPDATA%\Clickue` only if the user says Yes (skipped when
   Clickue's own Uninstall passes `/KEEPDATA`).
@@ -419,8 +476,8 @@ Run from the repository root.
 
 | Command | What | Expected |
 |---|---|---|
-| `python tests/test_watchers.py` | watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries) | `RESULT 21/21` |
-| `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id, guide link + pictures | `RESULT 55/55` |
+| `python tests/test_watchers.py` | watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries), 4.5.3: search-area margin, partial matching, pointer on the picture, import of the match fields | `RESULT 34/34` |
+| `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id, guide link + pictures, 4.5.3 batch actions / delete + undo / Edit together | `RESULT 71/71` |
 | `python tests/test_click_spot.py` | click-spot matching at 3 picture sizes × 8 screens (100–175 % scaling, moved, look-alikes), with exact matching and with tolerant matching | `0 of 48` failures |
 | `python tests/test_workflows.py` | 4.5: alert hardening (hosts, redirects, rate limit, redaction), secrets out of backups/exports, DPAPI flow (simulated), import validation, data-folder safety, variables, blocks, if/repeat/retries/groups/limits/cancel/pause, held-input release, dry run, the input queue (order, watchers keep checking, yielding, emergency stop), conflicts, recorder compression, paste/clipboard flow, video (lifecycle, no codec, disk full, capture failure, redaction), run history + video positions, failure screenshots, schema migration, adapters | `RESULT N/N` |
 | `python tests/check_release.py` | docs links/anchors/pictures, version = changelog, disclosure placement, planned features marked planned, no secrets or private details in public files, workflow least privilege + pinned actions, uninstall boundaries | `RESULT N/N` |
@@ -469,6 +526,14 @@ Run from the repository root.
      Esc and Cancel during Pick on screen; marker time 2 s; hover the tray icon (status,
      no old name) and right-click → Job status; double-click a job-list column border;
      the exe's Properties → Details shows Clickue 4.5.1.
+   - 4.5.3: open 🧪 Tests (also right after starting Clickue): all six test buttons show
+     without resizing; a watcher with a search area drawn tightly around its picture is
+     *seen*; rest the mouse on a watched button → Check now says *checked again with the mouse
+     pointer moved aside* and finds it; a watcher whose box includes a changing value warns
+     after Draw box and, with *part of the picture is enough*, stays *Watching*; tick three
+     jobs → Pause / Resume / Stop / Delete + one Undo; Edit together → change Check every on
+     two watchers; the h/m/s units sit next to their fields in both editors at 100 % and
+     125–150 % scaling; ☐/☑ show in the first column.
 
 ## 10. GitHub: repository, CI and releases
 

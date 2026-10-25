@@ -106,6 +106,10 @@ security checks. See [Responsible use & warnings](#%EF%B8%8F-responsible-use--wa
   with your Windows account and is never exported.
 - 👁️ **Screen watchers.** Click (or run steps) when a picture appears or disappears. Search
   the whole screen or just an area, with flicker protection and "click once until it changes back".
+  Match the exact picture, or let **part of the picture** be enough when something inside the
+  box changes.
+- ☑️ **Batch actions.** Tick jobs in the list to start, stop, pause, resume, duplicate or
+  delete them together, or **Edit together** to change the same settings on all of them.
 - 🎯 **Only the exact picture.** By default a similar-looking button is never clicked, even when
   the one you picked is scrolled out of view. Show spot can outline every similar picture so
   you can see what Clickue sees.

@@ -77,14 +77,24 @@ Everything below is available in Clickue 4.5 unless it's under
 ## Screen watchers
 
 - **Draw box around picture.** The screen freezes and dims, and you drag a box around what to
-  watch (shows the size while dragging).
+  watch (shows the size while dragging). Saved at **full screen resolution**, lossless, with
+  the mouse pointer moved aside so hover highlights aren't saved. Clickue looks again a moment
+  later and **warns if part of the box changes** (a number, a clock, an animation).
 - Click **when the picture disappears** or **when it appears**.
 - For "appears": optionally **click the picture itself** where it was found, instead of a
   separate button.
 - Search **the whole screen** or **only an area** you draw (faster, ignores look-alikes
-  elsewhere, scales with the screen size).
-- Strict matching: shape, close-up detail and colour must all agree. A same-shaped badge in a
-  different colour, or with changed text, counts as changed.
+  elsewhere, scales with the screen size). The area is searched **with a small margin**, so a
+  picture at its edge, or an area drawn tightly around the picture, still counts.
+- **Match the exact picture** (default, strict): shape, close-up detail and colour must all
+  agree. A same-shaped badge in a different colour, or with changed text, counts as changed.
+- Or **part of the picture is enough: N %** (40–95 %, default 75 %): the picture is compared
+  tile by tile (colour included) and counts as showing when at least N % of it matches, so a
+  changing value inside the box doesn't make it "gone". Results show *82 % of it matches*.
+- **Mouse pointer on the picture:** hovering can change how a button looks, so tests re-check
+  with the pointer moved aside, and a running watcher doesn't count the picture as missing
+  while you rest the pointer on it (it re-checks with the pointer moved aside once the
+  computer has been idle for 20 s).
 - **Check every** N seconds (any interval).
 - **Flicker protection.** Click only after the change is seen N checks in a row (quick
   re-checks every 5 s).
@@ -207,7 +217,8 @@ All tests hide the whole app while they run, so nothing is in the way.
 - **Schedule test click.** Clicks once in X minutes (e.g. after you disconnect) and reports.
 - **Check picture.** Is the watched picture on screen (or in its area) right now?
 - **Dry run.** Marks the watched picture, then the button it would click, and says whether it
-  would click now. No click.
+  would click now. When the picture isn't found, outlines the closest places with how close
+  they came. No click.
 - **Schedule watcher test.** Runs the watcher check later in the background; optionally
   really clicks.
 - **Dry run of steps** (job editor, right-click menu): checks every step's target and condition
@@ -236,6 +247,16 @@ All tests hide the whole app while they run, so nothing is in the way.
 - Separate **scheduled clicks** and **screen watchers**, with a filter: All / Scheduled clicks
   / Screen watchers.
 - Add, edit (double-click), duplicate, delete with **undo** (Ctrl+Z), start/stop, pause/resume.
+- **Tick boxes** in the job list (click the box, **X**, **Ctrl+A**, or the heading box for all
+  shown). A bar for the ticked jobs: **Start, Stop, Pause, Resume, Duplicate, Delete** (one
+  Undo restores them all) and **Edit together**.
+- **Edit together (batch edit):** set the same settings on all ticked jobs, ticking only the
+  settings to change: mouse button, single/double, priority, exact click-spot picture, picture
+  fallback, active hours, run time limit, bring to front, let others run, video, failure
+  screenshot; for scheduled clicks the interval and random delay; for watchers the check
+  interval, checks in a row, random delay, wait after clicking, click only once and the match
+  mode. Settings that don't fit a kind of job are skipped; values are validated; running jobs
+  pick up new timing, paused jobs stay paused.
 - Right-click any job for every action.
 - **Import / export** jobs (and the step groups they use) to a file. Imports are checked and
   cleaned (size and version limits, field types and ranges, pictures, steps), report what was
@@ -331,6 +352,8 @@ All tests hide the whole app while they run, so nothing is in the way.
   contents (like a spreadsheet), in every table. The job list remembers its widths;
   ☰ Menu → Reset column widths.
 - Clear grid with column lines, status icons and colour coding.
+- Number fields keep their **units right next to them** (h, m, s, seconds, %), with the same
+  spacing everywhere.
 
 ## Install options
 

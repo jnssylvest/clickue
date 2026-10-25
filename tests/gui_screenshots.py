@@ -126,5 +126,10 @@ dw.show_result("1", "Wait", True, "waited"); dw.show_result("2", "Type text", Tr
 pump(300); shot(dw, "19_step_through"); dw.destroy()
 app.queue_status = lambda: ("Running “Daily login” · step 3 of 8 · 42s", ["Reconnect"])
 app.update_run_bar(); pump(500); shot(root, "20_main_running")
+# ---- 4.5.3: tick boxes + batch bar, edit together, watcher match option
+app.set_checks([c["id"], w["id"]]); pump(500); shot(root, "21_main_ticked")
+be = ac.BatchEditDialog(app, app.checked_jobs()); pump(500)
+be.geometry("760x900+20+0"); pump(300); shot(be, "22_edit_together"); be.destroy()
+app.set_checks([])
 app.stop.set(); root.destroy()
 print("done")

@@ -283,7 +283,7 @@ def add_watcher():
         cv = widgets(ov[-1], tk.Canvas)[0]
         cv.event_generate("<ButtonPress-1>", x=100, y=100); pump(30)
         cv.event_generate("<B1-Motion>", x=200, y=160); pump(60)
-        cv.event_generate("<ButtonRelease-1>", x=220, y=170); pump(500)
+        cv.event_generate("<ButtonRelease-1>", x=220, y=170); pump(1500)
     ok("Draw box saves a picture", bool(ed.watch_png))
     ok("Watcher editor comes back after drawing", ed.winfo_exists() and ed.winfo_viewable())
     btn(ed, "Check now").invoke(); pump(1500)
@@ -740,9 +740,9 @@ def t_fixes_451():
     # column auto-fit on the job list
     t = app.tree
     cols = ac._display_cols(t)
-    c0 = cols[0]
+    c0 = cols[1]                      # cols[0] is the tick-box column (4.5.3)
     t.column(c0, width=40); pump(100)
-    x = int(t.column(c0, "width"))
+    x = int(t.column(cols[0], "width")) + int(t.column(c0, "width"))
     ev = type("E", (), {"widget": t, "x": x + 1, "y": 8})()
     region = t.identify_region(ev.x, ev.y)
     r = ac._autofit_double(ev); pump(100)
@@ -789,13 +789,106 @@ def t_fixes_451():
         btn(sd, "Cancel").invoke(); pump(100)
 
 
+def t_fixes_453():
+    # Tests window: the test buttons are visible as soon as it opens (no resize needed)
+    if app.tests_win is not None:
+        try:
+            app.tests_win.close(); pump(200)
+        except Exception:
+            pass
+    app.settings["tests_split"] = 0
+    w = next(j for j in app.jobs if is_watch_job(j))
+    app.tree.selection_set(w["id"]); pump(50)
+    app.open_tests(); pump(350)
+    tw = app.tests_win
+    vis = [b for b in tw.btns_any + tw.btns_watch if b.winfo_ismapped() and b.winfo_height() > 5]
+    ok("4.5.3 Tests window: all six test buttons visible right after opening", len(vis) == 6, len(vis))
+    tw.geometry("420x600"); pump(500)
+    vis = [b for b in tw.btns_any + tw.btns_watch if b.winfo_ismapped()]
+    ok("4.5.3 Tests window: buttons still visible when narrow", len(vis) == 6, len(vis))
+    tw.close(); pump(200)
+    # h / m / s units sit right next to their fields, the same everywhere
+    app.tree.selection_set(w["id"]); app.edit_job(); pump(400)
+    ed = find_dialog(ac.JobEditor)
+    gaps = []
+    for vs in (ed.w_interval, ed.w_dmin, ed.w_cool):
+        ws = ed._row_widgets[id(vs)]
+        for sp, ul in ((ws[1], ws[2]), (ws[3], ws[4]), (ws[5], ws[6])):
+            gaps.append(ul.winfo_rootx() - (sp.winfo_rootx() + sp.winfo_width()))
+    ok("4.5.3 h/m/s units right next to their fields (same gap everywhere)",
+       gaps and max(gaps) <= 8 and min(gaps) >= 0 and len(set(gaps)) == 1, gaps)
+    # watcher match option
+    ed.v_wpartial.set(True); ed.match_changed(); ed.v_wpct.set(70); pump(50)
+    ok("4.5.3 partial match: percent field enabled", "disabled" not in ed.wpct_spin.state())
+    btn(ed, "Save").invoke(); pump(300)
+    ok("4.5.3 watcher saves the match mode", w["watch_match"] == "partial" and w["watch_partial_pct"] == 70,
+       (w.get("watch_match"), w.get("watch_partial_pct")))
+    # tick boxes in the job list
+    app.v_filter.set("all"); app.filter_changed(); pump(100)
+    t = app.tree
+    ids = [i for i in t.get_children() if ":" not in i]
+    app.set_checks([]); pump(50)
+    t.see(ids[0]); pump(50)
+    bb = t.bbox(ids[0], "chk")
+    t.event_generate("<Button-1>", x=bb[0] + bb[2] // 2, y=bb[1] + bb[3] // 2); pump(100)
+    ok("4.5.3 clicking the tick box ticks the job", ids[0] in app.checked and t.set(ids[0], "chk") == "☑",
+       (app.checked, t.set(ids[0], "chk")))
+    ok("4.5.3 batch bar appears", app.batch_bar.winfo_ismapped())
+    vis = [b for b in app.batch_items if b.winfo_ismapped()]
+    ok("4.5.3 batch bar: nothing cut off", all(b.winfo_x() + b.winfo_width() <= app.batch_bar.winfo_width()
+                                                 for b in vis) and len(vis) == len(app.batch_items))
+    root.geometry("700x650"); pump(300)
+    vis = [b for b in app.batch_items if b.winfo_ismapped()]
+    ok("4.5.3 batch bar wraps when narrow (nothing cut off)",
+       all(b.winfo_x() + b.winfo_width() <= app.batch_bar.winfo_width() for b in vis) and len(vis) == len(app.batch_items))
+    root.geometry("1280x800"); pump(300)
+    t.event_generate("<Button-1>", x=bb[0] + bb[2] // 2, y=bb[1] + bb[3] // 2); pump(100)
+    ok("4.5.3 clicking again unticks", ids[0] not in app.checked and not app.batch_bar.winfo_ismapped())
+    app.toggle_check_all(); pump(100)
+    ok("4.5.3 heading tick box ticks every job shown", set(ids) <= app.checked)
+    jobs = app.checked_jobs()
+    app.batch_action("start"); pump(100)
+    ok("4.5.3 batch start", all(j["enabled"] for j in jobs))
+    app.batch_action("pause"); pump(100)
+    ok("4.5.3 batch pause", all(j["paused"] for j in jobs))
+    app.batch_action("resume"); pump(100)
+    app.batch_action("stop"); pump(100)
+    ok("4.5.3 batch resume + stop", all(not j["enabled"] and not j["paused"] for j in jobs))
+    # edit together
+    btn(app.batch_bar, "Edit together").invoke(); pump(500)
+    be = find_dialog(ac.BatchEditDialog)
+    ok("4.5.3 Edit together opens", be is not None)
+    if be:
+        check_comboboxes(be, "Batch edit")
+        check_spinboxes(be, "Batch edit")
+        flag, ws, getter = be.rows[0]                      # mouse button
+        flag.set(True); be._enable(ws, True)
+        ws[0].set("middle")
+        ok("4.5.3 batch edit: untouched rows stay disabled", all("disabled" in x.state() for x in be.rows[1][1]))
+        btn(be, "Apply to all").invoke(); pump(300)
+        ok("4.5.3 batch edit applies to every ticked job", all(j["button"] == "middle" for j in jobs),
+           [j["button"] for j in jobs])
+    # delete ticked + one undo
+    n0 = len(app.jobs)
+    app.batch_delete(); pump(200)
+    ok("4.5.3 batch delete", len(app.jobs) == n0 - len(jobs) and app.undo_bar.winfo_ismapped())
+    app.undo_delete(); pump(200)
+    ok("4.5.3 one undo restores every deleted job", len(app.jobs) == n0)
+    app.set_checks([]); pump(100)
+    ok("4.5.3 clear hides the batch bar", not app.batch_bar.winfo_ismapped())
+
+
+def is_watch_job(j):
+    return j.get("kind") == "watch"
+
+
 for name, fn in (("main", t_main), ("add click", add_click_job), ("edit/rows", t_edit_and_rows),
                  ("watcher", add_watcher), ("settings", t_settings), ("menu/dialogs", t_menu_and_dialogs),
                  ("steps/hours", t_steps_and_hours), ("watcher extras", t_watcher_extras),
                  ("tests window", t_tests_window),
                  ("test dialog", t_test_dialog_from_main), ("export/import", t_export_import),
                  ("geometry", t_remember_geometry), ("workflows 4.5", t_workflows_45),
-                 ("fixes 4.5.1", t_fixes_451)):
+                 ("fixes 4.5.1", t_fixes_451), ("fixes 4.5.3", t_fixes_453)):
     step(name, fn)
     pump(200)
 

@@ -1,4 +1,4 @@
-"""Screen-watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries). Expect: RESULT 21/21"""
+"""Screen-watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries). Expect: RESULT 34/34"""
 import os
 exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_helpers.py")).read())
 import time, threading, queue, tempfile, random
@@ -61,4 +61,54 @@ show(scene(1.25)[0]); w["watch_scale"]=None; t=time.time(); check(); t2=time.tim
 print(f"check time: same size {t1:.2f}s; new size first time {t2:.2f}s, after that {t3:.2f}s")
 A.v_filter=type("V",(),{"get":lambda s:"all"})()
 print("grid row:", A.build_rows(time.time())[0][1][:7])
+
+# ---- 4.5.3: search-area margin, partial matching, mouse pointer on the picture
+def ticker(price="123.45", badge="ok", W=1920, H=1080):
+    img,_=draw_app(1.0,W,H,200,150); dd=ImageDraw.Draw(img)
+    bx,by=720,530
+    dd.rectangle((bx-10,by-10,bx+330,by+40),fill=(250,250,250),outline=(180,180,180))
+    if badge=="ok": dd.rounded_rectangle((bx,by,bx+160,by+30),radius=6,fill=(22,163,74)); dd.text((bx+12,by+6),"● CONNECTED",fill="white",font=F(13))
+    if badge=="red": dd.rounded_rectangle((bx,by,bx+160,by+30),radius=6,fill=(200,40,40)); dd.text((bx+12,by+6),"✖ OFFLINE",fill="white",font=F(13))
+    if badge=="hover": dd.rounded_rectangle((bx,by,bx+160,by+30),radius=6,fill=(225,245,230),outline=(22,163,74)); dd.text((bx+12,by+6),"● CONNECTED",fill=(22,163,74),font=F(13))
+    dd.text((bx+175,by+6),price,fill=(20,20,20),font=F(14))
+    return img,(bx-6,by-6,bx+326,by+36)
+im0,box=ticker(); pic=im0.crop(box)
+w2=ac.new_watch(2); w2.update(watch_png=ac.img_to_b64(pic),use_image=False,x=5,y=5,watch_delay_min_s=0,watch_delay_max_s=0,watch_random_on=False)
+A.jobs.append(w2); A.start_job(w2)
+def check2(): w2["next_check"]=0; w2["miss_count"]=0; A.watch_check(w2)
+show(im0); check2(); expect("19 ticker box visible (exact) -> seen", w2["watch_state"]=="seen", w2["watch_note"])
+w2["watch_area"]=[box[0],box[1],box[2]-box[0],box[3]-box[1]]; w2["watch_area_screen"]=None
+check2(); expect("20 search area drawn exactly around the picture -> still seen (margin)", w2["watch_state"]=="seen", w2["watch_note"])
+w2["watch_area"]=[box[0]+6,box[1]+4,box[2]-box[0]-12,box[3]-box[1]-8]
+check2(); expect("21 search area slightly smaller than the picture -> still seen", w2["watch_state"]=="seen", w2["watch_note"])
+show(ticker("98.10")[0]); check2(); expect("22 number inside the box changed, exact -> missing", w2["watch_state"]=="missing", w2["watch_note"])
+w2["watch_match"]="partial"; w2["watch_partial_pct"]=75
+check2(); expect("23 number changed, partial 75% -> seen", w2["watch_state"]=="seen", w2["watch_note"])
+show(ticker("98.10","gone")[0]); check2(); expect("24 badge gone, partial -> missing", w2["watch_state"]=="missing", w2["watch_note"])
+show(ticker("123.45","red")[0]); check2(); expect("25 badge turned red, partial -> missing", w2["watch_state"]=="missing", w2["watch_note"])
+fp2=0
+for seed in range(6):
+    rnd=random.Random(100+seed); im=Image.new("RGB",(1920,1080),(32,34,38)); dd=ImageDraw.Draw(im)
+    for k in range(5):
+        x0,y0=rnd.randint(0,1400),rnd.randint(0,700); dd.rectangle((x0,y0,x0+500,y0+350),fill=(240,240,240))
+        bx,by=x0+rnd.randint(10,300),y0+rnd.randint(40,300)
+        dd.rounded_rectangle((bx,by,bx+160,by+30),radius=6,fill=rnd.choice([(200,40,40),(40,90,200)])); dd.text((bx+12,by+6),rnd.choice(["● ONLINE","✖ ERROR"]),fill="white",font=F(13))
+    show(im); check2(); fp2+=w2["watch_state"]=="seen"
+expect("26 partial: unrelated screens never 'seen'", fp2==0, f"{fp2}/6")
+w2["watch_match"]="exact"; w2["watch_area"]=None
+# mouse pointer resting on the picture: hover look while the pointer is there
+hov=ticker(badge="hover")[0]; plain=im0
+ac.grab_screen=lambda move_cursor=True:((plain if move_cursor else hov),(0,0))
+ac.current_pointer=lambda:(box[0]+40,box[1]+20)
+ac.idle_seconds=lambda:0
+check2(); expect("27 pointer on the picture, user active -> not counted as gone", w2["watch_state"]=="unknown" and "pointer" in w2["watch_note"], w2["watch_note"])
+ac.idle_seconds=lambda:100
+check2(); expect("28 pointer on the picture, computer idle -> re-checked without hover -> seen", w2["watch_state"]=="seen", w2["watch_note"])
+r=A.watcher_dry_run(dict(w2, main_click=False))
+expect("29 dry run re-checks with the pointer moved aside", r["picture"][0] and "moved aside" in r["note"], r["note"])
+ac.current_pointer=lambda:(10,1000)
+check2(); expect("30 pointer elsewhere, hover look not involved -> normal check", w2["watch_state"]=="missing", w2["watch_note"])
+ac.current_pointer=lambda:None; ac.idle_seconds=lambda:100
+j3=ac.sanitize_job(dict(ac.new_watch(3), watch_match="fuzzy", watch_partial_pct=3))[0]
+expect("31 import: bad match mode/percent cleaned", j3["watch_match"]=="exact" and j3["watch_partial_pct"]==ac.PARTIAL_MIN_PCT, (j3["watch_match"], j3["watch_partial_pct"]))
 print(f"RESULT {sum(res)}/{len(res)}")

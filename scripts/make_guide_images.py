@@ -307,9 +307,10 @@ def main_window_layout():
     gy = ry0 + 34
     gw = w - 32
     p.rect(L, gy, L + gw, gy + 112, fill=WIN, outline=LINE, r=4)
-    cols = (("Status", 0), ("Name", 92), ("Target", 210), ("Schedule", 330), ("Next click", 450),
-            ("Starts in", 545), ("Clicks", 620))
+    cols = (("Status", 26), ("Name", 112), ("Target", 222), ("Schedule", 338),
+            ("Next click", 458), ("Starts in", 550), ("Clicks", 626))
     p.rect(L + 1, gy + 1, L + gw - 1, gy + 24, fill=SOFT)
+    tickbox(p, L + 7, gy + 6)
     for c, cx in cols:
         p.text(L + 8 + cx, gy + 12, c, 10, "bold", fill=MUTED, anchor="lm")
     rows = ((GREEN, "Running", "Refresh report", "picture", "every 8h +10s–15m", "16:04:12",
@@ -320,11 +321,12 @@ def main_window_layout():
     for i, r in enumerate(rows):
         ry = gy + 24 + i * 29
         p.line([(L, ry), (L + gw, ry)], LINE, 1)
-        p.circle(L + 14, ry + 14, 4, fill=r[0])
-        p.text(L + 24, ry + 14, r[1], 10, "medium", fill=r[0], anchor="lm")
+        tickbox(p, L + 7, ry + 8)
+        p.circle(L + 40, ry + 14, 4, fill=r[0])
+        p.text(L + 50, ry + 14, r[1], 10, "medium", fill=r[0], anchor="lm")
         for (c, cx), val in zip(cols[1:], r[2:]):
             p.text(L + 8 + cx, ry + 14, val, 10, anchor="lm")
-    for c, cx in cols[1:]:
+    for c, cx in cols:
         p.line([(L + cx, gy), (L + cx, gy + 112)], "#e5e7eb", 1)
     # 6 activity
     ay = gy + 124
@@ -351,7 +353,8 @@ def main_window_layout():
              (3, ty + 12, "Toolbar (overflow: More)"),
              (4, fy + 4, "Filter: all, clicks or watchers"),
              (5, ry0 + 16, "While a job runs: what's running and who's waiting"),
-             (6, gy + 56, "Job list. Double-click to edit, right-click for everything"),
+             (6, gy + 56, "Job list. Tick boxes for batch actions; double-click to edit, "
+                          "right-click for everything"),
              (7, ay + 50, "Activity: a live log, filterable"),
              (8, y0 + h - 18, "Status bar, with the emergency-stop hotkey"))
     for n, yy, t in notes:
@@ -359,6 +362,108 @@ def main_window_layout():
         p.line([(x0 + w - 4, yy), (x0 + w + 10, yy)], ACCENT, 1.5)
         p.para(x0 + w + 40, yy - 9, t, 11, 30)
     p.save("main-window.png")
+
+
+def tickbox(p, x, y, on=False, size=13):
+    p.rect(x, y, x + size, y + size, fill=ACCENT if on else WIN, outline=ACCENT if on else MUTED,
+           r=3)
+    if on:
+        p.line([(x + 3, y + size / 2), (x + size * 0.42, y + size - 3.5), (x + size - 3, y + 3)],
+               "#ffffff", 2)
+
+
+def batch_actions():
+    p = Pic(980, 470, "Tick boxes and batch actions",
+            "Tick jobs, then act on all of them at once, or Edit together.")
+    x0, y0, w = 32, 82, 600
+    window(p, x0, y0, w, 360, "Clickue")
+    L = x0 + 16
+    # batch bar
+    by = y0 + 46
+    p.rect(L, by, L + w - 32, by + 34, fill=WIN, outline=LINE, r=4)
+    p.text(L + 10, by + 17, "3 jobs ticked", 10, "bold", fill=MUTED, anchor="lm")
+    x = L + 100
+    for lbl in ("Start", "Stop", "Pause", "Resume", "Edit together…", "Delete…", "Clear"):
+        bb = button(p, x, by + 6, lbl, "primary" if lbl.startswith("Edit") else "secondary",
+                    size=9, h=22, pad=7)
+        x = bb[2] + 4
+    # list
+    gy = by + 46
+    gw = w - 32
+    p.rect(L, gy, L + gw, gy + 24 + 5 * 29, fill=WIN, outline=LINE, r=4)
+    p.rect(L + 1, gy + 1, L + gw - 1, gy + 24, fill=SOFT)
+    tickbox(p, L + 7, gy + 6)
+    for c, cx in (("Status", 26), ("Name", 120), ("Schedule", 300)):
+        p.text(L + 8 + cx, gy + 12, c, 10, "bold", fill=MUTED, anchor="lm")
+    rows = ((True, GREEN, "Watching", "Status badge A", "check every 10s"),
+            (True, GREEN, "Watching", "Status badge B", "check every 10s"),
+            (False, GREEN, "Running", "Morning report", "every 24h"),
+            (True, AMBER, "Paused", "Session prompt", "check every 10s"),
+            (False, MUTED, "Stopped", "Weekly export", "every 7d"))
+    for i, (on, col, st, name, sched) in enumerate(rows):
+        ry = gy + 24 + i * 29
+        if on:
+            p.rect(L + 1, ry, L + gw - 1, ry + 29, fill="#e8f0fe")
+        p.line([(L, ry), (L + gw, ry)], LINE, 1)
+        tickbox(p, L + 7, ry + 8, on)
+        p.circle(L + 40, ry + 14, 4, fill=col)
+        p.text(L + 50, ry + 14, st, 10, "medium", fill=col, anchor="lm")
+        p.text(L + 128, ry + 14, name, 10, anchor="lm")
+        p.text(L + 308, ry + 14, sched, 10, anchor="lm")
+    cursor(p, L + 12, gy + 24 + 3 * 29 + 12)
+    # edit together panel
+    ex, ey = 660, 82
+    window(p, ex, ey, 290, 250, "Edit 3 jobs")
+    rows2 = ((True, "Check every", "0 h  0 m  30 s"), (False, "Act after", "2  checks in a row"),
+             (False, "Random delay", "off"), (True, "Match", "part is enough: 75 %"),
+             (False, "Mouse button", "left"))
+    for i, (on, lbl, val) in enumerate(rows2):
+        yy = ey + 46 + i * 30
+        tickbox(p, ex + 14, yy, on)
+        p.text(ex + 34, yy + 7, lbl, 10, "medium", anchor="lm")
+        p.text(ex + 140, yy + 7, val, 10, fill=FG if on else MUTED, anchor="lm")
+    button(p, ex + 290 - 104, ey + 250 - 40, "Apply to all", "primary", size=10, h=26, pad=10)
+    p.arrow(L + w - 32, by + 17, ex - 4, by + 17, ACCENT)
+    p.text(32, 452, "Only the settings you tick are changed. One Undo restores everything a "
+                    "batch delete removed.", 12, fill=MUTED)
+    p.save("batch-actions.png")
+
+
+def partial_matching():
+    p = Pic(980, 420, "Exact or partial matching",
+            "The box includes a time that changes. Exact: gone. Part of it is enough: found.")
+    # saved picture
+    def panel(x, y, t, changed=False):
+        p.rect(x, y, x + 250, y + 56, fill=WIN, outline=LINE, r=6)
+        if changed:                          # the tiles Clickue compares, changed ones in red
+            for k in range(10):
+                for r_ in range(2):
+                    tx, ty = x + 1 + k * 24.8, y + 1 + r_ * 27
+                    p.rect(tx + 1, ty + 1, tx + 23.8, ty + 26,
+                           fill=TINT[RED] if k == 8 else None,
+                           outline=RED if k == 8 else "#e5e7eb", width=2 if k == 8 else 1)
+        badge(p, x + 12, y + 16, "Connected", GREEN)
+        p.text(x + 132, y + 28, t, 11, "medium", fill=MUTED, anchor="lm")
+    p.text(40, 96, "Saved picture", 13, "bold")
+    panel(40, 118, "updated 14:32")
+    p.text(360, 96, "On screen a minute later", 13, "bold")
+    panel(360, 118, "updated 14:33", changed=True)
+    p.text(360, 186, "Grey tiles match, red tiles differ: the time changed.", 11, fill=MUTED)
+    # verdicts
+    y = 230
+    p.rect(40, y, 470, y + 120, fill=TINT[RED], r=8)
+    p.text(56, y + 16, "Match: the exact picture", 13, "bold")
+    p.para(56, y + 42, "Shape, detail and colour of the whole box must match. The changed time "
+                       "makes it \u201cPicture NOT on screen (best 77%)\u201d, so a gone-watcher would "
+                       "click.", 11, 52)
+    p.rect(500, y, 940, y + 120, fill=TINT[GREEN], r=8)
+    p.text(516, y + 16, "Match: part of the picture is enough: 75 %", 13, "bold")
+    p.para(516, y + 42, "Each small tile is compared on its own. 18 of 20 tiles (90 %) match, so it "
+                        "counts as showing. If the badge itself disappears, far less matches and "
+                        "the watcher clicks.", 11, 52)
+    p.text(40, 380, "Best fix when possible: draw the box around the badge only and keep exact "
+                    "matching.", 12, fill=MUTED)
+    p.save("partial-matching.png")
 
 
 def good_and_bad_spots():
@@ -1295,5 +1400,5 @@ if __name__ == "__main__":
                flicker_protection, click_once, click_chain, multi_step_search, show_spot,
                remote_sessions, phone_alert, record_macro, type_vs_paste, conditional_workflow,
                step_through, taking_turns, run_history, exact_matching, similar_outlines,
-               pick_cancel, tray_status):
+               pick_cancel, tray_status, batch_actions, partial_matching):
         fn()

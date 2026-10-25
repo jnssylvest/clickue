@@ -1,4 +1,4 @@
-"""Clickue 4 features: hours, limits, steps, appears/area, history, backups, undo, alerts, migration. Expect: RESULT 55/55"""
+"""Clickue 4 features: hours, limits, steps, appears/area, history, backups, undo, alerts, migration. Expect: RESULT 71/71"""
 import os
 exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_helpers.py")).read())
 import time, threading, queue, tempfile, json, os
@@ -263,4 +263,46 @@ import re
 missing = [m for m in re.findall(r"\]\((images/[^)]+)\)", guide)
            if not os.path.isfile(os.path.join(repo, "docs", m))]
 ok("guide: every example picture exists", not missing and "images/guide/" in guide, missing)
+
+# ---- 4.5.3: tick boxes and batch actions (start / stop / pause / resume / delete / edit)
+A.checked = set(); A.show_undo_bar = lambda: None
+c1, c2 = ac.new_job(1), ac.new_job(2)
+for c in (c1, c2):
+    c.update(x=5, y=5, use_image=False, interval_s=600, random_on=False)
+w1 = ac.new_watch(1); w1["watch_png"] = "x"
+A.jobs = [c1, c2, w1]
+A.checked = {c1["id"], w1["id"]}
+ok("batch: ticked jobs are the ones in the list", [j["id"] for j in A.checked_jobs()] == [c1["id"], w1["id"]])
+n = A.batch_action("start")
+ok("batch: start starts every ticked job (only those)", n == 2 and c1["enabled"] and w1["enabled"] and not c2["enabled"])
+n = A.batch_action("pause")
+ok("batch: pause keeps them enabled, paused", n == 2 and c1["paused"] and w1["paused"] and c1["next_run"])
+n = A.batch_action("pause")
+ok("batch: pausing again skips them", n == 0)
+n = A.batch_action("resume")
+ok("batch: resume", n == 2 and not c1["paused"] and not w1["paused"])
+rep = A.apply_batch_edit(A.checked_jobs(), {"button": "right", "interval_s": 120, "watch_interval_s": 7,
+                                            "watch_match": "partial", "watch_partial_pct": 80, "bogus": 1})
+ok("batch edit: common setting applies to both kinds", c1["button"] == "right" and w1["button"] == "right", rep)
+ok("batch edit: click-only and watcher-only settings go to the right kind",
+   c1["interval_s"] == 120 and w1["interval_s"] == ac.new_job()["interval_s"] and w1["watch_interval_s"] == 7
+   and "watch_interval_s" not in rep.get(c1["name"], []), rep)
+ok("batch edit: running click job rescheduled with the new interval", c1["next_run"] and c1["next_run"] - time.time() <= 121)
+ok("batch edit: watcher match mode set, unknown keys dropped", w1["watch_match"] == "partial" and w1["watch_partial_pct"] == 80 and "bogus" not in w1)
+A.batch_action("pause"); A.apply_batch_edit([w1], {"watch_interval_s": 9})
+ok("batch edit: a paused watcher stays paused", w1["paused"] and w1["watch_interval_s"] == 9)
+A.apply_batch_edit([c1, c2], {"delay_min_s": 1200, "random_on": True})
+ok("batch edit: delay 'from' above a job's 'to' -> 'to' raised to match", c2["delay_max_s"] == c2["delay_min_s"] == 1200)
+A.apply_batch_edit([c1], {"interval_s": -5, "priority": "urgent", "hours_from": "99:99"})
+ok("batch edit: values validated like an import", c1["interval_s"] >= 1 and c1["priority"] in ("high", "normal", "low") and c1["hours_from"] == "08:00", (c1["interval_s"], c1["priority"], c1["hours_from"]))
+n = A.batch_action("duplicate")
+ok("batch: duplicate makes stopped copies and ticks them", n == 2 and len(A.jobs) == 5 and len(A.checked) == 2
+   and all(not j["enabled"] for j in A.checked_jobs()))
+A.checked = {c1["id"], c2["id"], w1["id"]}
+n = A.delete_jobs(A.checked_jobs())
+ok("batch: delete removes all ticked jobs", n == 3 and len(A.jobs) == 2 and not A.checked)
+A.undo_delete()
+ok("batch: one undo brings them all back, in place, running again", [j["id"] for j in A.jobs[:3]] == [c1["id"], c2["id"], w1["id"]] and c1["enabled"] and w1["enabled"])
+A.checked = {c1["id"]}; A.batch_action("stop")
+ok("batch: stop", not c1["enabled"])
 print(f"\nRESULT {sum(R)}/{len(R)}")

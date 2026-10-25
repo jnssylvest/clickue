@@ -11,7 +11,7 @@
 
 This guide explains **every feature** of Clickue, with real-world scenarios and example
 pictures. Read it from top to bottom to learn everything, or jump to the part you need.
-In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.5.2.
+In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.5.3.
 
 > [!NOTE]
 > The example pictures show an invented "Example App" so the ideas are easy to see. Your own
@@ -28,7 +28,7 @@ In the app, open it from **☰ Menu → Complete guide (online)**. It describes 
 
 4. [Choosing where to click](#4-choosing-where-to-click)
 5. [Scheduled clicks](#5-scheduled-clicks)
-6. [Screen watchers](#6-screen-watchers)
+6. [Screen watchers](#6-screen-watchers): exact or partial matching, search areas
 7. [When a job may run: active hours and limits](#7-when-a-job-may-run-active-hours-and-limits)
 8. [Steps and workflows](#8-steps-and-workflows): step types, Type or Paste, variables, If, Repeat, step groups
 9. [Recording a macro](#9-recording-a-macro)
@@ -42,7 +42,7 @@ In the app, open it from **☰ Menu → Complete guide (online)**. It describes 
 
 **Looking after your jobs**
 
-14. [Managing jobs](#14-managing-jobs)
+14. [Managing jobs](#14-managing-jobs): tick boxes, batch actions, Edit together
 15. [History, run history, stats and logs](#15-history-run-history-stats-and-logs)
 16. [Screen video of runs](#16-screen-video-of-runs)
 17. [Backups and your data](#17-backups-and-your-data)
@@ -124,7 +124,7 @@ From the [Releases page](https://github.com/jnssylvest/clickue/releases/latest):
   (shown as *Before a fresh start* in Backups), so nothing is lost.
 - **Upgrading.** Your jobs keep working. Every time a new version starts for the first time
   with your jobs, Clickue first saves a backup named *before-upgrade-&lt;version&gt;* (for
-  example *before-upgrade-4.5.2*), so you can always go back to the jobs as they were.
+  example *before-upgrade-4.5.3*), so you can always go back to the jobs as they were.
 - **Jobs file missing or damaged?** If `jobs.json` is gone or can't be read but backups exist,
   Clickue tells you and offers to **restore the newest backup** (it shows its date and the job
   names). Restored jobs start **stopped**, so nothing clicks until you start them.
@@ -152,8 +152,9 @@ From the [Releases page](https://github.com/jnssylvest/clickue/releases/latest):
    is too narrow, the least-used buttons fold into **More ▾**.
 4. **Filter.** Show all jobs, only scheduled clicks, or only screen watchers.
 5. **Job list.** One row per job. **Double-click** (or Enter) to edit, **right-click** for every
-   action. Less important columns hide when the window gets narrow. Column widths can be
-   changed (below).
+   action. The **tick box** at the start of each row selects jobs for batch actions
+   ([section 14](#ticking-jobs-batch-actions)). Less important columns hide when the window
+   gets narrow. Column widths can be changed (below).
 6. **Activity.** A live, colour-coded log. Filter it to **Clicks** or **Problems**. **Clear
    view** empties the panel (the log file keeps everything); **Open log file** opens the full
    log.
@@ -169,6 +170,7 @@ Drag the divider between the job list and Activity to give either more room.
 
 | Column | Shows |
 |---|---|
+| **☐ / ☑** | The tick box for batch actions (ticked rows are also tinted) |
 | **Status** | What the job is doing (see below) |
 | **Name** | The job's name |
 | **Target** | Where it clicks and how it finds the spot (picture, window, or position), or *☰ N steps only* |
@@ -490,19 +492,28 @@ button.
    - Box something **distinctive**: text, an icon, a logo. Clickue warns you about plain areas
      and very big boxes (big boxes work, but each check is slower). The box must be at least
      16 × 16.
+   - The picture is saved at **full screen resolution** (lossless, never scaled down), with the
+     mouse pointer moved aside for a moment so a hover highlight isn't saved with it.
+   - A moment later Clickue looks at the same box again. If part of it **changed** (a number,
+     a clock, an animation), it warns you: with **the exact picture** the watcher would think
+     the picture is gone each time that part changes. Draw a smaller box around a part that
+     stays the same, or choose **part of the picture is enough** (below).
 3. **Search** the whole screen, or **only an area** (below).
-4. **Button to click.** **◎ Pick on screen…** the button to press. (Not needed when *Click the
+4. **Match** **the exact picture** (default) or **part of the picture is enough** (below).
+5. **Button to click.** **◎ Pick on screen…** the button to press. (Not needed when *Click the
    picture itself* is ticked, or when you untick **Click a button when this happens** so the
    watcher only runs its steps.)
-5. Set the timing: **Check every**, **Click when missing/showing for … checks in a row**, the
+6. Set the timing: **Check every**, **Click when missing/showing for … checks in a row**, the
    optional **random delay**, the optional **wait after each click**, and **Click only once**.
    All explained below.
-6. **Check now** confirms the picture can be found right now and marks it on the screen (for 5
+7. **Check now** confirms the picture can be found right now and marks it on the screen (for 5
    seconds, or what you set in **Preferences → Clicking**; with **point out every similar
    picture** on, look-alikes are outlined too). **Show spot** does the same for the button.
    **Dry run** shows the picture, then the button, and says whether it would click. None of
    them clicks, and the editor comes back exactly where it was.
-7. **Save.** Leave **Start watching when I save** ticked to start right away.
+   When the picture isn't found, the message and the test history say how close the best
+   place came, and **Dry run** outlines the closest places on screen so you can see why.
+8. **Save.** Leave **Start watching when I save** ticked to start right away.
 
 ### Search only an area
 
@@ -513,8 +524,12 @@ Choose **only an area:** and **Draw area…** to limit where Clickue looks. This
 - **faster**, because only that part of the screen is checked, and
 - **more precise**, because look-alikes elsewhere on the screen are ignored.
 
-The area scales with the screen if the resolution changes. Draw it a bit bigger than the
-panel, so a small window move doesn't push the picture outside it.
+The area scales with the screen if the resolution changes. Since 4.5.3 Clickue searches the
+area **with a small margin** (a quarter of the picture's size, at least 24 pixels, on every
+side, and always at least the picture's own size), so a picture that touches the edge of the
+area, or an area drawn tightly around the picture itself, still counts. Before 4.5.3 an area
+drawn even a few pixels smaller than the watched picture made the watcher report the picture
+as missing. Drawing the area a bit bigger than the panel is still a good habit.
 
 ### Strict matching
 
@@ -525,6 +540,51 @@ or whose text changes from *Online* to *Offline*, counts as **changed** (gone), 
 its shape is the same. The same picture at another size (different display scaling) is still
 found: since 4.5.1 it's scaled back to the drawn size and compared again, so a resized
 look-alike doesn't count as "still there" either.
+
+### Exact or partial matching
+
+![A box with a badge and a changing time: exact matching says gone, partial matching says found](images/guide/partial-matching.png)
+
+**Match** decides how much of the watched picture has to be on screen:
+
+| Choice | Counts as showing when… | Use it for | Default |
+|---|---|---|---|
+| **the exact picture** | the whole picture matches: shape, close-up detail and colour (see *Strict matching* above) | badges, buttons, labels that look the same every time | ✔ |
+| **part of the picture is enough: N % of it** | at least N % of the picture matches (40–95 %) | a box that also contains something that changes: a price, a counter, a clock, a blinking cursor | 75 % |
+
+How partial matching works: the saved picture is cut into small tiles (about 24 × 24 pixels).
+Each tile is compared on its own, may sit a few pixels off, and must also have the same
+colour. The share of tiles that match is the score. *Check now*, *Dry run* and the test
+history show it as *82 % of it matches, 75 % needed*. The same target marker shows where
+the picture was found, whichever mode you use.
+
+- **Higher** percentages are stricter. At 90 % nearly everything must match; at 50 % half the
+  picture may differ, so a different button of the same style may count.
+- The part that **doesn't** change must be big enough to tell the picture apart. If the box
+  is mostly the changing number, draw a new box instead.
+- Exact matching is still the safest choice when you can draw a box around something that
+  never changes.
+
+**Scenario.** You watch a *Connected* badge, but your box also caught the *last updated 14:32*
+text next to it. With the exact picture the watcher reports *Picture NOT on screen (best
+77%)* every minute. Either draw the box around the badge only, or choose **part of the
+picture is enough: 75 %**: the time may change, but if the badge itself disappears, far less
+than 75 % matches and the watcher clicks.
+
+### The mouse pointer on the picture
+
+Hovering the mouse over a button often changes how it looks (lighter, outlined, underlined).
+Since 4.5.3:
+
+- **Draw box** saves the picture with the pointer moved aside for a moment.
+- **Check now**, **Dry run** and scheduled watcher tests: if the picture isn't found while the
+  pointer rests on it (or on the search area), Clickue looks again with the pointer moved
+  aside for a moment and puts it back. The result says *checked again with the mouse pointer
+  moved aside*.
+- **A running watcher** does the same only when nobody has used the computer for 20 seconds
+  and no job is clicking. While you're using the mouse right on the picture, the check isn't
+  counted as *missing* (the list shows *Can't tell: mouse pointer on the picture*, and the
+  Activity log says so once). It counts again as soon as the pointer moves away.
 
 ### Timing settings
 
@@ -581,6 +641,9 @@ or send it to the tray when you've finished setting up. "Appears" watchers aren'
   banner stays.
 - **Watch one panel among several identical ones.** Search only an area around the panel you
   care about, so the same badge in another panel is ignored.
+- **Watch a status next to a changing value.** The box catches a status label and a number
+  that updates every few seconds. Match **part of the picture is enough: 75 %**, or draw the
+  box around the label only.
 
 ---
 
@@ -1174,7 +1237,56 @@ really is a Discord webhook and that the token and chat id look right.
 - **Delete:** Del, Delete, or right-click. A bar with **↶ Undo** appears; Ctrl+Z (or
   ☰ Menu → Undo delete) brings it back.
 - **Right-click** any job for every action: Edit, Start/Stop, Pause/Resume, the tests, Stats &
-  click history, Run history, Dry run of its steps, Duplicate and Delete.
+  click history, Run history, Dry run of its steps, Tick, Duplicate and Delete.
+
+### Ticking jobs: batch actions
+
+![Three ticked jobs, the batch bar above the list, and Edit together](images/guide/batch-actions.png)
+
+Every row of the job list starts with a **tick box**. Tick the jobs you want to work on
+together:
+
+- **Click the box** at the start of a row (or select the row and press **X**). Click again to
+  untick.
+- **The box in the heading** ticks every job shown (with the current filter), or unticks them
+  all. **Ctrl+A** in the list ticks every job shown.
+- Ticked rows are tinted, and a **bar** appears above the list: *3 jobs ticked*, then
+  **▶ Start**, **■ Stop**, **⏸ Pause**, **▶ Resume**, **✎ Edit together…**, **⧉ Duplicate**,
+  **🗑 Delete…**, **Tick all** and **Clear**. On a narrow window the bar wraps onto a second
+  line instead of hiding anything.
+- Ticks are just a selection: they aren't saved and don't change any job until you use one of
+  the buttons. The normal toolbar still works on the highlighted row.
+
+| Batch action | Effect on each ticked job |
+|---|---|
+| **Start / Stop** | Like ▶ Start / ■ Stop. Jobs that are already running (or stopped) are skipped and the Activity log says how many |
+| **Pause / Resume** | Like ⏸ Pause / ▶ Resume for running jobs; stopped jobs are skipped |
+| **Duplicate** | Makes a stopped copy of each, and ticks the copies, ready for *Edit together* |
+| **Delete…** | Asks once (listing the names), then deletes them all. **One Undo** (the bar, Ctrl+Z or ☰ Menu) brings every one of them back in its place, running again if it was |
+| **Edit together…** | Sets the same settings on all of them (below) |
+
+#### Edit together
+
+**✎ Edit together…** opens one editor for all ticked jobs. Each setting has a tick box in
+front of it; **only the settings you tick are changed**, everything else stays as it is in
+each job. The values shown at first are those of the first ticked job.
+
+| Group | Settings |
+|---|---|
+| **Every ticked job** | Mouse button, single/double click, priority, click-spot picture (exact only or similar counts), if the picture isn't found, active hours (times, days, outside them), stop a run after, bring its window to the front, let other jobs run, screen video, failure screenshot |
+| **Scheduled clicks only** | Scheduled every, random delay (on/off, from, up to) |
+| **Screen watchers only** | Check every, act after N checks in a row, random delay before clicking, wait after each click, click only once, match (exact or part of the picture) |
+
+Settings that don't fit a kind of job are left alone for it (a watcher's *Check every* isn't
+applied to a scheduled click). Values are checked like an import. A running job picks up new
+timing right away (a scheduled click gets its next time from now; a watcher starts watching
+afresh), and a paused job stays paused. If a job's random delay *from* ends up above its *up
+to*, the other one is moved to match. Click **Apply to all**; Clickue says how many jobs
+changed, and the Activity log lists what was changed.
+
+**Scenario.** Ten watchers check every 10 seconds and you want them to check every 30 seconds
+during the day: tick them (filter *Screen watchers*, then the heading box), **Edit together…**,
+tick **Check every**, set 30 s, **Apply to all**.
 
 ### Import and export
 
@@ -1331,7 +1443,7 @@ writes the reason in the Activity log and shows a warning once, instead of faili
 - Backups contain your jobs, step groups and settings, but **never your phone-alert
   credentials**.
 - **Before an upgrade:** the first time a new version starts with your jobs, it saves a backup
-  named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.2*) before saving
+  named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.3*) before saving
   anything. Older jobs keep working exactly as before.
 - **☰ Menu → Backups…** lists them (Daily, Manual, Before a restore, Before an import, Before a
   fresh start, Before an upgrade) with how many jobs each holds.
@@ -1758,7 +1870,9 @@ Only in admin tools where your organisation allows automation:
 | P | Pause / resume the selected job |
 | Ctrl+P | Pause / resume all |
 | Ctrl+T | Tests |
-| Ctrl+Z | Undo delete |
+| Ctrl+Z | Undo delete (a batch delete comes back all at once) |
+| X | Tick / untick the selected job (for batch actions) |
+| Ctrl+A (in the job list) | Tick every job shown |
 | Ctrl+, | Preferences |
 | Del | Delete the selected job (or the selected steps, in the timeline) |
 | Esc | Cancel **Pick on screen** (from anywhere), or close a Show spot / Check now marker |
@@ -1884,6 +1998,9 @@ signed in as that user). If Clickue was ended abruptly, Windows may leave a temp
 | **Job shows Waiting** | It's due but can't click: the screen is locked or disconnected, you're using the mouse, or the target is covered. Check Activity for the reason |
 | **Missed while I was away** | The screen was locked or the session disconnected; see [section 18](#18-locked-screens-remote-desktop-and-virtual-machines) |
 | **Watcher says "Can't tell: Clickue window open"** | Minimize Clickue or send it to the tray |
+| **Watcher says "Picture NOT on screen (best 77%)" but it is there** | Something inside the box changes (a number, a time, an animation), the box was drawn while the mouse made a button look different, or a search area was drawn tighter than the picture (fixed in 4.5.3). Run **Dry run**: the closest places are outlined. Then re-draw a box around a part that never changes, or choose **Match: part of the picture is enough** ([section 6](#exact-or-partial-matching)) |
+| **Watcher says "Can't tell: mouse pointer on the picture"** | The pointer rests on the watched picture, which can change how it looks. Move the mouse away; when the computer is idle for 20 s Clickue checks with the pointer moved aside |
+| **The Tests window showed no test buttons until I resized it** | Fixed in 4.5.3 |
 | **Watcher clicked once and never again** | *Click only once* is waiting for the picture to come back (or go away). Untick it to keep clicking |
 | **Watcher clicks on a flicker** | Raise *checks in a row* to 3, or check less often |
 | **Watcher never sees the change** | **Check now** while the picture is showing. Re-draw a tighter box around the most distinctive part. If the colour or text changes, that counts as "gone" |

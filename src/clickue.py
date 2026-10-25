@@ -58,7 +58,7 @@ except Exception:
 APP_NAME = "Clickue"
 APP_ID = "Clickue"
 OLD_APP_ID = "ScheduledAutoClicker"      # previous name - data is migrated from here
-VERSION = "4.5.2"
+VERSION = "4.5.3"
 REPO_URL = "https://github.com/jnssylvest/clickue"
 GUIDE_URL = REPO_URL + "/blob/main/docs/GUIDE.md"      # the complete guide (☰ Menu)
 DISCLOSURE = ("Clickue is vibe-coded and was developed with substantial AI assistance. Caution "
@@ -96,7 +96,7 @@ RUNTIME_KEYS = ("base_next", "next_run", "deadline", "test_at", "test_deadline",
                 "next_check", "last_check", "last_seen", "miss_count", "watch_state",
                 "armed", "pending_click_at", "pending_since", "watch_scale", "watch_note",
                 "wtest_at", "wtest_deadline", "wtest_click", "once_logged", "run_clicks",
-                "found_xy")
+                "found_xy", "pointer_logged")
 
 # ---------------------------------------------------------------- Windows API
 if IS_WIN:
@@ -166,6 +166,7 @@ def get_cursor():
     return (pt.x, pt.y)
 
 
+CURSOR_LOCK = threading.Lock()   # grab_screen(move_cursor=True) and do_click never overlap
 VK_ESCAPE = 0x1B
 
 
@@ -205,6 +206,11 @@ def idle_seconds():
 def do_click(x, y, button="left", clicks=1, restore_cursor=True):
     if not IS_WIN:
         return False, "this program only clicks on Windows"
+    with CURSOR_LOCK:
+        return _do_click(x, y, button, clicks, restore_cursor)
+
+
+def _do_click(x, y, button, clicks, restore_cursor):
     old = get_cursor()
     if not user32.SetCursorPos(int(x), int(y)):
         return False, "could not move the mouse (no active screen)"
@@ -426,9 +432,13 @@ def virtual_origin():
     return user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)  # SM_X/YVIRTUALSCREEN
 
 
-def grab_screen(move_cursor=True):
+def grab_screen(move_cursor=True, _locked=False):
     """Screenshot of all monitors -> (image, (left, top) of the image in screen pixels).
-    The mouse is moved out of the way first so hover highlights don't change the picture."""
+    The mouse is moved out of the way first so hover highlights don't change the picture
+    (never at the same time as a click: CURSOR_LOCK)."""
+    if move_cursor and IS_WIN and not _locked:
+        with CURSOR_LOCK:
+            return grab_screen(True, _locked=True)
     vx, vy = virtual_origin()
     old = get_cursor()
     if move_cursor and IS_WIN:
@@ -475,7 +485,7 @@ def _match(S, t):
     return res
 
 
-def picture_candidates(screen_gray, tmpl_gray, spot, scale_hint=None, limit=6):
+def picture_candidates(screen_gray, tmpl_gray, spot, scale_hint=None, limit=6, floor=0.5):
     """Every place on a screenshot that looks like the saved picture, at several sizes.
     Each candidate is checked twice: the whole picture, and a small close-up around the
     spot itself. Returns a list of (score, x, y, scale, whole, closeup) in screenshot
@@ -505,7 +515,7 @@ def picture_candidates(screen_gray, tmpl_gray, spot, scale_hint=None, limit=6):
             _, v, _, (lx, ly) = cv2.minMaxLoc(res)
             if top is None:
                 top = v
-            if v < max(0.5, top - 0.15):
+            if v < max(floor, top - 0.15):
                 break
             px, py = lx + cx0 * sc, ly + cy0 * sc
             x0, y0 = int(max(0, px - 4)), int(max(0, py - 4))
@@ -776,36 +786,139 @@ def job_area(job):
     return x, y, w, h
 
 
-def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None, report=None):
+# Partial matching (4.5.3, per watcher, off by default): the saved picture is split into
+# small tiles and each tile is compared on its own (a few pixels of play, colour checked).
+# The picture counts as there when at least `watch_partial_pct` % of the tiles match, so a
+# changing number or an animation inside the box doesn't make the whole picture "gone".
+PARTIAL_MIN_PCT, PARTIAL_MAX_PCT, PARTIAL_DEFAULT_PCT = 40, 95, 75
+PARTIAL_TILE = 24            # tile size in picture pixels (2-10 tiles per side)
+PARTIAL_TILE_MIN = 0.85      # a detailed tile matches when it correlates this well
+PARTIAL_FLAT_LIGHT = 12.0    # a plain tile matches when its brightness differs less...
+PARTIAL_TILE_COLOR = 18.0    # ...and its colour less than this (Lab units)
+POINTER_IDLE_S = 20          # a watcher may move the pointer aside after this much idle time
+AREA_PAD_MIN = 24            # a drawn search area is searched with this much margin (px)
+
+
+def search_box(area, tw, th, scale=1.0):
+    """The drawn search area plus a margin, so a picture that touches the edge of the area
+    (or moved a few pixels) is still found. The box is always at least the picture's size
+    plus the margin. Returns (x, y, w, h) in screen pixels."""
+    ax, ay, aw, ah = area
+    pad = max(AREA_PAD_MIN, int(0.25 * max(tw, th) * max(1.0, scale)))
+    need_w, need_h = int(tw * max(1.0, scale)) + 2 * pad, int(th * max(1.0, scale)) + 2 * pad
+    w, h = max(aw + 2 * pad, need_w), max(ah + 2 * pad, need_h)
+    cx, cy = ax + aw / 2, ay + ah / 2
+    return int(round(cx - w / 2)), int(round(cy - h / 2)), int(w), int(h)
+
+
+def partial_fraction(t_rgb, t_gray, s_rgb, s_gray, cand, spot):
+    """How much of the saved picture is at the candidate place: the fraction (0..1) of its
+    tiles that match. Each tile may sit up to 4 px off; plain tiles are compared by
+    brightness and colour, detailed tiles by shape and colour."""
+    _, cx, cy, sc = cand[:4]
+    th, tw = t_gray.shape[:2]
+    pad = 4
+    H, W = s_gray.shape[:2]
+    x0, y0 = cx - spot[0] * sc, cy - spot[1] * sc
+    X0, Y0 = int(round(x0)) - pad, int(round(y0)) - pad
+    X1, Y1 = int(round(x0 + tw * sc)) + pad, int(round(y0 + th * sc)) + pad
+    if X1 - X0 < 8 or Y1 - Y0 < 8:
+        return 0.0
+    reg = np.zeros((Y1 - Y0, X1 - X0, 3), np.uint8)
+    valid = np.zeros((Y1 - Y0, X1 - X0), np.uint8)
+    cx0, cy0, cx1, cy1 = max(0, X0), max(0, Y0), min(W, X1), min(H, Y1)
+    if cx1 - cx0 < 8 or cy1 - cy0 < 8:
+        return 0.0
+    reg[cy0 - Y0:cy1 - Y0, cx0 - X0:cx1 - X0] = s_rgb[cy0:cy1, cx0:cx1]
+    valid[cy0 - Y0:cy1 - Y0, cx0 - X0:cx1 - X0] = 1
+    size = (tw + 2 * pad, th + 2 * pad)
+    if abs(sc - 1) >= 0.01 or reg.shape[1::-1] != size:
+        interp = cv2.INTER_AREA if sc > 1 else cv2.INTER_LINEAR
+        reg = cv2.resize(reg, size, interpolation=interp)
+        valid = cv2.resize(valid, size, interpolation=cv2.INTER_NEAREST)
+    rg = cv2.cvtColor(reg, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    tg = t_gray.astype(np.float32)
+    t_lab = cv2.cvtColor(t_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    r_lab = cv2.cvtColor(reg, cv2.COLOR_RGB2LAB).astype(np.float32)
+    ny = int(min(10, max(2, round(th / PARTIAL_TILE))))
+    nx = int(min(10, max(2, round(tw / PARTIAL_TILE))))
+    ys = [round(k * th / ny) for k in range(ny + 1)]
+    xs = [round(k * tw / nx) for k in range(nx + 1)]
+    good = total = 0
+    for a in range(ny):
+        for b in range(nx):
+            ty0, ty1, tx0, tx1 = ys[a], ys[a + 1], xs[b], xs[b + 1]
+            if ty1 - ty0 < 3 or tx1 - tx0 < 3:
+                continue
+            total += 1
+            if valid[ty0 + pad:ty1 + pad, tx0 + pad:tx1 + pad].min() == 0:
+                continue                            # off the screen: doesn't match
+            tile = tg[ty0:ty1, tx0:tx1]
+            win = rg[ty0:ty1 + 2 * pad, tx0:tx1 + 2 * pad]
+            if float(tile.std()) < 3.0:             # plain tile: same brightness and colour
+                dx = dy = pad
+                same = abs(float(win[dy:dy + ty1 - ty0, dx:dx + tx1 - tx0].mean())
+                           - float(tile.mean())) <= PARTIAL_FLAT_LIGHT
+            else:
+                res = np.nan_to_num(cv2.matchTemplate(win, tile, cv2.TM_CCOEFF_NORMED),
+                                    nan=-1.0, posinf=-1.0, neginf=-1.0)
+                _, v, _, (dx, dy) = cv2.minMaxLoc(res)
+                same = v >= PARTIAL_TILE_MIN
+            if same:
+                ta = t_lab[ty0:ty1, tx0:tx1]
+                ra = r_lab[ty0 + dy:ty0 + dy + (ty1 - ty0), tx0 + dx:tx0 + dx + (tx1 - tx0)]
+                if ra.shape != ta.shape:
+                    continue
+                chroma = float(np.sqrt(((ta[..., 1:] - ra[..., 1:]) ** 2).sum(-1)).mean())
+                light = float(np.abs(ta[..., 0] - ra[..., 0]).mean())
+                if chroma <= PARTIAL_TILE_COLOR and light <= PARTIAL_FLAT_LIGHT * 2:
+                    good += 1
+    return good / total if total else 0.0
+
+
+def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None, report=None,
+                      partial=None):
     """Is this exact picture on the screen (or inside `area`) right now?
     Stricter than finding a click spot: shape, colour and (at the original size) fine
     detail must all agree, so a similar-looking replacement doesn't count as "still there".
     At another size the place is scaled back and compared again (4.5.1).
+    `partial` (0.4-0.95, 4.5.3): instead, the picture counts as there when at least that
+    share of it matches (see partial_fraction); the score is then that share.
+    A search `area` is searched with a margin (search_box), so a picture at its edge counts.
     Returns (found, x, y, score, scale) - x, y is the picture's centre on screen.
     If `report` is a list, every similar place is added to it as
     (x, y, w, h, note, chosen?, exact?) in screen pixels."""
     if shot is None:
         shot = grab_screen(move_cursor=False)
     img, (vx, vy) = shot
+    t_rgb = np.ascontiguousarray(np.asarray(b64_to_img(png_b64)))
+    tmpl = cv2.cvtColor(t_rgb, cv2.COLOR_RGB2GRAY)
+    th0, tw0 = tmpl.shape[:2]
     if area:
-        ax, ay, aw, ah = area
+        ax, ay, aw, ah = search_box(area, tw0, th0, scale_hint or 1.0)
         l, t = max(0, ax - vx), max(0, ay - vy)
         r, b = min(img.width, ax - vx + aw), min(img.height, ay - vy + ah)
         if r - l >= 16 and b - t >= 16:
             img = img.crop((l, t, r, b))
             vx, vy = vx + l, vy + t
-    t_rgb = np.ascontiguousarray(np.asarray(b64_to_img(png_b64)))
     s_rgb = np.ascontiguousarray(np.asarray(img))
-    tmpl = cv2.cvtColor(t_rgb, cv2.COLOR_RGB2GRAY)
     full = cv2.cvtColor(s_rgb, cv2.COLOR_RGB2GRAY)
-    th0, tw0 = tmpl.shape[:2]
     spot = (tw0 // 2, th0 // 2)
-    cands = picture_candidates(full, tmpl, spot, scale_hint)
+    if partial:
+        partial = min(PARTIAL_MAX_PCT, max(PARTIAL_MIN_PCT, float(partial) * 100)) / 100
+    cands = picture_candidates(full, tmpl, spot, scale_hint, floor=0.3 if partial else 0.5)
     if not cands:
         return False, 0, 0, 0.0, None
     chosen, checked = None, []
     for c in cands:
         sc = c[3]
+        if partial:
+            frac = partial_fraction(t_rgb, tmpl, s_rgb, full, c, spot)
+            ok = frac >= partial - 1e-9
+            checked.append((c, ok, frac))
+            if ok and (chosen is None or frac > chosen[1]):
+                chosen = (c, frac)
+            continue
         ok = is_match(c)
         if ok and abs(sc - 1) < 0.01:
             ok = c[4] >= WATCH_SAME_SIZE_MIN - 0.03 and c[5] >= WATCH_SAME_SIZE_MIN
@@ -814,23 +927,119 @@ def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None, report=Non
         if ok:
             chroma, light = color_difference(t_rgb, s_rgb, c[1], c[2], sc)
             ok = chroma <= WATCH_COLOR_MAX and light <= WATCH_LIGHT_MAX
-        checked.append((c, ok))
+        checked.append((c, ok, max(0.0, min(c[4], c[5]))))
         if ok and chosen is None:
-            chosen = c
+            chosen = (c, checked[-1][2])
     if report is not None:
-        for c, ok in checked:
-            if not is_match(c) and max(c[4], c[5]) < 0.55:
+        for c, ok, val in checked:
+            if not partial and not is_match(c) and max(c[4], c[5]) < 0.55:
+                continue
+            if partial and val < 0.25:
                 continue
             sc = c[3]
+            kind = ("match" if ok else "part") if partial else ("exact" if ok else "similar")
             report.append((round(c[1] - tw0 * sc / 2 + vx), round(c[2] - th0 * sc / 2 + vy),
-                           round(tw0 * sc), round(th0 * sc),
-                           f"{'exact' if ok else 'similar'} {max(0.0, min(c[4], c[5])):.0%}",
-                           c is chosen, ok))
-    r = chosen or max(cands, key=lambda c: (is_match(c), c[0]))
+                           round(tw0 * sc), round(th0 * sc), f"{kind} {val:.0%}",
+                           chosen is not None and c is chosen[0], ok))
+    if chosen:
+        r, score = chosen
+        return True, round(r[1] + vx), round(r[2] + vy), score, r[3]
+    if partial:
+        r, _, score = max(checked, key=lambda k: k[2])
+        return False, round(r[1] + vx), round(r[2] + vy), score, r[3]
+    r = max(cands, key=lambda c: (is_match(c), c[0]))
     score = max(0.0, min(r[4], r[5]))
-    if chosen is None and is_match(r):
+    if is_match(r):
         score = min(score, 0.5)
-    return chosen is not None, round(r[1] + vx), round(r[2] + vy), score, r[3]
+    return False, round(r[1] + vx), round(r[2] + vy), score, r[3]
+
+
+def watch_partial(job):
+    """The share of the picture a watcher needs (0.4-0.95), or None for exact matching."""
+    if job.get("watch_match") != "partial":
+        return None
+    try:
+        pct = int(job.get("watch_partial_pct", PARTIAL_DEFAULT_PCT))
+    except (TypeError, ValueError):
+        pct = PARTIAL_DEFAULT_PCT
+    return min(PARTIAL_MAX_PCT, max(PARTIAL_MIN_PCT, pct)) / 100
+
+
+def current_pointer():
+    """Where the mouse pointer is, or None where that can't be known (not Windows)."""
+    return get_cursor() if IS_WIN else None
+
+
+def pointer_near_watch(job, result, cursor=None):
+    """Is the mouse pointer resting on (or right next to) the watched picture or its search
+    area? Hovering can change how a button looks, so a watcher shouldn't call it "gone"."""
+    if cursor is None:
+        cursor = current_pointer()
+        if cursor is None:
+            return False
+    px, py = cursor
+    boxes = []
+    try:
+        img = b64_to_img(job["watch_png"])
+        tw, th = img.size
+    except Exception:
+        tw, th = 100, 60
+    if result and (result[1] or result[2]):
+        sc = result[4] or 1.0
+        boxes.append((result[1] - tw * sc / 2, result[2] - th * sc / 2, tw * sc, th * sc))
+    if job.get("found_xy"):                       # where it was last seen
+        fx, fy = job["found_xy"]
+        sc = job.get("watch_scale") or 1.0
+        boxes.append((fx - tw * sc / 2, fy - th * sc / 2, tw * sc, th * sc))
+    area = job_area(job)
+    if area:
+        boxes.append(area)
+    m = 30
+    return any(x - m <= px <= x + w + m and y - m <= py <= y + h + m for x, y, w, h in boxes)
+
+
+def picture_changes(crop, box, vx, vy):
+    """Capture the same box again (pointer moved aside) and return the share of the picture
+    that changed (0 = identical). Used right after drawing a watcher's box."""
+    try:
+        img, (ox, oy) = grab_screen(move_cursor=True)
+        l, t = box[0] + vx - ox, box[1] + vy - oy
+        again = img.crop((l, t, l + crop.width, t + crop.height))
+        a = np.asarray(crop.convert("L"), dtype=np.int16)
+        b = np.asarray(again.convert("L"), dtype=np.int16)
+        if a.shape != b.shape:
+            return 0.0
+        diff = np.abs(a - b) > 24
+        return float(diff.mean()) if diff.mean() > 0.01 else 0.0
+    except Exception:
+        return 0.0
+
+
+def watched_picture(job, report=None, move_ok=False):
+    """Look for a watcher's picture with its own settings (search area, exact or partial).
+    If it isn't found while the mouse pointer rests on it, hovering may have changed how it
+    looks: with `move_ok` the screen is captured again with the pointer moved aside for a
+    moment (tests, or when nobody is using the computer); otherwise `pointer` is True and
+    the caller shouldn't count it as gone.
+    Returns ((found, x, y, score, scale), note, pointer)."""
+    kw = dict(area=job_area(job), partial=watch_partial(job))
+    rep = [] if report is not None else None
+    shot = grab_screen(move_cursor=False)
+    r = picture_on_screen(job["watch_png"], job.get("watch_scale"), shot=shot, report=rep, **kw)
+    note, pointer = "", False
+    if not r[0] and pointer_near_watch(job, r):
+        if move_ok:
+            rep = [] if report is not None else None
+            shot = grab_screen(move_cursor=True)
+            r = picture_on_screen(job["watch_png"], job.get("watch_scale"), shot=shot,
+                                  report=rep, **kw)
+            note = "checked again with the mouse pointer moved aside"
+        else:
+            pointer = True
+            note = "the mouse pointer is on the picture"
+    if report is not None:
+        report.extend(rep)
+    return r, note, pointer
 
 
 def resolution_note(job):
@@ -2117,13 +2326,15 @@ def sanitize_steps(steps):
 _JOB_ENUMS = {"button": ("left", "right", "middle"), "kind": ("click", "watch"),
               "target_mode": ("screen", "window"), "hours_outside": ("wait", "skip"),
               "watch_trigger": ("gone", "appears"), "image_fallback": ("wait", "position"),
-              "snap_size": ("Small", "Medium", "Large"), "priority": ("high", "normal", "low")}
+              "snap_size": ("Small", "Medium", "Large"), "priority": ("high", "normal", "low"),
+              "watch_match": ("exact", "partial")}
 _JOB_RANGES = {"clicks": (1, 3), "interval_s": (1, 10 * 365 * 86400),
                "delay_min_s": (0, 365 * 86400), "delay_max_s": (0, 365 * 86400),
                "limit_clicks": (1, 10_000_000), "watch_interval_s": (1, 7 * 86400),
                "watch_confirm": (1, 100), "watch_delay_min_s": (0, 86400),
                "watch_delay_max_s": (0, 86400), "watch_cooldown_s": (0, 7 * 86400),
-               "run_limit_s": (10, MAX_RUN_LIMIT_S)}
+               "run_limit_s": (10, MAX_RUN_LIMIT_S),
+               "watch_partial_pct": (PARTIAL_MIN_PCT, PARTIAL_MAX_PCT)}
 
 
 def sanitize_job(j):
@@ -2179,6 +2390,44 @@ def sanitize_job(j):
         except Exception:
             base[k] = new_job()[k]
     return base, problems
+
+
+# ---- 4.5.3: editing several jobs at once ("Edit together")
+BATCH_LABELS = {
+    "button": "mouse button", "clicks": "single/double click", "priority": "priority",
+    "run_limit_s": "run time limit", "exact_match": "exact click-spot picture",
+    "image_fallback": "if the picture isn't found", "hours_on": "active hours",
+    "hours_from": "active hours", "hours_to": "active hours", "hours_days": "active hours",
+    "hours_outside": "active hours", "let_others_run": "let others run",
+    "record_video": "screen video", "fail_shot": "failure screenshot",
+    "bring_to_front": "bring window to front",
+    "interval_s": "schedule", "random_on": "random delay", "delay_min_s": "random delay",
+    "delay_max_s": "random delay",
+    "watch_interval_s": "check interval", "watch_confirm": "checks in a row",
+    "watch_random_on": "random delay", "watch_delay_min_s": "random delay",
+    "watch_delay_max_s": "random delay", "watch_cooldown_on": "wait after clicking",
+    "watch_cooldown_s": "wait after clicking", "watch_once": "click only once",
+    "watch_match": "match", "watch_partial_pct": "match"}
+BATCH_CLICK_ONLY = ("interval_s", "random_on", "delay_min_s", "delay_max_s")
+
+
+def batch_applies(key, job):
+    """Does a batch-edited setting apply to this kind of job?"""
+    if key in BATCH_CLICK_ONLY:
+        return not is_watch(job)
+    if key.startswith("watch_"):
+        return is_watch(job)
+    return key in BATCH_LABELS
+
+
+def clean_batch_changes(changes):
+    """Validate batch-edit values the same way as an import (unknown keys dropped, numbers
+    clamped, choices checked)."""
+    if not isinstance(changes, dict):
+        return {}
+    keep = {k: v for k, v in changes.items() if k in BATCH_LABELS}
+    base, _ = sanitize_job(dict(keep, name="batch"))
+    return {k: base[k] for k in keep}
 
 
 def sanitize_groups(groups):
@@ -2480,6 +2729,11 @@ class InputGuard:
                 self.buttons.remove(button)
         user32.mouse_event(dn if down else up, 0, 0, 0, 0)
         return True, "pressed" if down else "released"
+
+    def busy(self):
+        """Is any mouse button or key being held down right now?"""
+        with self.lock:
+            return bool(self.buttons or self.keys)
 
     def key(self, vk, down):
         if not IS_WIN:
@@ -4421,6 +4675,7 @@ def new_job(n=1):
         "watch_area": None,         # [x, y, w, h] on screen, or None = whole screen
         "watch_area_screen": None,  # screen size when the area was drawn
         "found_xy": None,
+        "pointer_logged": False,
         # ---- extra steps after the click
         "steps": [],
         "watch_random_on": True,    # watcher: random delay before clicking
@@ -4462,6 +4717,9 @@ def new_job(n=1):
         "watch_delay_max_s": 5,
         "watch_cooldown_s": 30,     # after clicking, wait this long before looking again
         "watch_once": True,         # don't click again until the picture has come back
+        "watch_match": "exact",     # 4.5.3: "exact" = the whole picture must match;
+                                    # "partial" = enough of it (watch_partial_pct) is enough
+        "watch_partial_pct": PARTIAL_DEFAULT_PCT,
         "watch_cooldown_on": True,  # use the "after clicking, wait" time at all
         # watcher runtime
         "next_check": None,
@@ -4502,12 +4760,14 @@ LIGHT = dict(bg="#f4f5f7", panel="#ffffff", panel_alt="#f7f8fa", head="#f0f1f4",
              fg="#1a1c20", muted="#6b7280", border="#e1e3e8", btn="#ffffff",
              btn_border="#d5d8de", btn_active="#eef0f3", accent="#2563eb",
              accent_active="#1d4ed8", sel="#dbe7ff", sel_fg="#0b1b3f", field="#ffffff",
-             warn="#b45309", good="#15803d", bad="#c62828", test="#7c3aed", grid="#e2e5ea")
+             warn="#b45309", good="#15803d", bad="#c62828", test="#7c3aed", grid="#e2e5ea",
+             tick="#e8f0fe")
 DARK = dict(bg="#18191c", panel="#212226", panel_alt="#26282c", head="#1c1d21",
             fg="#e8e9ec", muted="#9097a1", border="#30333a", btn="#2a2c31",
             btn_border="#363940", btn_active="#34373d", accent="#3b82f6",
             accent_active="#2f6fe0", sel="#24406e", sel_fg="#ffffff", field="#26282c",
-            warn="#f5a524", good="#4ade80", bad="#f87171", test="#c4a8ff", grid="#383b43")
+            warn="#f5a524", good="#4ade80", bad="#f87171", test="#c4a8ff", grid="#383b43",
+            tick="#1f2f4d")
 
 
 def fmt_compact(sec):
@@ -4524,6 +4784,7 @@ class App:
     def __init__(self, root):
         self.root = root
         self.lock = threading.RLock()
+        self.checked = set()          # job ids ticked in the job list (4.5.3, not saved)
         self.logq = queue.Queue()
         self.cmdq = queue.Queue()
         self.stop = threading.Event()
@@ -5285,7 +5546,6 @@ class App:
             interval = max(1, int(job.get("watch_interval_s", 30)))
             job["next_check"] = now + interval
             job["last_check"] = now
-            hint = job.get("watch_scale")
         if not png:
             with self.lock:
                 job["watch_state"], job["watch_note"] = "unknown", "no picture saved"
@@ -5299,7 +5559,10 @@ class App:
                 job["watch_state"], job["watch_note"] = "unknown", "screen locked"
             return
         try:
-            found, x, y, score, sc = picture_on_screen(png, hint, area=job_area(job))
+            with self.lock:
+                snap = dict(job)
+            (found, x, y, score, sc), _, pointer = watched_picture(
+                snap, move_ok=self.may_move_pointer())
         except Exception as e:
             with self.lock:
                 job["watch_state"], job["watch_note"] = "unknown", f"couldn't look ({e})"
@@ -5316,6 +5579,17 @@ class App:
                 # This app's own window might be covering the picture - don't count it
                 job["watch_state"], job["watch_note"] = "unknown", "Clickue window open"
                 return
+            if not found and pointer and not appears:
+                # Hovering can change how the picture looks - don't count it (4.5.3)
+                job["watch_state"], job["watch_note"] = "unknown", "mouse pointer on the picture"
+                if not job.get("pointer_logged"):
+                    job["pointer_logged"] = True
+                    self.log(f"[{name}] the mouse pointer is resting on the watched picture, "
+                             f"which can change how it looks - not counting it as gone until "
+                             f"the pointer moves away (or the computer is idle for "
+                             f"{POINTER_IDLE_S} s)")
+                return
+            job["pointer_logged"] = False
             hit = found if appears else not found
             if not hit:
                 # the condition isn't met: reset, and allow the next click
@@ -5369,11 +5643,24 @@ class App:
                      f"{fmt_dur(delay)}")
             self.save()
 
-    def watcher_dry_run(self, job):
+    def may_move_pointer(self):
+        """May a scheduled watcher check move the mouse pointer aside for a moment? Only when
+        nobody has used the computer for a while and nothing is clicking or holding input."""
+        try:
+            if idle_seconds() < POINTER_IDLE_S:
+                return False
+            aq = getattr(self, "aq", None)
+            if aq is not None and aq.running is not None:
+                return False
+            return not HELD.busy()
+        except Exception:
+            return False
+
+    def watcher_dry_run(self, job, report=None):
         """Look for the watched picture and the button, without clicking.
         Returns dict(picture=(found, x, y, score, scale) or None, button=(ok, x, y, msg, how),
         error=str)."""
-        out = dict(picture=None, button=None, error="",
+        out = dict(picture=None, button=None, error="", note="", partial=watch_partial(job),
                    appears=job.get("watch_trigger") == "appears")
         if not job.get("watch_png"):
             out["error"] = "no picture saved"
@@ -5385,8 +5672,7 @@ class App:
             out["error"] = "screen locked or session disconnected"
             return out
         try:
-            out["picture"] = picture_on_screen(job["watch_png"], job.get("watch_scale"),
-                                               area=job_area(job))
+            out["picture"], out["note"], _ = watched_picture(job, report=report, move_ok=True)
             if not job.get("main_click", True):
                 out["button"] = (True, 0, 0, "", "steps only")
             elif job.get("watch_trigger") == "appears" and job.get("watch_click_picture"):
@@ -5410,8 +5696,15 @@ class App:
         appears = r.get("appears")
         would = found if appears else not found
         size = "" if not sc or abs(sc - 1) < 0.01 else f" at {sc:.0%} size"
-        pic = (f"Picture found ({score:.0%}{size})" if found
-               else f"Picture NOT on screen (best {score:.0%})")
+        if r.get("partial"):
+            need = f"{r['partial']:.0%} needed"
+            pic = (f"Picture found ({score:.0%} of it matches, {need}{size})" if found
+                   else f"Picture NOT on screen (best: {score:.0%} of it matches, {need})")
+        else:
+            pic = (f"Picture found ({score:.0%}{size})" if found
+                   else f"Picture NOT on screen (best {score:.0%})")
+        if r.get("note"):
+            pic += f" ({r['note']})"
         btn = ("no click of its own, runs its steps" if bhow == "steps only" else
                f"button found at ({bx}, {by}) by {bhow}" if bok
                else f"button NOT found: {bmsg}")
@@ -5486,8 +5779,7 @@ class App:
         point = None
         if appears and snap.get("watch_click_picture"):
             try:
-                f, px, py, score, sc = picture_on_screen(snap["watch_png"], snap.get("watch_scale"),
-                                                         area=job_area(snap))
+                f, px, py, score, sc = watched_picture(snap)[0]
             except Exception:
                 f = False
             if not f:
@@ -5976,6 +6268,7 @@ class App:
                    command=self.undo_delete).pack(side="left", padx=10)
         ttk.Button(self.undo_bar, text="✕", style="Small.TButton",
                    command=lambda: self.undo_bar.pack_forget()).pack(side="right")
+        self.build_batch_bar(main)
         self.root.bind("<Control-z>", self.undo_delete)
         self.root.bind("<Control-comma>", lambda e: self.open_settings())
 
@@ -5987,9 +6280,9 @@ class App:
         self.paned.add(self.bottom_pane, weight=2)
         tf = ttk.Frame(top_pane, style="Card.TFrame", padding=1)
         tf.pack(fill="both", expand=True, pady=(0, 4))
-        cols = ("status", "name", "pos", "button", "schedule", "next", "countdown", "count",
-                "last")
-        spec = (("Status", 105, 80, "w"), ("Name", 160, 90, "w"),
+        cols = ("chk", "status", "name", "pos", "button", "schedule", "next", "countdown",
+                "count", "last")
+        spec = (("☐", 38, 38, "center"), ("Status", 105, 80, "w"), ("Name", 160, 90, "w"),
                 ("Target", 170, 90, "w"), ("Click", 75, 55, "w"),
                 ("Schedule", 190, 120, "w"), ("Next click", 160, 110, "w"),
                 ("Starts in", 100, 75, "w"), ("Clicks", 65, 50, "center"),
@@ -6001,9 +6294,10 @@ class App:
         self._shown_cols = None
         for c, (h, w, minw, anchor) in zip(cols, spec):
             self.tree.heading(c, text=h, anchor=anchor)
-            self.tree.column(c, width=w, minwidth=minw, stretch=True, anchor=anchor)
+            self.tree.column(c, width=w, minwidth=minw, stretch=(c != "chk"), anchor=anchor)
+        self.tree.heading("chk", command=self.toggle_check_all)
         for c, w in (self.settings.get("col_widths") or {}).items():
-            if c in cols:
+            if c in cols and c != "chk":
                 try:
                     self.tree.column(c, width=max(30, min(1200, int(w))), stretch=False)
                 except Exception:
@@ -6019,6 +6313,7 @@ class App:
         self.tree.pack(side="left", fill="both", expand=True)
         self.empty_lbl = ttk.Label(self.tree, style="Empty.TLabel", justify="center",
                                    text="No clicks yet\nClick  ＋ New click  to add one.")
+        self.tree.bind("<Button-1>", self.on_tree_click)
         self.tree.bind("<Double-1>", self.on_double)
         self.tree.bind("<Return>", self.on_double)
         self.tree.bind("<Delete>", lambda e: self.delete_job())
@@ -6035,6 +6330,9 @@ class App:
         self.root.bind("<Control-t>", lambda e: self.open_tests())
         self.root.bind("<Control-p>", lambda e: self.toggle_pause_all())
         self.tree.bind("<p>", lambda e: self.toggle_pause_job())
+        self.tree.bind("<Control-a>", lambda e: (self.set_checks(self.visible_job_ids()),
+                                                 "break")[1])
+        self.tree.bind("<x>", lambda e: self.toggle_check_selected())
 
         # ---- activity (with a filter: everything / clicks only / problems only)
         ah = ttk.Frame(self.bottom_pane)
@@ -6340,6 +6638,7 @@ class App:
 
         self.tree.tag_configure("even", background=p["panel"])
         self.tree.tag_configure("odd", background=p["panel_alt"])
+        self.tree.tag_configure("ticked", background=p["tick"])
         self.tree.tag_configure("running", foreground=p["fg"])
         self.tree.tag_configure("stopped", foreground=p["muted"])
         self.tree.tag_configure("paused", foreground=p["muted"])
@@ -6490,11 +6789,13 @@ class App:
             if full or iid not in want:
                 self.tree.delete(iid)
         sel = set(self.tree.selection())
+        self.checked &= {j["id"] for j in self.jobs}
         for idx, (iid, vals, state) in enumerate(rows):
             vals = tuple(v if i == 7 else f"  {v}" for i, v in enumerate(vals))
+            vals = (("☑" if iid in self.checked else "☐") if ":" not in iid else "",) + vals
             tags = [state]
             if iid not in sel:
-                tags.insert(0, "odd" if idx % 2 else "even")
+                tags.insert(0, "ticked" if iid in self.checked else ("odd" if idx % 2 else "even"))
             if self.tree.exists(iid):
                 self.tree.item(iid, values=vals, tags=tags)
                 if self.tree.index(iid) != idx:
@@ -6517,6 +6818,7 @@ class App:
             want_text = f"{text}  {counts[val]}"
             if str(rb.cget("text")) != want_text:
                 rb.configure(text=want_text)
+        self.update_batch_bar()
         self.draw_grid()
 
     def col_width_changed(self, col, width):
@@ -6895,7 +7197,8 @@ class App:
         restore = self.hide_app(parent)
 
         def run():
-            r = self.watcher_dry_run(job)
+            similar = []
+            r = self.watcher_dry_run(job, report=similar)
             text, level = self.describe_dry_run(r)
             self.log(f"[{job['name']}] DRY RUN: {text}")
             self.record_test(job["name"], "Dry run (no click)", text, level)
@@ -6918,11 +7221,19 @@ class App:
                        else "Picture is missing - would click HERE now")
                 self.flash_marker(bx, by, f"Step 2 of 2  ·  {cap}  ({bhow})", restore)
 
+            how = "of it matches" if r.get("partial") else "match"
             if found:
                 size = "" if not sc or abs(sc - 1) < 0.01 else f" at {sc:.0%} size"
                 self.flash_marker(px, py, f"Step 1 of 2  ·  Watched picture found "
-                                          f"({score:.0%}{size}) - no click needed",
-                                  step_button, seconds=4)
+                                          f"({score:.0%} {how}{size}) - no click needed",
+                                  step_button, seconds=4,
+                                  others=similar if self.settings.get("show_similar") else None)
+            elif similar:
+                # show where the closest places were, so it's clear why it didn't count
+                self.flash_marker(None, None, f"Step 1 of 2  ·  Watched picture NOT found - "
+                                              f"closest places outlined (best {score:.0%} "
+                                              f"{how})", step_button, seconds=4,
+                                  others=similar)
             else:
                 step_button()
         self.root.after(400, run)
@@ -6953,7 +7264,275 @@ class App:
         with self.lock:
             return next((j for j in self.jobs if j["id"] == jid), None)
 
+    # ------------------------------------------------------------ 4.5.3: tick boxes, batches
+    def visible_job_ids(self):
+        return [iid for iid in self.tree.get_children() if ":" not in iid]
+
+    def checked_jobs(self):
+        with self.lock:
+            return [j for j in self.jobs if j["id"] in self.checked]
+
+    def set_checks(self, ids):
+        self.checked = set(ids)
+        self.refresh_tree()
+
+    def toggle_check(self, jid):
+        if jid in self.checked:
+            self.checked.discard(jid)
+        else:
+            self.checked.add(jid)
+        self.refresh_tree()
+
+    def toggle_check_all(self):
+        vis = self.visible_job_ids()
+        if vis and all(i in self.checked for i in vis):
+            self.checked -= set(vis)
+        else:
+            self.checked |= set(vis)
+        self.refresh_tree()
+
+    def toggle_check_selected(self):
+        sel = [i for i in self.tree.selection() if ":" not in i]
+        for i in sel:
+            self.toggle_check(i)
+
+    def on_tree_click(self, event):
+        """A click in the tick-box column ticks or unticks that job (or all, on the heading)."""
+        try:
+            col = self.tree.identify_column(event.x)
+            region = self.tree.identify_region(event.x, event.y)
+        except Exception:
+            return None
+        if col != "#1" or region not in ("cell", "tree"):
+            return None
+        iid = self.tree.identify_row(event.y)
+        if iid and ":" not in iid:
+            self.toggle_check(iid)
+            return "break"
+        return None
+
+    def build_batch_bar(self, main):
+        """The bar that appears above the job list when jobs are ticked."""
+        bar = ttk.Frame(main, style="Card.TFrame", padding=(10, 6))
+        self.batch_bar = bar
+        self.batch_lbl = ttk.Label(bar, style="CardSub.TLabel")
+        self.batch_items = [self.batch_lbl]
+        for text, cmd, style in (
+                ("▶  Start", lambda: self.batch_action("start"), "Small.TButton"),
+                ("■  Stop", lambda: self.batch_action("stop"), "Small.TButton"),
+                ("⏸  Pause", lambda: self.batch_action("pause"), "Small.TButton"),
+                ("▶  Resume", lambda: self.batch_action("resume"), "Small.TButton"),
+                ("✎  Edit together…", self.batch_edit, "Small.TButton"),
+                ("⧉  Duplicate", lambda: self.batch_action("duplicate"), "Small.TButton"),
+                ("🗑  Delete…", self.batch_delete, "Small.TButton"),
+                ("Tick all", lambda: self.set_checks(self.visible_job_ids()), "Small.TButton"),
+                ("Clear", lambda: self.set_checks([]), "Small.TButton")):
+            self.batch_items.append(ttk.Button(bar, text=text, style=style, command=cmd))
+        bar.bind("<Configure>", lambda e: self.flow_batch_bar())
+        self._batch_sig = None
+
+    def flow_batch_bar(self, force=False):
+        """Lay the batch bar out in rows: everything wraps instead of being cut off."""
+        bar = self.batch_bar
+        W = bar.winfo_width() - 20
+        if W <= 1:
+            return
+        widths = [w.winfo_reqwidth() for w in self.batch_items]
+        sig = (W, tuple(widths))
+        if sig == self._batch_sig and not force:
+            return
+        self._batch_sig = sig
+        rh = max(w.winfo_reqheight() for w in self.batch_items)
+        x = y = 0
+        for w, ww in zip(self.batch_items, widths):
+            gap = 14 if w is self.batch_items[1] else 4
+            if x and x + ww > W:
+                x, y = 0, y + rh + 4
+            elif x:
+                x += gap
+            w.place(x=x, y=y, height=rh)
+            x += ww
+        h = y + rh
+        if int(str(bar.cget("height")) or 0) != h + 12:
+            bar.configure(height=h + 12)
+
+    def update_batch_bar(self):
+        bar = getattr(self, "batch_bar", None)
+        if bar is None:
+            return
+        vis = self.visible_job_ids()
+        head = "☑" if vis and all(i in self.checked for i in vis) else "☐"
+        if self.tree.heading("chk", "text") != head:
+            self.tree.heading("chk", text=head)
+        jobs = self.checked_jobs()
+        if not jobs:
+            if bar.winfo_ismapped():
+                bar.pack_forget()
+            return
+        n = len(jobs)
+        txt = f"{n} job{'s' if n != 1 else ''} ticked"
+        if str(self.batch_lbl.cget("text")) != txt:
+            self.batch_lbl.configure(text=txt)
+            self._batch_sig = None
+        if not bar.winfo_ismapped():
+            bar.pack(fill="x", pady=(0, 6), before=self.paned)
+            self.root.after_idle(lambda: self.flow_batch_bar(force=True))
+
+    def batch_action(self, what, jobs=None):
+        """Start / stop / pause / resume / duplicate every ticked job. Returns how many
+        jobs changed."""
+        jobs = self.checked_jobs() if jobs is None else jobs
+        if not jobs:
+            return 0
+        now = time.time()
+        done = 0
+        new_ids = []
+        with self.lock:
+            for j in jobs:
+                if what == "start" and not j.get("enabled"):
+                    self.start_job(j)
+                elif what == "stop" and j.get("enabled"):
+                    self.stop_job(j)
+                elif what == "pause" and j.get("enabled") and not j.get("paused"):
+                    j["paused"] = True
+                    j["pending_click_at"] = j["pending_since"] = None
+                    self.wait_msgs.pop((j["id"], "watch"), None)
+                    self.wait_msgs.pop((j["id"], "scheduled"), None)
+                elif what == "resume" and j.get("enabled") and j.get("paused"):
+                    j["paused"] = False
+                    if is_watch(j):
+                        j.update(next_check=now + 1, miss_count=0, watch_state="",
+                                 watch_note="")
+                    elif j.get("next_run") and j["next_run"] < now:
+                        self.schedule_after_run(j, now)
+                elif what == "duplicate":
+                    d = self.copy_of(j)
+                    self.jobs.append(d)
+                    new_ids.append(d["id"])
+                else:
+                    continue
+                done += 1
+        verb = {"start": "started", "stop": "stopped", "pause": "paused",
+                "resume": "resumed", "duplicate": "duplicated"}[what]
+        skipped = len(jobs) - done
+        why = {"start": "already running", "stop": "already stopped",
+               "pause": "stopped or already paused", "resume": "not paused",
+               "duplicate": ""}[what]
+        self.log(f"Batch: {done} job{'s' if done != 1 else ''} {verb}"
+                 + (f" ({skipped} skipped: {why})" if skipped and why else "")
+                 + (": " + ", ".join(j["name"] for j in jobs[:8])
+                    + ("…" if len(jobs) > 8 else "") if done else ""))
+        if what == "duplicate" and new_ids:
+            self.checked = set(new_ids)          # tick the copies, ready to edit together
+        self.save()
+        self.refresh_tree(full=what == "duplicate")
+        self.update_buttons()
+        return done
+
+    def copy_of(self, j):
+        """A stopped copy of a job with a new id (same as Duplicate)."""
+        c = copy.deepcopy(j)
+        c.update(id=uuid.uuid4().hex, name=(j["name"] + " (copy)")[:MAX_NAME], enabled=False,
+                 paused=False, count=0, last_result="", last_run=None)
+        for k in RUNTIME_KEYS:
+            c[k] = None
+        return c
+
+    def batch_delete(self):
+        jobs = self.checked_jobs()
+        if not jobs:
+            return
+        names = "\n".join(f"  • {j['name']}" for j in jobs[:12]) + (
+            f"\n  … and {len(jobs) - 12} more" if len(jobs) > 12 else "")
+        if not messagebox.askyesno(APP_NAME, f"Delete these {len(jobs)} job"
+                                             f"{'s' if len(jobs) != 1 else ''}?\n\n{names}"
+                                             f"\n\n(You can undo this right after, with Undo "
+                                             f"or Ctrl+Z.)", parent=self.root):
+            return
+        self.delete_jobs(jobs)
+
+    def delete_jobs(self, jobs):
+        """Delete several jobs at once; one Undo brings them all back."""
+        entry = []
+        with self.lock:
+            for j in jobs:
+                idx = next((i for i, x in enumerate(self.jobs) if x is j), None)
+                if idx is None:
+                    continue
+                entry.append((j, idx, bool(j.get("enabled"))))
+            ids = {id(j) for j, _, _ in entry}
+            self.jobs = [x for x in self.jobs if id(x) not in ids]
+            for j, _, _ in entry:
+                self.stop_job(j)
+        if not entry:
+            return 0
+        self.undo_stack.append(entry)
+        del self.undo_stack[:-10]
+        self.checked -= {j["id"] for j, _, _ in entry}
+        self.log(f"Batch: deleted {len(entry)} job{'s' if len(entry) != 1 else ''}: "
+                 + ", ".join(j["name"] for j, _, _ in entry[:8])
+                 + ("…" if len(entry) > 8 else "") + " (Ctrl+Z to undo)")
+        self.save()
+        self.refresh_tree(full=True)
+        self.show_undo_bar()
+        self.update_buttons()
+        return len(entry)
+
+    def batch_edit(self):
+        jobs = self.checked_jobs()
+        if jobs:
+            BatchEditDialog(self, jobs)
+
+    def apply_batch_edit(self, jobs, changes):
+        """Apply the same settings to several jobs. `changes` = {job key: value}; values are
+        validated like an import. Settings that don't apply to a kind of job (a watcher's
+        check interval for a scheduled click, say) are left alone. Running jobs pick up new
+        timing straight away; paused jobs stay paused. Returns {job name: [keys changed]}."""
+        clean = clean_batch_changes(changes)
+        report = {}
+        with self.lock:
+            for j in jobs:
+                if not self.find_job(j):
+                    continue
+                keys = [k for k in clean if batch_applies(k, j)]
+                if not keys:
+                    continue
+                before = {k: j.get(k) for k in keys}
+                for k in keys:
+                    j[k] = copy.deepcopy(clean[k])
+                for lo, hi in (("delay_min_s", "delay_max_s"),
+                               ("watch_delay_min_s", "watch_delay_max_s")):
+                    if lo in keys or hi in keys:
+                        if int(j.get(lo, 0)) > int(j.get(hi, 0)):
+                            if hi in keys and lo not in keys:
+                                j[lo] = j[hi]
+                            else:
+                                j[hi] = j[lo]
+                changed = [k for k in keys if before[k] != j.get(k)]
+                if not changed:
+                    continue
+                report[j["name"]] = changed
+                if j.get("enabled"):
+                    paused = bool(j.get("paused"))
+                    if is_watch(j) and any(k.startswith("watch_") for k in changed):
+                        self.start_job(j)
+                        j["paused"] = paused
+                    elif not is_watch(j) and any(k in ("interval_s", "random_on", "delay_min_s",
+                                                       "delay_max_s") for k in changed):
+                        self.schedule_first(j)
+        if report:
+            self.log(f"Batch edit: changed {len(report)} job{'s' if len(report) != 1 else ''} "
+                     f"({', '.join(sorted({BATCH_LABELS.get(k, k) for v in report.values() for k in v}))})")
+        self.save()
+        self.refresh_tree()
+        self.update_buttons()
+        return report
+
     def on_double(self, event=None):
+        if event is not None and getattr(event, "x", None) is not None and \
+                self.tree.identify_column(event.x) == "#1" and \
+                self.tree.identify_region(event.x, event.y) in ("cell", "tree"):
+            return self.on_tree_click(event)      # a quick second click on a tick box
         sel = self.tree.selection()
         if not sel:
             return
@@ -7009,6 +7588,8 @@ class App:
                 m.add_command(label="Dry run of its steps (no clicks)",
                               command=lambda: DryRunDialog(self, copy.deepcopy(job)))
             m.add_separator()
+            m.add_command(label="Untick" if job["id"] in self.checked else "Tick (for batch "
+                          "actions)", command=lambda: self.toggle_check(job["id"]))
             m.add_command(label="Duplicate", command=self.duplicate_job)
             m.add_command(label="Delete…", command=self.delete_job)
         m.tk_popup(event.x_root, event.y_root)
@@ -7265,12 +7846,15 @@ class App:
     def undo_delete(self, event=None):
         if not self.undo_stack:
             return
-        job, idx, was_on = self.undo_stack.pop()
+        entry = self.undo_stack.pop()
+        items = entry if isinstance(entry, list) else [entry]
         with self.lock:
-            self.jobs.insert(min(idx, len(self.jobs)), job)
-            if was_on:
-                self.start_job(job)
-        self.log(f"[{job['name']}] restored (undo)")
+            for job, idx, was_on in sorted(items, key=lambda t: t[1]):
+                self.jobs.insert(min(idx, len(self.jobs)), job)
+                if was_on:
+                    self.start_job(job)
+        for job, _, _ in items:
+            self.log(f"[{job['name']}] restored (undo)")
         self.save()
         self.refresh_tree(full=True)
         try:
@@ -7284,8 +7868,12 @@ class App:
         if bar is None:
             return
         if self.undo_stack:
-            job = self.undo_stack[-1][0]
-            self.undo_lbl.configure(text=f"Deleted \u201c{job['name']}\u201d.")
+            last = self.undo_stack[-1]
+            if isinstance(last, list) and len(last) > 1:
+                self.undo_lbl.configure(text=f"Deleted {len(last)} jobs.")
+            else:
+                job = (last[0] if isinstance(last, list) else last)[0]
+                self.undo_lbl.configure(text=f"Deleted \u201c{job['name']}\u201d.")
             if not bar.winfo_ismapped():
                 bar.pack(fill="x", pady=(0, 6), before=self.paned)
             if getattr(self, "_undo_job", None):
@@ -8180,20 +8768,21 @@ class App:
         def run():
             similar = [] if self.settings.get("show_similar") else None
             try:
-                found, x, y, score, sc = picture_on_screen(job["watch_png"],
-                                                           job.get("watch_scale"),
-                                                           area=job_area(job), report=similar)
+                (found, x, y, score, sc), wnote, _ = watched_picture(job, report=similar,
+                                                                     move_ok=True)
             except Exception as e:
                 restore()
                 messagebox.showerror(APP_NAME, f"Couldn't check the screen:\n{e}", parent=owner)
                 return
+            part = watch_partial(job)
+            best = (f"best: {score:.0%} of it matches, {part:.0%} needed" if part
+                    else f"best {score:.0%}") + (f"; {wnote}" if wnote else "")
             if not found:
-                self.log(f"[{job['name']}] check: watched picture NOT on screen "
-                         f"(best {score:.0%})")
+                self.log(f"[{job['name']}] check: watched picture NOT on screen ({best})")
                 appears = job.get("watch_trigger") == "appears"
                 where = "in its search area" if job.get("watch_area") else "on the screen"
                 self.record_test(job["name"], "Check picture now",
-                                 f"Picture NOT {where} (best {score:.0%}) - the watcher "
+                                 f"Picture NOT {where} ({best}) - the watcher "
                                  f"would {'not ' if appears else ''}click",
                                  "ok" if appears else "warn")
 
@@ -8201,7 +8790,11 @@ class App:
                     restore()
                     messagebox.showwarning(
                         APP_NAME, f"The watched picture is NOT {where} right now "
-                                  f"(best match {score:.0%})."
+                                  f"({best})."
+                                  + ("" if part else "\n\nIf part of the picture changes "
+                                     "(a number, a time, an animation), turn on \u201cPart of "
+                                     "the picture is enough\u201d in the watcher, or draw a "
+                                     "smaller box around a part that stays the same.")
                                   + ("\n\nThe outlines showed similar pictures; none of them "
                                      "counts as the watched picture." if similar else "")
                                   + f"\n\nIf this watcher were running, it would "
@@ -8215,12 +8808,13 @@ class App:
                     tell()
                 return
             size = "" if not sc or abs(sc - 1) < 0.01 else f" at {sc:.0%} size"
-            self.log(f"[{job['name']}] check: watched picture found at ({x}, {y}), "
-                     f"{score:.0%}{size}")
+            got = (f"{score:.0%} of it matches" if part else f"{score:.0%}") + size + \
+                (f"; {wnote}" if wnote else "")
+            self.log(f"[{job['name']}] check: watched picture found at ({x}, {y}), {got}")
             self.record_test(job["name"], "Check picture now",
-                             f"Picture found at ({x}, {y}), {score:.0%}{size}", "ok")
+                             f"Picture found at ({x}, {y}), {got}", "ok")
             self.flash_marker(x, y, f"{job['name']}  ·  watched picture found "
-                                    f"({score:.0%}{size})", restore, others=similar)
+                                    f"({got})", restore, others=similar)
         self.root.after(400, run)
 
     def marker_seconds(self):
@@ -8640,6 +9234,25 @@ class App:
 
 
 # ---------------------------------------------------------------- dialogs
+UNIT_GAP = 4      # px between a number field and its unit (h, m, s, seconds, ...)
+UNIT_AFTER = 12   # px after a unit, before the next field
+
+
+def spin_unit(parent, var, lo, hi, unit, width=5, command=None, lead=0, increment=None,
+              unit_style=None):
+    """A number field with its unit right next to it, packed left into `parent`. Every
+    duration and count field in the app uses this so the spacing is the same everywhere.
+    Returns (spinbox, unit label)."""
+    kw = {"command": command} if command else {}
+    if increment:
+        kw["increment"] = increment
+    sp = ttk.Spinbox(parent, from_=lo, to=hi, width=width, textvariable=var, **kw)
+    sp.pack(side="left", padx=(lead, UNIT_GAP))
+    ul = ttk.Label(parent, text=unit, **({"style": unit_style} if unit_style else {}))
+    ul.pack(side="left", padx=(0, UNIT_AFTER))
+    return sp, ul
+
+
 class Dialog(tk.Toplevel):
     """Resizable dialog. Content goes in self.body (scrolls when the window is too
     short); buttons go in self.footer, which always stays visible at the bottom."""
@@ -9315,7 +9928,7 @@ class JobEditor(Dialog):
         ttk.Checkbutton(r4, text="Stop after", variable=self.v_lim_on).pack(side="left")
         self.v_lim_n = tk.IntVar(value=int(job.get("limit_clicks", 10)))
         ttk.Spinbox(r4, from_=1, to=100000, width=7, textvariable=self.v_lim_n).pack(
-            side="left", padx=6)
+            side="left", padx=(6, UNIT_GAP))
         ttk.Label(r4, text="clicks (counted from when the job is started)",
                   style="Muted.TLabel").pack(side="left")
         r5 = ttk.Frame(g)
@@ -9490,6 +10103,23 @@ class JobEditor(Dialog):
                    command=lambda: self.draw_box("area")).pack(side="left")
         self.area_info = ttk.Label(g, style="Muted.TLabel")
         self.area_info.pack(anchor="w", pady=(4, 0))
+        # 4.5.3: exact (default) or partial matching
+        mrow = ttk.Frame(g)
+        mrow.pack(fill="x", pady=(10, 0))
+        ttk.Label(mrow, text="Match").pack(side="left", padx=(0, 8))
+        self.v_wpartial = tk.BooleanVar(value=job.get("watch_match") == "partial")
+        ttk.Radiobutton(mrow, text="the exact picture", value=False, variable=self.v_wpartial,
+                        command=self.match_changed).pack(side="left")
+        ttk.Radiobutton(mrow, text="part of the picture is enough:", value=True,
+                        variable=self.v_wpartial, command=self.match_changed).pack(
+            side="left", padx=(12, 0))
+        self.v_wpct = tk.IntVar(value=int(job.get("watch_partial_pct", PARTIAL_DEFAULT_PCT)))
+        self.wpct_spin, self.wpct_unit = spin_unit(
+            mrow, self.v_wpct, PARTIAL_MIN_PCT, PARTIAL_MAX_PCT, "% of it", width=4, lead=6,
+            increment=5)
+        self.match_info = ttk.Label(g, style="Muted.TLabel", wraplength=520, justify="left")
+        self.match_info.pack(anchor="w", pady=(4, 0))
+        self.match_changed()
         if not HAVE_CV:
             ttk.Label(right, style="Warn.TLabel", wraplength=330, text=(
                 "Watching needs opencv-python-headless and numpy. Start Clickue.bat "
@@ -9503,11 +10133,11 @@ class JobEditor(Dialog):
         self.confirm_lbl = ttk.Label(grid, text="Click when missing for")
         self.confirm_lbl.grid(row=r, column=0, sticky="w", pady=3, padx=(0, 10))
         self.v_confirm = tk.IntVar(value=int(job.get("watch_confirm", 2)))
-        ttk.Spinbox(grid, from_=1, to=20, width=5, textvariable=self.v_confirm).grid(
-            row=r, column=1, sticky="w")
-        ttk.Label(grid, text="checks in a row  (ignores brief flickers; repeat checks are "
-                             "quick)", style="Muted.TLabel").grid(
-            row=r, column=2, columnspan=5, sticky="w", padx=(3, 0))
+        cbox = ttk.Frame(grid)
+        cbox.grid(row=r, column=1, columnspan=8, sticky="w")
+        spin_unit(cbox, self.v_confirm, 1, 20, "checks in a row  (ignores brief flickers; "
+                                               "repeat checks are quick)", width=5,
+                  unit_style="Muted.TLabel")
         r += 1
         self.v_wrandom = tk.BooleanVar(value=job.get("watch_random_on", True))
         ttk.Checkbutton(grid, text="Wait a random delay before clicking",
@@ -9525,10 +10155,7 @@ class JobEditor(Dialog):
             row=r, column=0, columnspan=8, sticky="w", pady=(6, 2))
         r += 1
         self.w_cool = self.hms_row(grid, r, "After clicking, wait",
-                                   job.get("watch_cooldown_s", 30))
-        cool_lbl = ttk.Label(grid, text="then look again", style="Muted.TLabel")
-        cool_lbl.grid(row=r, column=7, sticky="w")
-        self._row_widgets[id(self.w_cool)].append(cool_lbl)
+                                   job.get("watch_cooldown_s", 30), suffix="then look again")
         r += 1
         self.v_once = tk.BooleanVar(value=job.get("watch_once", True))
         self.once_cb = ttk.Checkbutton(grid, text="", variable=self.v_once)
@@ -9564,6 +10191,21 @@ class JobEditor(Dialog):
         if self.v_area.get() == "area" and not self.watch_area:
             self.draw_box("area")
         self.update_area_info()
+
+    def match_changed(self):
+        part = bool(self.v_wpartial.get())
+        for w in (self.wpct_spin, self.wpct_unit):
+            try:
+                w.state(["!disabled"] if part else ["disabled"])
+            except Exception:
+                pass
+        self.match_info.configure(text=(
+            "Counts as showing when at least this much of the picture matches (checked in "
+            "small pieces), so a number or animation changing inside the box doesn't make it "
+            "\u201cgone\u201d. Lower = more forgiving, but a look-alike may count."
+            if part else
+            "Shape, colour and fine detail must all match, so a similar-looking replacement "
+            "doesn't count. Draw the box around something that doesn't change."))
 
     def update_area_info(self):
         if self.v_area.get() == "area" and self.watch_area:
@@ -9631,7 +10273,8 @@ class JobEditor(Dialog):
             self.after(900, lambda: setattr(self, "_hold", max(0, self._hold - 1)))
 
         try:
-            shot, (vx, vy) = grab_screen(move_cursor=False)
+            # the pointer is moved aside for a moment so hover effects aren't saved (4.5.3)
+            shot, (vx, vy) = grab_screen(move_cursor=True)
         except Exception as e:
             restore()
             messagebox.showerror(APP_NAME, f"Couldn't capture the screen:\n{e}", parent=self)
@@ -9732,13 +10375,27 @@ class JobEditor(Dialog):
             crop = shot.crop(b)
             ov.destroy()
             self._ov_imgs = []
-            self.watch_png = img_to_b64(crop)
+            self.watch_png = img_to_b64(crop)        # full screen resolution, lossless
             self.update_watch_thumb()
+            # look once more a moment later: does anything inside the box change?
+            self.after(600, lambda: finish(crop, b))
+
+        def finish(crop, b):
+            changed = picture_changes(crop, b, vx, vy)
             restore()
             gray = np.asarray(crop.convert("L"), dtype=np.float32)
             app.log(f"Watch picture saved: {crop.width}×{crop.height} at "
-                    f"({b[0] + vx}, {b[1] + vy})")
-            if float(gray.std()) < 6:
+                    f"({b[0] + vx}, {b[1] + vy}), full screen resolution"
+                    + (f"; {changed:.0%} of it changed within a second" if changed else ""))
+            if changed and not self.v_wpartial.get():
+                messagebox.showwarning(
+                    APP_NAME, f"Part of that picture changed within a second ({changed:.0%} "
+                              f"of it), e.g. a number, a clock or an animation.\n\nWith "
+                              f"\u201cthe exact picture\u201d the watcher would think it's "
+                              f"gone whenever that part changes. Draw a smaller box around a "
+                              f"part that stays the same, or choose \u201cpart of the picture "
+                              f"is enough\u201d under Match.", parent=self)
+            elif float(gray.std()) < 6:
                 messagebox.showwarning(APP_NAME, "That area is very plain (almost one "
                                                  "colour), so it can't be told apart from "
                                                  "other plain areas. Try a box around text, "
@@ -9840,29 +10497,28 @@ class JobEditor(Dialog):
         except Exception:
             self.thumb_lbl.configure(image="", text="(picture unreadable)")
 
-    def hms_row(self, f, r, label, seconds):
+    def hms_row(self, f, r, label, seconds, suffix=None):
         h, rem = divmod(int(seconds), 3600)
         m, s = divmod(rem, 60)
         lbl = ttk.Label(f, text=label)
         lbl.grid(row=r, column=0, sticky="w", pady=3, padx=(0, 10))
-        # fixed column widths so nothing moves when values or text change
+        # fixed label column so the fields line up from row to row; the fields and their
+        # h / m / s units sit together in one compact row (4.5.3: units right next to fields)
         f.columnconfigure(0, minsize=190)
-        for c in (1, 3, 5):
-            f.columnconfigure(c, minsize=70)
-        for c in (2, 4, 6):
-            f.columnconfigure(c, minsize=34)
+        box = ttk.Frame(f)
+        box.grid(row=r, column=1, columnspan=8, sticky="w")
         vs = []
         widgets = [lbl]
-        for col, (val, top, unit) in enumerate(((h, 999, "h"), (m, 59, "m"), (s, 59, "s"))):
+        for val, top, unit in ((h, 999, "h"), (m, 59, "m"), (s, 59, "s")):
             v = tk.IntVar(value=val)
-            sp = ttk.Spinbox(f, from_=0, to=top, width=5, textvariable=v,
-                             command=self.update_preview)
-            sp.grid(row=r, column=1 + col * 2, sticky="w")
+            sp, ul = spin_unit(box, v, 0, top, unit, width=5, command=self.update_preview)
             sp.bind("<KeyRelease>", lambda e: self.update_preview())
-            ul = ttk.Label(f, text=unit)
-            ul.grid(row=r, column=2 + col * 2, sticky="w", padx=(3, 10))
             vs.append(v)
             widgets += [sp, ul]
+        if suffix:
+            sl = ttk.Label(box, text=suffix, style="Muted.TLabel")
+            sl.pack(side="left", padx=(4, 0))
+            widgets.append(sl)
         if not hasattr(self, "_row_widgets"):
             self._row_widgets = {}
         self._row_widgets[id(vs)] = widgets
@@ -10009,7 +10665,10 @@ class JobEditor(Dialog):
                          and self.v_trigger.get() == "appears",
                          watch_area=(copy.deepcopy(self.watch_area)
                                      if self.v_area.get() == "area" else None),
-                         watch_area_screen=copy.deepcopy(self.watch_area_screen))
+                         watch_area_screen=copy.deepcopy(self.watch_area_screen),
+                         watch_match="partial" if self.v_wpartial.get() else "exact",
+                         watch_partial_pct=min(PARTIAL_MAX_PCT, max(
+                             PARTIAL_MIN_PCT, int(self.v_wpct.get()))))
         except Exception:
             messagebox.showerror(APP_NAME, "Please check the numbers and the time (HH:MM).",
                                  parent=self)
@@ -10139,7 +10798,7 @@ class JobEditor(Dialog):
         with app.lock:
             changed = any(j.get(k) != d.get(k) for k in (
                 "watch_png", "watch_interval_s", "watch_confirm", "watch_trigger",
-                "watch_area"))
+                "watch_area", "watch_match", "watch_partial_pct"))
             was_enabled = j.get("enabled", False) and not self.is_new
             j.update(d)
             if self.is_new:
@@ -10156,6 +10815,310 @@ class JobEditor(Dialog):
         app.refresh_tree(full=True)
         self.destroy()
         app.warn_conflicts(j)
+
+
+class BatchEditDialog(Dialog):
+    """Change the same settings on several ticked jobs at once (4.5.3). Only the settings
+    whose "Change" box is ticked are touched; everything else stays as it is per job."""
+
+    def __init__(self, app, jobs):
+        super().__init__(app, f"Edit {len(jobs)} jobs - {APP_NAME}")
+        self.jobs = list(jobs)
+        self.rows = []          # (flag var, [widgets], getter)
+        n_watch = sum(1 for j in self.jobs if is_watch(j))
+        n_click = len(self.jobs) - n_watch
+        f = self.body
+        ttk.Label(f, text=f"Edit {len(self.jobs)} jobs together", style="Title.TLabel").pack(
+            anchor="w")
+        names = ", ".join(j["name"] for j in self.jobs[:6]) + (
+            f" and {len(self.jobs) - 6} more" if len(self.jobs) > 6 else "")
+        ttk.Label(f, style="Muted.TLabel", wraplength=560, justify="left", text=(
+            f"{names}.\nTick each setting you want to set on all of them; everything else "
+            f"stays as it is in each job. Running jobs pick up the new timing right away; "
+            f"paused jobs stay paused.")).pack(anchor="w", pady=(4, 8))
+        first = self.jobs[0]
+        clicks = [j for j in self.jobs if not is_watch(j)]
+        watches = [j for j in self.jobs if is_watch(j)]
+
+        g = self.section(f, "Every ticked job")
+        self.combo_row(g, "Mouse button", "button", ("left", "right", "middle"),
+                       first.get("button", "left"))
+        self.choice_row(g, "Click", "clicks", ((1, "single"), (2, "double")),
+                        int(first.get("clicks", 1)))
+        self.combo_row(g, "Priority when several are due", "priority",
+                       ("high", "normal", "low"), first.get("priority", "normal"))
+        self.choice_row(g, "Click-spot picture", "exact_match",
+                        ((True, "the exact picture only"), (False, "similar pictures count")),
+                        bool(first.get("exact_match", True)))
+        self.choice_row(g, "If the picture isn't found", "image_fallback",
+                        (("wait", "wait and try again"), ("position", "click the saved spot")),
+                        first.get("image_fallback", "wait"))
+        self.hours_row(g, first)
+        self.hms_field(g, "Stop a run that takes longer than", "run_limit_s",
+                       int(first.get("run_limit_s", DEFAULT_RUN_LIMIT_S)))
+        for key, label in (("bring_to_front", "Bring its window to the front"),
+                           ("let_others_run", "Let other jobs run while its steps wait"),
+                           ("record_video", "Record the screen while it runs"),
+                           ("fail_shot", "Save a screenshot if its steps fail")):
+            self.bool_row(g, label, key, bool(first.get(key)))
+
+        if clicks:
+            c0 = clicks[0]
+            g = self.section(f, f"Scheduled clicks only ({n_click})")
+            self.hms_field(g, "Scheduled every", "interval_s", int(c0.get("interval_s", 3600)))
+            self.delay_row(g, "Random delay after each time", ("random_on", "delay_min_s",
+                                                               "delay_max_s"), c0)
+        if watches:
+            w0 = watches[0]
+            g = self.section(f, f"Screen watchers only ({n_watch})")
+            self.hms_field(g, "Check every", "watch_interval_s",
+                           int(w0.get("watch_interval_s", 30)))
+            self.spin_row(g, "Act after", "watch_confirm", 1, 100, "checks in a row",
+                          int(w0.get("watch_confirm", 2)))
+            self.delay_row(g, "Random delay before clicking",
+                           ("watch_random_on", "watch_delay_min_s", "watch_delay_max_s"), w0)
+            self.cool_row(g, w0)
+            self.bool_row(g, "Click only once until the picture changes back", "watch_once",
+                          bool(w0.get("watch_once", True)))
+            self.match_row(g, w0)
+        if not watches or not clicks:
+            ttk.Label(f, style="Muted.TLabel", text=(
+                "Only settings that fit the ticked jobs are shown.")).pack(anchor="w",
+                                                                          pady=(8, 0))
+        ttk.Button(self.footer, text="Apply to all", style="Accent.TButton",
+                   command=self.apply).pack(side="right")
+        ttk.Button(self.footer, text="Cancel", command=self.destroy).pack(side="right",
+                                                                          padx=(0, 6))
+        self.status = ttk.Label(self.footer, style="Muted.TLabel")
+        self.status.pack(side="left")
+        for flag, ws, _ in self.rows:
+            self._enable(ws, False)
+        self.finish()
+
+    # ---- building blocks
+    def section(self, f, title):
+        g = ttk.LabelFrame(f, text=title, padding=(12, 8))
+        g.pack(fill="x", pady=(8, 0))
+        g.columnconfigure(1, weight=1)
+        return g
+
+    def add_row(self, g, label, build, getter):
+        r = len(g.grid_slaves(column=0))
+        flag = tk.BooleanVar(value=False)
+        box = ttk.Frame(g)
+        ws = build(box) or []
+        cb = ttk.Checkbutton(g, text=label, variable=flag,
+                             command=lambda: (self._enable(ws, flag.get()), self.count()))
+        cb.grid(row=r, column=0, sticky="w", pady=3, padx=(0, 12))
+        box.grid(row=r, column=1, sticky="w", pady=3)
+        self.rows.append((flag, ws, getter))
+        return flag
+
+    @staticmethod
+    def _enable(ws, on):
+        for w in ws:
+            try:
+                w.state(["!disabled"] if on else ["disabled"])
+            except Exception:
+                try:
+                    w.configure(state="normal" if on else "disabled")
+                except Exception:
+                    pass
+
+    def count(self):
+        n = sum(1 for flag, _, _ in self.rows if flag.get())
+        self.status.configure(text=f"{n} setting{'s' if n != 1 else ''} to change" if n
+                              else "Nothing ticked yet")
+
+    def hms_box(self, box, seconds):
+        h, rem = divmod(int(seconds), 3600)
+        m, sec = divmod(rem, 60)
+        vs, ws = [], []
+        for val, top, unit in ((h, 999, "h"), (m, 59, "m"), (sec, 59, "s")):
+            v = tk.IntVar(value=val)
+            ws += list(spin_unit(box, v, 0, top, unit, width=5))
+            vs.append(v)
+        return vs, ws
+
+    @staticmethod
+    def hms_get(vs):
+        h, m, sec = (int(v.get()) for v in vs)
+        return h * 3600 + m * 60 + sec
+
+    def combo_row(self, g, label, key, values, cur):
+        v = tk.StringVar(value=cur if cur in values else values[0])
+
+        def build(box):
+            cb = ttk.Combobox(box, textvariable=v, values=values, state="readonly", width=10)
+            cb.pack(side="left")
+            return [cb]
+        self.add_row(g, label, build, lambda: {key: v.get()})
+
+    def choice_row(self, g, label, key, options, cur):
+        v = tk.StringVar(value=str(cur))
+        by_text = {str(o): o for o, _ in options}
+
+        def build(box):
+            ws = []
+            for o, text in options:
+                rb = ttk.Radiobutton(box, text=text, value=str(o), variable=v)
+                rb.pack(side="left", padx=(0, 12))
+                ws.append(rb)
+            return ws
+        self.add_row(g, label, build, lambda: {key: by_text[v.get()]})
+
+    def bool_row(self, g, label, key, cur):
+        v = tk.BooleanVar(value=cur)
+
+        def build(box):
+            ws = []
+            for val, text in ((True, "on"), (False, "off")):
+                rb = ttk.Radiobutton(box, text=text, value=val, variable=v)
+                rb.pack(side="left", padx=(0, 12))
+                ws.append(rb)
+            return ws
+        self.add_row(g, label, build, lambda: {key: bool(v.get())})
+
+    def spin_row(self, g, label, key, lo, hi, unit, cur):
+        v = tk.IntVar(value=cur)
+        self.add_row(g, label, lambda box: list(spin_unit(box, v, lo, hi, unit, width=5)),
+                     lambda: {key: int(v.get())})
+
+    def hms_field(self, g, label, key, seconds):
+        holder = {}
+
+        def build(box):
+            holder["vs"], ws = self.hms_box(box, seconds)
+            return ws
+        self.add_row(g, label, build, lambda: {key: self.hms_get(holder["vs"])})
+
+    def delay_row(self, g, label, keys, job):
+        on_k, lo_k, hi_k = keys
+        on = tk.BooleanVar(value=bool(job.get(on_k, True)))
+        holder = {}
+
+        def build(box):
+            r1, r2 = ttk.Frame(box), ttk.Frame(box)
+            r1.pack(anchor="w")
+            r2.pack(anchor="w", pady=(4, 0))
+            cb = ttk.Checkbutton(r1, text="on, from", variable=on, width=8)
+            cb.pack(side="left", padx=(0, 8))
+            holder["lo"], ws1 = self.hms_box(r1, int(job.get(lo_k, 0)))
+            ttk.Label(r2, text="up to", width=8).pack(side="left", padx=(0, 8))
+            holder["hi"], ws2 = self.hms_box(r2, int(job.get(hi_k, 0)))
+            return [cb] + ws1 + ws2
+        self.add_row(g, label, build, lambda: {on_k: bool(on.get()),
+                                               lo_k: self.hms_get(holder["lo"]),
+                                               hi_k: self.hms_get(holder["hi"])})
+
+    def cool_row(self, g, job):
+        on = tk.BooleanVar(value=bool(job.get("watch_cooldown_on", True)))
+        holder = {}
+
+        def build(box):
+            cb = ttk.Checkbutton(box, text="on, wait", variable=on, width=8)
+            cb.pack(side="left", padx=(0, 8))
+            holder["vs"], ws = self.hms_box(box, int(job.get("watch_cooldown_s", 30)))
+            return [cb] + ws
+        self.add_row(g, "Wait after each click", build,
+                     lambda: {"watch_cooldown_on": bool(on.get()),
+                              "watch_cooldown_s": self.hms_get(holder["vs"])})
+
+    def match_row(self, g, job):
+        part = tk.BooleanVar(value=job.get("watch_match") == "partial")
+        pct = tk.IntVar(value=int(job.get("watch_partial_pct", PARTIAL_DEFAULT_PCT)))
+
+        def build(box):
+            a = ttk.Radiobutton(box, text="the exact picture", value=False, variable=part)
+            a.pack(side="left", padx=(0, 12))
+            b = ttk.Radiobutton(box, text="part is enough:", value=True, variable=part)
+            b.pack(side="left")
+            return [a, b] + list(spin_unit(box, pct, PARTIAL_MIN_PCT, PARTIAL_MAX_PCT,
+                                           "% of it", width=4, lead=6, increment=5))
+        self.add_row(g, "Match the watched picture", build,
+                     lambda: {"watch_match": "partial" if part.get() else "exact",
+                              "watch_partial_pct": int(pct.get())})
+
+    def hours_row(self, g, job):
+        on = tk.BooleanVar(value=bool(job.get("hours_on")))
+        fr = tk.StringVar(value=job.get("hours_from", "08:00"))
+        to = tk.StringVar(value=job.get("hours_to", "22:00"))
+        outside = tk.StringVar(value=job.get("hours_outside", "wait"))
+        days = [tk.BooleanVar(value=d in (job.get("hours_days") or [])) for d in range(7)]
+
+        def build(box):
+            top = ttk.Frame(box)
+            top.pack(anchor="w")
+            cb = ttk.Checkbutton(top, text="only from", variable=on)
+            cb.pack(side="left", padx=(0, 6))
+            e1 = ttk.Entry(top, textvariable=fr, width=6)
+            e1.pack(side="left")
+            ttk.Label(top, text="to").pack(side="left", padx=6)
+            e2 = ttk.Entry(top, textvariable=to, width=6)
+            e2.pack(side="left")
+            row2 = ttk.Frame(box)
+            row2.pack(anchor="w", pady=(4, 0))
+            ws = [cb, e1, e2]
+            for d, name in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
+                c = ttk.Checkbutton(row2, text=name, variable=days[d])
+                c.pack(side="left", padx=(0, 6))
+                ws.append(c)
+            row3 = ttk.Frame(box)
+            row3.pack(anchor="w", pady=(4, 0))
+            ttk.Label(row3, text="Outside them:").pack(side="left", padx=(0, 6))
+            for val, text in (("wait", "wait for them"), ("skip", "skip that click")):
+                rb = ttk.Radiobutton(row3, text=text, value=val, variable=outside)
+                rb.pack(side="left", padx=(0, 10))
+                ws.append(rb)
+            return ws
+
+        def get():
+            for t in (fr.get(), to.get()):
+                parse_hhmm(t.strip())
+            return {"hours_on": bool(on.get()), "hours_from": fr.get().strip(),
+                    "hours_to": to.get().strip(), "hours_outside": outside.get(),
+                    "hours_days": [d for d in range(7) if days[d].get()]}
+        self.add_row(g, "Active hours", build, get)
+
+    # ---- apply
+    def apply(self):
+        changes = {}
+        try:
+            for flag, _, getter in self.rows:
+                if flag.get():
+                    changes.update(getter())
+        except Exception:
+            messagebox.showerror(APP_NAME, "Please check the numbers and the times (HH:MM).",
+                                 parent=self)
+            return
+        if not changes:
+            messagebox.showinfo(APP_NAME, "Tick at least one setting to change.",
+                                 parent=self)
+            return
+        for lo, hi in (("delay_min_s", "delay_max_s"), ("watch_delay_min_s",
+                                                       "watch_delay_max_s")):
+            if lo in changes and changes[lo] > changes[hi]:
+                messagebox.showerror(APP_NAME, "The random delay's \u201cto\u201d must be at "
+                                               "least its \u201cfrom\u201d.", parent=self)
+                return
+        if changes.get("hours_on") and not changes.get("hours_days"):
+            messagebox.showerror(APP_NAME, "Choose at least one day for the active hours.",
+                                 parent=self)
+            return
+        if "interval_s" in changes and changes["interval_s"] < 1 or \
+                "watch_interval_s" in changes and changes["watch_interval_s"] < 1:
+            messagebox.showerror(APP_NAME, "The interval must be at least 1 second.",
+                                 parent=self)
+            return
+        report = self.app.apply_batch_edit(self.jobs, changes)
+        self._initial = None
+        self.destroy()
+        n = len(report)
+        messagebox.showinfo(APP_NAME, f"Changed {n} of {len(self.jobs)} job"
+                                      f"{'s' if len(self.jobs) != 1 else ''}."
+                            + ("" if n == len(self.jobs) else
+                               " The others already had these settings, or they don't apply "
+                               "to that kind of job."), parent=self.app.root)
 
 
 class TestDialog(Dialog):
@@ -10177,12 +11140,8 @@ class TestDialog(Dialog):
         ttk.Label(row, text="Click in").pack(side="left")
         self.v_m = tk.IntVar(value=2)
         self.v_s = tk.IntVar(value=0)
-        ttk.Spinbox(row, from_=0, to=1440, width=5, textvariable=self.v_m).pack(side="left",
-                                                                               padx=6)
-        ttk.Label(row, text="min").pack(side="left")
-        ttk.Spinbox(row, from_=0, to=59, width=4, textvariable=self.v_s).pack(side="left",
-                                                                             padx=6)
-        ttk.Label(row, text="sec").pack(side="left")
+        spin_unit(row, self.v_m, 0, 1440, "min", width=5, lead=6)
+        spin_unit(row, self.v_s, 0, 59, "sec", width=4)
 
         b = self.footer
         if job.get("test_at"):
@@ -10294,6 +11253,13 @@ class TestsWindow(tk.Toplevel):
                 b.bind("<Leave>", lambda e: self.hint.configure(text=default_hint))
                 bucket.append(b)
                 btns.append(b)
+            # lay the buttons out right away (one row): on Windows a frame that has nothing
+            # in it yet may never get a <Configure> event, which left the buttons invisible
+            # until the window was resized (4.5.3)
+            for i, b in enumerate(btns):
+                b.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 4, 0))
+                g.columnconfigure(i, weight=1, uniform="b")
+            g._flow = "row"
             g.bind("<Configure>", lambda e, g=g, btns=btns: self.flow_buttons(g, btns))
             self.group_frames.append((g, btns))
 
@@ -10312,6 +11278,10 @@ class TestsWindow(tk.Toplevel):
             ("Schedule watcher test…", lambda: self.run("wsched"), "runs the check later, in "
                                                                    "the background"),
         ), self.btns_watch)
+        for i, (g, _) in enumerate(self.group_frames):    # side by side to start with
+            g.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))
+            self.groups.columnconfigure(i, weight=1, uniform="tg")
+        self._narrow = False
         self.groups.bind("<Configure>", lambda e: (self.flow_groups(),
                                                    self.after(60, self.keep_buttons_visible)))
         self.hint = ttk.Label(ctl, text=default_hint, style="Muted.TLabel")
@@ -10373,6 +11343,8 @@ class TestsWindow(tk.Toplevel):
         self.lift()
         self.focus_force()
         self.after(200, self.restore_split)
+        for ms in (60, 250, 700):                   # re-flow once the window has its size
+            self.after(ms, self.relayout)
         self.paned.bind("<ButtonRelease-1>", lambda e: self.after(50, self.remember_split))
         self._gjob = None
         self.bind("<Configure>", self.on_configure, add="+")
@@ -10401,6 +11373,8 @@ class TestsWindow(tk.Toplevel):
         """Side by side when there's room, stacked when narrow."""
         W = self.groups.winfo_width()
         if W <= 1:
+            W = self.winfo_width() - 28
+        if W <= 1:
             return
         need = sum(sum(b.winfo_reqwidth() for b in btns) + 40 for _, btns in self.group_frames)
         narrow = W < need + 10
@@ -10417,9 +11391,27 @@ class TestsWindow(tk.Toplevel):
         self.groups.columnconfigure(1, weight=0 if narrow else 1,
                                     uniform="" if narrow else "tg")
 
+    def relayout(self):
+        """Re-flow the test buttons for the window's real size (doesn't rely on <Configure>
+        events, which Windows doesn't always send for these frames when the window opens)."""
+        try:
+            if not self.winfo_exists():
+                return
+            self.update_idletasks()
+            self.flow_groups()
+            for g, btns in self.group_frames:
+                self.flow_buttons(g, btns)
+            self.update_idletasks()
+            self.keep_buttons_visible()
+        except Exception:
+            pass
+
     def flow_buttons(self, g, btns):
         """One row of buttons if they fit, otherwise one per line."""
         W = g.winfo_width()
+        if W <= 1:
+            W = (self.groups.winfo_width() if self._narrow
+                 else self.groups.winfo_width() // max(1, len(self.group_frames))) - 20
         if W <= 1:
             return
         one_row = sum(b.winfo_reqwidth() for b in btns) + 8 * len(btns) <= W
@@ -10662,12 +11654,8 @@ class WatchTestDialog(Dialog):
         ttk.Label(row, text="Run in").pack(side="left")
         self.v_m = tk.IntVar(value=2)
         self.v_s = tk.IntVar(value=0)
-        ttk.Spinbox(row, from_=0, to=1440, width=5, textvariable=self.v_m).pack(side="left",
-                                                                               padx=6)
-        ttk.Label(row, text="min").pack(side="left")
-        ttk.Spinbox(row, from_=0, to=59, width=4, textvariable=self.v_s).pack(side="left",
-                                                                             padx=6)
-        ttk.Label(row, text="sec").pack(side="left")
+        spin_unit(row, self.v_m, 0, 1440, "min", width=5, lead=6)
+        spin_unit(row, self.v_s, 0, 59, "sec", width=4)
         self.v_click = tk.BooleanVar(value=bool(job.get("wtest_click", False)))
         ttk.Checkbutton(f, text="If the picture is missing, really click the button",
                         variable=self.v_click).pack(anchor="w", pady=(10, 0))
@@ -10803,11 +11791,11 @@ class StepDialog(Dialog):
         ttk.Label(r, text="Wait").pack(side="left")
         self.v_wmin = tk.DoubleVar(value=float(self.step.get("min", 2)))
         ttk.Spinbox(r, from_=0, to=86400, increment=0.5, width=7, textvariable=self.v_wmin).pack(
-            side="left", padx=6)
+            side="left", padx=(6, UNIT_GAP))
         ttk.Label(r, text="to").pack(side="left")
         self.v_wmax = tk.DoubleVar(value=float(self.step.get("max", self.step.get("min", 2))))
         ttk.Spinbox(r, from_=0, to=86400, increment=0.5, width=7, textvariable=self.v_wmax).pack(
-            side="left", padx=6)
+            side="left", padx=(6, UNIT_GAP))
         ttk.Label(r, text="seconds (the same number twice = exactly that long)",
                   style="Muted.TLabel").pack(side="left")
 
@@ -10862,7 +11850,7 @@ class StepDialog(Dialog):
         ttk.Label(r, text="Wait after pasting").pack(side="left")
         self.v_settle = tk.DoubleVar(value=float(self.step.get("settle", 0.3)))
         ttk.Spinbox(r, from_=0.05, to=5, increment=0.05, width=6,
-                    textvariable=self.v_settle).pack(side="left", padx=6)
+                    textvariable=self.v_settle).pack(side="left", padx=(6, UNIT_GAP))
         ttk.Label(r, text="s before the clipboard is put back (slow programs may need more)",
                   style="Muted.TLabel").pack(side="left")
 
@@ -10906,7 +11894,7 @@ class StepDialog(Dialog):
         ttk.Label(r, text="Wait up to").pack(side="left")
         self.v_ptimeout = tk.IntVar(value=int(self.step.get("timeout", 60)))
         ttk.Spinbox(r, from_=1, to=STEP_MAX_WAIT_S, width=6, textvariable=self.v_ptimeout).pack(
-            side="left", padx=6)
+            side="left", padx=(6, UNIT_GAP))
         ttk.Label(r, text="seconds; if it doesn't happen,").pack(side="left")
         self.v_ponto = tk.StringVar(value="continue anyway" if self.step.get("on_timeout") ==
                                     "continue" else "stop the chain")
@@ -10927,7 +11915,7 @@ class StepDialog(Dialog):
         ttk.Entry(r, textvariable=self.v_keys, width=22).pack(side="left", padx=6)
         ttk.Label(r, text="times").pack(side="left")
         self.v_times = tk.IntVar(value=int(self.step.get("times", 1)))
-        ttk.Spinbox(r, from_=1, to=100, width=4, textvariable=self.v_times).pack(side="left", padx=6)
+        ttk.Spinbox(r, from_=1, to=100, width=4, textvariable=self.v_times).pack(side="left", padx=(6, UNIT_GAP))
         qr = ttk.Frame(fr)
         qr.pack(anchor="w", pady=(6, 0))
         for k in ("Enter", "Tab", "Esc", "Ctrl+S", "Ctrl+A", "Ctrl+V", "F5", "Alt+Tab"):
@@ -10981,7 +11969,7 @@ class StepDialog(Dialog):
         ttk.Label(self.cond_wait, text="Wait up to").pack(side="left", pady=(6, 0))
         self.v_cwait = tk.DoubleVar(value=float(self.cond.get("wait", 0)))
         ttk.Spinbox(self.cond_wait, from_=0, to=STEP_MAX_WAIT_S, increment=1, width=6,
-                    textvariable=self.v_cwait).pack(side="left", padx=6, pady=(6, 0))
+                    textvariable=self.v_cwait).pack(side="left", padx=(6, UNIT_GAP), pady=(6, 0))
         ttk.Label(self.cond_wait, text="seconds for it to become true (0 = check once)",
                   style="Muted.TLabel").pack(side="left", pady=(6, 0))
         self._cthumb = None
@@ -11002,7 +11990,7 @@ class StepDialog(Dialog):
                         command=self.show_type).pack(side="left")
         self.v_rtimes = tk.IntVar(value=int(self.step.get("times", 3)))
         ttk.Spinbox(r, from_=1, to=MAX_REPEAT, width=6, textvariable=self.v_rtimes).pack(
-            side="left", padx=6)
+            side="left", padx=(6, UNIT_GAP))
         ttk.Label(r, text="times").pack(side="left")
         r = ttk.Frame(fr)
         r.pack(anchor="w", pady=(4, 0))
@@ -11011,11 +11999,11 @@ class StepDialog(Dialog):
             side="left")
         self.v_rmax = tk.IntVar(value=int(self.step.get("max_times", 100)))
         ttk.Spinbox(r, from_=1, to=MAX_REPEAT, width=6, textvariable=self.v_rmax).pack(
-            side="left", padx=6)
+            side="left", padx=(6, UNIT_GAP))
         ttk.Label(r, text="times and").pack(side="left")
         self.v_rsecs = tk.IntVar(value=int(self.step.get("max_seconds", 600)))
         ttk.Spinbox(r, from_=1, to=MAX_RUN_LIMIT_S, width=7, textvariable=self.v_rsecs).pack(
-            side="left", padx=6)
+            side="left", padx=(6, UNIT_GAP))
         ttk.Label(r, text="seconds").pack(side="left")
         ttk.Label(fr, style="Muted.TLabel", wraplength=460, justify="left", text=(
             "The steps between Repeat and End run again and again. {loop} is the pass number "
@@ -11066,7 +12054,7 @@ class StepDialog(Dialog):
         ttk.Label(r, text="Scroll").pack(side="left")
         amt = int(self.step.get("amount", -3))
         self.v_samt = tk.IntVar(value=abs(amt) or 3)
-        ttk.Spinbox(r, from_=1, to=100, width=5, textvariable=self.v_samt).pack(side="left", padx=6)
+        ttk.Spinbox(r, from_=1, to=100, width=5, textvariable=self.v_samt).pack(side="left", padx=(6, UNIT_GAP))
         ttk.Label(r, text="notches").pack(side="left")
         self.v_sdir = tk.StringVar(value=("left" if amt < 0 else "right")
                                    if self.step.get("horizontal") else
@@ -11134,7 +12122,7 @@ class StepDialog(Dialog):
             ttk.Label(r, text="Takes").pack(side="left")
             vs["dur"] = tk.DoubleVar(value=float(path[-1][0] or 0.5))
             ttk.Spinbox(r, from_=0, to=3600, increment=0.1, width=6,
-                        textvariable=vs["dur"]).pack(side="left", padx=6)
+                        textvariable=vs["dur"]).pack(side="left", padx=(6, UNIT_GAP))
             ttk.Label(r, text="seconds").pack(side="left")
             vs["orig"] = (path[0][1], path[0][2], path[-1][1], path[-1][2], path[-1][0])
             self.path_vars[kind] = vs
@@ -11165,11 +12153,11 @@ class StepDialog(Dialog):
         r.pack(anchor="w", pady=(6, 0))
         ttk.Label(r, text="If it fails, try again").pack(side="left")
         self.v_retries = tk.IntVar(value=int(self.step.get("retries", 0)))
-        ttk.Spinbox(r, from_=0, to=10, width=4, textvariable=self.v_retries).pack(side="left", padx=6)
+        ttk.Spinbox(r, from_=0, to=10, width=4, textvariable=self.v_retries).pack(side="left", padx=(6, UNIT_GAP))
         ttk.Label(r, text="more times, waiting").pack(side="left")
         self.v_rwait = tk.DoubleVar(value=float(self.step.get("retry_wait", 2)))
         ttk.Spinbox(r, from_=0, to=3600, increment=1, width=5, textvariable=self.v_rwait).pack(
-            side="left", padx=6)
+            side="left", padx=(6, UNIT_GAP))
         ttk.Label(r, text="s in between").pack(side="left")
         r = ttk.Frame(self.common)
         r.pack(anchor="w", pady=(6, 0))
@@ -12414,7 +13402,16 @@ class HelpDialog(Dialog):
              "clicked."),
             ("Screen watchers", "👁 New watcher → Draw box around the picture → choose to click "
              "when it disappears or appears → pick the button (or click the picture itself) → "
-             "Save. Optionally search only an area, and add active hours."),
+             "Save. Optionally search only an area (searched with a small margin), and add "
+             "active hours. Match: “the exact picture” (default) or “part of the picture is "
+             "enough” (a share you choose, e.g. 75 %) when a number or animation inside the "
+             "box changes. A watcher doesn't count the picture as gone while the mouse "
+             "pointer rests on it (hovering can change how it looks)."),
+            ("Several jobs at once", "Tick the box at the start of a row (or press X; Ctrl+A "
+             "ticks every job shown, the heading box ticks or unticks all). A bar appears: "
+             "Start, Stop, Pause, Resume, Duplicate or Delete the ticked jobs, or “Edit "
+             "together…” to set the same settings on all of them (only the ones you tick are "
+             "changed). One Undo brings back everything a batch delete removed."),
             ("Steps, conditions & loops", "Any job can do more after its click (or instead of "
              "it): click other spots, wait, wait for a picture, type or paste text, press keys, "
              "scroll, drag, branch with If / Otherwise / End, repeat with limits, set "
@@ -12440,7 +13437,8 @@ class HelpDialog(Dialog):
              "PC instead of the VM."),
             ("Shortcuts", "Ctrl+N new click  ·  Ctrl+Shift+N new watcher  ·  Enter edit  ·  "
              "Space start/stop  ·  P pause job  ·  Ctrl+P pause all  ·  Ctrl+T tests  ·  "
-             "Ctrl+Z undo delete  ·  Ctrl+, preferences  ·  Del delete\n"
+             "Ctrl+Z undo delete  ·  Ctrl+, preferences  ·  Del delete  ·  X tick  ·  "
+             "Ctrl+A tick all\n"
              f"Anywhere (global): {app.settings.get('hk_pause') or '-'} pause all  ·  "
              f"{app.settings.get('hk_show') or '-'} show/hide Clickue"),
         )
@@ -12528,7 +13526,7 @@ class SettingsDialog(Dialog):
             ttk.Label(row, text=label).pack(side="left")
             v = tk.IntVar(value=int(s.get(key)))
             self.vars[key] = v
-            ttk.Spinbox(row, from_=lo, to=hi, width=6, textvariable=v).pack(side="left", padx=6)
+            ttk.Spinbox(row, from_=lo, to=hi, width=6, textvariable=v).pack(side="left", padx=(6, UNIT_GAP))
             ttk.Label(row, text=unit, style="Muted.TLabel").pack(side="left")
 
         def text(parent, key, label, width=40, show=None):

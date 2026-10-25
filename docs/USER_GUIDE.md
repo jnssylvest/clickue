@@ -41,6 +41,10 @@
 - **Job list:** one row per job, with status, target, schedule, next click, a countdown, clicks
   and last result. Double-click to edit; right-click for everything else. Use the filter above
   it to show all jobs, only scheduled clicks or only watchers.
+- **Tick boxes:** tick jobs at the start of their rows (or press **X**; the heading box ticks
+  all). A bar appears to **Start, Stop, Pause, Resume, Duplicate or Delete** them together, or
+  **Edit together…** to change the same settings on all of them at once (only the settings
+  you tick are changed).
 - **Activity:** a live, colour-coded log. Filter it to *Clicks* or *Problems*.
 - **☰ Menu:** record a macro, step groups, run history & videos, stop everything now,
   import/export, backups, click-history export, preferences, data folder, log, the complete
@@ -70,7 +74,11 @@ A watcher looks at the screen every so often and clicks when something changes.
 2. Choose **Click when the picture disappears** or **when the picture appears**.
 3. Click **▢ Draw box around picture…**. The screen freezes; drag a box around the picture
    to watch (something distinctive, with text or an icon), then release.
+   Draw it around something that **doesn't change**. If something inside the box changes (a
+   number, a time), Clickue warns you right after drawing.
 4. Optional: **Search only an area** → **Draw area…** to limit where it looks.
+   **Match:** keep **the exact picture**, or choose **part of the picture is enough** (e.g.
+   75 %) when the box has to include something that changes.
 5. Under **Button to click…**, **Pick on screen…** the button. For "appears" watchers you can
    instead tick **Click the picture itself**.
 6. Set **Check every** (e.g. 30 s) and **Click when missing/showing for** (e.g. 2 checks in a
@@ -295,6 +303,7 @@ To keep Clickue working while you're away:
 | "Picture not found" | Is the spot on screen? Re-pick with text or an icon near the spot, or use a Large picture. **Show spot** (with similar pictures outlined) to check |
 | Clicks the wrong place | Keep **Only the exact picture** ticked. **Show spot**. Re-pick if the app's look changed. Make sure the target isn't covered |
 | Watcher shows "Can't tell: Clickue window open" | Minimize Clickue or send it to the tray |
+| Watcher says the picture is NOT there, but it is | **Dry run** outlines the closest places. Re-draw the box around a part that never changes, or choose **Match: part of the picture is enough** |
 | Watcher never clicks again | "Click only once" is waiting for the picture to come back; untick it to keep clicking |
 | Nothing happens while away | The screen was locked or disconnected; see [above](#locked-screens-and-remote-sessions) |
 | A hotkey doesn't work | Another program uses it; choose a different one in Preferences → Hotkeys (see the log) |

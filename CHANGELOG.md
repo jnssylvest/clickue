@@ -1,5 +1,58 @@
 # Changelog
 
+## 4.5.3 - Tick boxes and batch editing, partial picture matching, watcher and layout fixes
+
+> Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken
+> during development, but AI-assisted development does not guarantee bug-free or secure
+> software. Review the source and use normal precautions. Test automations safely, protect
+> notification credentials, and avoid unattended use for consequential actions.
+
+**New**
+- **Tick boxes in the job list.** Click the box at the start of a row (or press **X**;
+  **Ctrl+A** or the heading box ticks every job shown). A bar above the list then offers
+  **Start, Stop, Pause, Resume, Duplicate, Delete** for all ticked jobs. One Undo brings back
+  every job a batch delete removed.
+- **Edit together (batch edit).** Set the same settings on all ticked jobs: tick only the
+  settings to change (mouse button, single/double, priority, exact picture, picture fallback,
+  active hours, run time limit, bring to front, let others run, video, failure screenshot;
+  interval and random delay for scheduled clicks; check interval, checks in a row, random
+  delay, wait after clicking, click only once and match mode for watchers). Settings that
+  don't fit a kind of job are skipped, values are validated like an import, running jobs pick
+  up new timing, paused jobs stay paused.
+- **Watchers: "part of the picture is enough".** A new **Match** option per watcher: *the
+  exact picture* (default, as before) or *part of the picture is enough: N %* (40–95 %,
+  default 75 %). The picture is compared in small tiles (colour included), so a changing
+  number, time or animation inside the box no longer makes it count as gone. Results say how
+  much of it matched.
+
+**Fixed**
+- **A watched picture was reported missing although it was on screen.** Several causes fixed:
+  - A **search area** drawn as big as the watched picture, or a few pixels smaller, left no
+    room to find it; the area is now searched with a small margin.
+  - The picture was saved with the **mouse pointer** wherever it was, so a hover highlight
+    could be saved with it (or be on screen during a check). Draw box now moves the pointer
+    aside for a moment; Check now, Dry run and watcher tests re-check with the pointer moved
+    aside; a running watcher doesn't count the picture as missing while the pointer rests on
+    it (and re-checks with the pointer moved aside when the computer has been idle for 20 s).
+  - **Changing content inside the box:** right after drawing, Clickue now checks the box
+    again and warns when part of it changes, and suggests a smaller box or partial matching.
+  - Dry run now outlines the closest places when the picture isn't found, and messages say how
+    close they came.
+- **The Tests window showed no test buttons until it was resized.** The buttons are laid out
+  as soon as the window opens (Windows didn't always report the size of the still-empty
+  button area).
+- **h / m / s units sat far from their fields** in the editors. Every number field now keeps
+  its unit right next to it, with the same spacing everywhere (editors, step dialogs, tests,
+  Preferences).
+
+**Data:** two new watcher fields, `watch_match` (`"exact"`) and `watch_partial_pct` (75), with
+defaults that keep existing watchers exactly as they were. Imports validate both. No schema
+change.
+
+**Docs:** guide sections 3, 6 (exact or partial matching, the mouse pointer, search-area
+margin), 14 (tick boxes, batch actions, Edit together), 23 and 26; feature list, quick start,
+README.
+
 ## 4.5.2 - Jobs can't be replaced by old files any more; smoother columns; live tray countdown
 
 > Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken
