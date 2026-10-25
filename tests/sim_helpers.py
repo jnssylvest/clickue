@@ -4,7 +4,7 @@ import os, sys, types
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "clickue.py")
 for m in ("tkinter","tkinter.ttk","tkinter.messagebox","tkinter.filedialog","tkinter.font"):
     sys.modules[m]=types.ModuleType(m)
-tk=sys.modules["tkinter"]; tk.Toplevel=object; tk.ttk=sys.modules["tkinter.ttk"]; tk.font=sys.modules["tkinter.font"]
+tk=sys.modules["tkinter"]; tk.Toplevel=object; sys.modules["tkinter.ttk"].Frame=object; tk.ttk=sys.modules["tkinter.ttk"]; tk.font=sys.modules["tkinter.font"]
 tk.messagebox=sys.modules["tkinter.messagebox"]; tk.filedialog=sys.modules["tkinter.filedialog"]
 import importlib.util
 spec=importlib.util.spec_from_file_location("ac",SRC); ac=importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)

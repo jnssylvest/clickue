@@ -46,7 +46,10 @@
   all). A bar appears to **Start, Stop, Pause, Resume, Duplicate or Delete** them together, or
   **Edit together…** to change the same settings on all of them at once (only the settings
   you tick are changed).
-- **Activity:** a live, colour-coded log. Filter it to *Clicks* or *Problems*.
+- **Activity:** a live, colour-coded log. Filter it to *Clicks* or *Problems* or type in the
+  🔍 box; click a place like *(878, 243)* to see it on screen; right-click to copy. It keeps
+  its lines across restarts until *Clear view*. Every log in the app can be copied (right-click,
+  Ctrl+C) and filtered the same way.
 - **☰ Menu:** record a macro, step groups, run history & videos, stop everything now,
   import/export, backups, click-history export, preferences, data folder, log, the complete
   guide (online), help, about, uninstall, exit.

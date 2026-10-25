@@ -949,6 +949,97 @@ def t_fixes_454():
     ok("4.5.4 Esc/cancel closes the drawing", got[-1] == "x")
 
 
+def t_fixes_455():
+    # job list: a click on the empty area unselects; a double-click there doesn't open Edit
+    app.v_filter.set("all"); app.filter_changed(); pump(200)
+    t = app.tree
+    kids = [i for i in t.get_children() if ":" not in i]
+    t.selection_set(kids[0]); pump(100)
+    bb = t.bbox(t.get_children()[-1])
+    y_empty = bb[1] + bb[3] + 20
+    t.event_generate("<Button-1>", x=200, y=y_empty); pump(150)
+    ok("4.5.5 click on the empty part of the job list unselects", not t.selection())
+    t.selection_set(kids[0]); pump(50)
+    n0 = len([w for w in toplevels() if isinstance(w, ac.JobEditor)])
+    for _ in range(2):
+        t.event_generate("<ButtonPress-1>", x=200, y=y_empty); t.event_generate("<ButtonRelease-1>", x=200, y=y_empty)
+    t.selection_set(kids[0])
+    r = app.on_double(type("E", (), {"num": 1, "widget": t, "x": 200, "y": y_empty})()); pump(400)
+    n1 = len([w for w in toplevels() if isinstance(w, ac.JobEditor)])
+    ok("4.5.5 double-click on the empty area doesn't open the editor", n1 == n0 and r == "break", (n0, n1, r))
+    ok("4.5.5 New watcher is a coloured primary button",
+       any(str(it["w"].cget("style")) == "Accent2.TButton" and "watcher" in str(it["w"].cget("text"))
+           for it in app.tool_items))
+    # Tests window: meaning column, legend, filter, side scrolling, copy
+    w = next(j for j in app.jobs if j.get("kind") == "watch")
+    app.record_test(w["name"], "Check picture now",
+                    "Picture found at (878, 243), 94% at 90% size; " + "very long text " * 30, "ok")
+    app.record_test(w["name"], "Check picture now", "Picture NOT on the screen (best 78%)", "warn")
+    app.tree.selection_set(w["id"]); pump(50)
+    app.open_tests(); pump(400)
+    tw = app.tests_win
+    tw.v_sec.set("all"); tw.section_changed(); tw.v_hf.set("all"); tw.hist_filter_changed(); pump(200)
+    vals = [tw.hist.set(i, "meaning") for i in tw.hist.get_children()]
+    ok("4.5.5 Tests: every coloured row says what its colour means",
+       any("OK" in v for v in vals) and any("Attention" in v for v in vals), vals)
+    ok("4.5.5 Tests: colour legend shown", len(tw.legend_lbls) == 3 and tw.legend.winfo_ismapped())
+    tw.geometry("420x620"); pump(500)
+    ok("4.5.5 Tests: a horizontal scrollbar appears when the text is wider",
+       tw.hist_tools.hsb.winfo_ismapped())
+    tw.hist_filter.var.set("NOT on the"); pump(400)
+    rows = [tw.hist.set(i, "result") for i in tw.hist.get_children()]
+    ok("4.5.5 Tests: the filter narrows the history", rows and all("NOT on the" in r for r in rows), rows)
+    tw.hist_filter.clear(); pump(400)
+    tw.hist.selection_set(tw.hist.get_children()[:2]); tw.hist_tools.copy_selected(); pump(50)
+    clip = root.clipboard_get()
+    ok("4.5.5 Tests: copy puts the selected rows on the clipboard", clip.count("\n") == 1 and "\t" in clip, clip[:80])
+    # right-click menu
+    first = next(i for i in tw.hist.get_children() if "(878" in tw.hist.set(i, "result"))
+    tw.hist.selection_set(first); tw.hist.see(first); tw.hist.xview_moveto(0); pump(100)
+    b = tw.hist.bbox(first)
+    tw.hist.event_generate("<Button-3>", x=b[0] + 20, y=b[1] + 5, rootx=300, rooty=300); pump(100)
+    m = tw.hist_tools.menu
+    labels = [m.entrycget(i, "label") for i in range(m.index("end") + 1) if m.type(i) == "command"]
+    m.unpost(); pump(50)
+    ok("4.5.5 Tests: right-click menu with copy, show on screen, filters, CSV",
+       any(l.startswith("Copy") for l in labels) and any("Show this place" in l for l in labels)
+       and any("CSV" in l for l in labels) and any("Filter to this job" in l for l in labels), labels)
+    tw.close(); pump(200)
+    # show a logged place on screen: the app hides, marks it, comes back
+    app.show_places("[x] check: watched picture found at (300, 200), 100%", job_name=w["name"])
+    pump(700)
+    marks = [x for x in toplevels() if x.overrideredirect() and x.winfo_viewable()]
+    hidden = not root.winfo_viewable()
+    for x in marks:
+        try:
+            x.event_generate("<Escape>")
+        except Exception:
+            pass
+    app.settings["marker_seconds"] = 1
+    pump(6500)
+    ok("4.5.5 show a logged place: app hides and marks it, then comes back", marks and hidden and root.winfo_viewable(),
+       (len(marks), hidden))
+    # Activity: filter, place links, keeps earlier lines
+    app.log("[Watcher 9] check: watched picture found at (11, 22), 99%"); pump(1300)
+    rng = app.logbox.tag_ranges("loc")
+    ok("4.5.5 Activity: places are links", rng and "(11, 22)" in [app.logbox.get(rng[i], rng[i + 1]) for i in range(0, len(rng), 2)])
+    app.act_filter.var.set("Watcher 9"); pump(400)
+    txt = app.logbox.get("1.0", "end-1c")
+    ok("4.5.5 Activity: the filter shows only matching lines", txt.strip() and all("Watcher 9" in l for l in txt.strip().splitlines()), txt[:120])
+    app.act_filter.clear(); pump(400)
+    with open(ac.LOG_PATH, "a", encoding="utf-8") as fh:
+        fh.write("2000-01-01 10:00:00  [Old job] from an earlier run\n")
+    keep = list(app.act_lines)
+    app.settings["activity_cleared_at"] = ""
+    app.act_lines = []
+    app.load_activity_history(); pump(100)
+    ok("4.5.5 Activity: lines from earlier runs come back", any("from an earlier run" in it[1] for it in app.act_lines))
+    app.clear_activity(); pump(50)
+    app.load_activity_history(); pump(50)
+    ok("4.5.5 Activity: Clear view keeps them away", not any("from an earlier run" in it[1] for it in app.act_lines))
+    app.act_lines = keep; app.render_activity()
+
+
 for name, fn in (("main", t_main), ("add click", add_click_job), ("edit/rows", t_edit_and_rows),
                  ("watcher", add_watcher), ("settings", t_settings), ("menu/dialogs", t_menu_and_dialogs),
                  ("steps/hours", t_steps_and_hours), ("watcher extras", t_watcher_extras),
@@ -956,7 +1047,7 @@ for name, fn in (("main", t_main), ("add click", add_click_job), ("edit/rows", t
                  ("test dialog", t_test_dialog_from_main), ("export/import", t_export_import),
                  ("geometry", t_remember_geometry), ("workflows 4.5", t_workflows_45),
                  ("fixes 4.5.1", t_fixes_451), ("fixes 4.5.3", t_fixes_453),
-                 ("fixes 4.5.4", t_fixes_454)):
+                 ("fixes 4.5.4", t_fixes_454), ("fixes 4.5.5", t_fixes_455)):
     step(name, fn)
     pump(200)
 

@@ -224,6 +224,8 @@ All tests hide the whole app while they run, so nothing is in the way.
   as you choose in Preferences → Clicking (also for Check picture / Check now).
 - **Test click now.** Clicks once, without changing the schedule.
 - **Schedule test click.** Clicks once in X minutes (e.g. after you disconnect) and reports.
+- **Colour meaning** in words on every test-history row (OK / Attention / Failed) plus a
+  legend.
 - **Sections:** All tests, Click tests, Watcher tests, each with its own buttons and its own
   history for this job or all jobs (remembered per section); the history sits right under the
   buttons.
@@ -287,6 +289,18 @@ All tests hide the whole app while they run, so nothing is in the way.
 - Unsaved-changes protection in editors.
 
 ## History, stats & logs
+
+- **Every log** (Activity, test history, run history and its steps, a job's stats, dry run
+  results): right-click to **copy** the selected rows, one cell or everything shown (with
+  headings, tab-separated for spreadsheets), select all, **save as CSV** (Activity: text),
+  filter to a job or test, edit the job; Ctrl+C / Ctrl+A / Ctrl+F.
+- **Filter box** on every log: show only lines containing what you type.
+- **Show on screen:** a place in a log line, like *(878, 243)*, can be shown on screen (click
+  it in Activity, double-click or right-click elsewhere): Clickue hides and marks it like
+  Check picture, with the watched picture's outline where it was found.
+- Wide logs **scroll sideways** instead of cutting text off.
+- **Activity keeps earlier runs' lines** across restarts until *Clear view* (or Preferences →
+  General → clear at every start).
 
 - **Click history** of every click, miss and failure (time, job, type, result, position, how
   the spot was found).
@@ -375,7 +389,8 @@ All tests hide the whole app while they run, so nothing is in the way.
   ☰ Menu → Reset column widths.
 - Clear grid with column lines, status icons and colour coding.
 - Buttons that can't be used right now are shown as an **outline without fill**; usable ones
-  are filled.
+  are filled. **New click** (blue) and **New watcher** (teal) are both primary buttons.
+- Click the empty part of the job list to **unselect**; double-clicking there does nothing.
 - Number fields keep their **units right next to them** (h, m, s, seconds, %), with the same
   spacing everywhere.
 

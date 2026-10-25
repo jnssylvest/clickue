@@ -58,7 +58,7 @@ except Exception:
 APP_NAME = "Clickue"
 APP_ID = "Clickue"
 OLD_APP_ID = "ScheduledAutoClicker"      # previous name - data is migrated from here
-VERSION = "4.5.4"
+VERSION = "4.5.5"
 REPO_URL = "https://github.com/jnssylvest/clickue"
 GUIDE_URL = REPO_URL + "/blob/main/docs/GUIDE.md"      # the complete guide (☰ Menu)
 DISCLOSURE = ("Clickue is vibe-coded and was developed with substantial AI assistance. Caution "
@@ -4842,6 +4842,8 @@ DEFAULT_SETTINGS = {
     "main_zoomed": False,
     "dlg_geom": {},
     "activity_filter": "all",
+    "activity_clear_on_start": False,   # 4.5.5: off = Activity keeps earlier runs' lines
+    "activity_cleared_at": "",          # 4.5.5: "Clear view" time; older lines stay hidden
     "tests_geom": "",
     "tests_split": 0.0,
     "tests_hist_filter": "job",
@@ -5010,13 +5012,13 @@ LIGHT = dict(bg="#f4f5f7", panel="#ffffff", panel_alt="#f7f8fa", head="#f0f1f4",
              btn_border="#d5d8de", btn_active="#eef0f3", accent="#2563eb",
              accent_active="#1d4ed8", sel="#dbe7ff", sel_fg="#0b1b3f", field="#ffffff",
              warn="#b45309", good="#15803d", bad="#c62828", test="#7c3aed", grid="#e2e5ea",
-             tick="#e8f0fe", outline="#b8bec8")
+             tick="#e8f0fe", outline="#b8bec8", accent2="#0f766e", accent2_active="#115e59")
 DARK = dict(bg="#18191c", panel="#212226", panel_alt="#26282c", head="#1c1d21",
             fg="#e8e9ec", muted="#9097a1", border="#30333a", btn="#2a2c31",
             btn_border="#363940", btn_active="#34373d", accent="#3b82f6",
             accent_active="#2f6fe0", sel="#24406e", sel_fg="#ffffff", field="#26282c",
             warn="#f5a524", good="#4ade80", bad="#f87171", test="#c4a8ff", grid="#383b43",
-            tick="#1f2f4d", outline="#4b505a")
+            tick="#1f2f4d", outline="#4b505a", accent2="#0d9488", accent2_active="#0f766e")
 
 
 def fmt_compact(sec):
@@ -5031,6 +5033,8 @@ def fmt_compact(sec):
 # ---------------------------------------------------------------- app
 class App:
     def __init__(self, root):
+        # Activity lines in the log file older than this are from earlier runs (4.5.5)
+        self.session_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.root = root
         self.lock = threading.RLock()
         self.checked = set()          # job ids ticked in the job list (4.5.3, not saved)
@@ -6406,7 +6410,7 @@ class App:
 
         # prio: higher stays visible longer (New click always stays)
         tool("＋  New click", self.add_job, 0, 100, "Accent.TButton")
-        tool("👁  New watcher", self.add_watcher, 0, 95)
+        tool("👁  New watcher", self.add_watcher, 0, 95, "Accent2.TButton")
         tool("Edit", self.edit_job, 0, 85, needs_sel=True)
         tool("Duplicate", self.duplicate_job, 0, 30, needs_sel=True)
         tool("Delete", self.delete_job, 0, 40, needs_sel=True)
@@ -6522,6 +6526,8 @@ class App:
             ttk.Radiobutton(ah, text=text, value=val, variable=self.v_actf,
                             style="Seg.TRadiobutton", command=self.activity_filter_changed).pack(
                 side="left", padx=(0, 2))
+        self.act_filter = FilterBox(ah, self.render_activity, width=20)
+        self.act_filter.pack(side="left", padx=(12, 0))
         # 4.5.4: make the job list or Activity taller (or drag the divider above "Activity")
         sz = ttk.Frame(ah)
         sz.pack(side="right", padx=(8, 0))
@@ -6552,6 +6558,18 @@ class App:
         lsb.pack(side="right", fill="y")
         self.logbox.pack(side="left", fill="both", expand=True)
         self.act_lines = []
+        # 4.5.5: places in a line are links; right-click for copy and more
+        lb = self.logbox
+        lb.tag_bind("loc", "<Enter>", lambda e: lb.configure(cursor="hand2"))
+        lb.tag_bind("loc", "<Leave>", lambda e: lb.configure(cursor=""))
+        lb.tag_bind("loc", "<Button-1>", self.activity_loc_click)
+        lb.bind("<Button-3>", self.activity_menu)
+        lb.bind("<Control-c>", lambda e: (self.activity_copy(), "break")[1])
+        lb.bind("<Control-a>", lambda e: (lb.tag_add("sel", "1.0", "end-1c"), "break")[1])
+        lb.bind("<Control-f>", lambda e: (self.act_filter.focus(), "break")[1])
+        lb.bind("<Button-1>", lambda e: lb.focus_set(), add="+")
+        self.act_menu = tk.Menu(self.root, tearoff=0)
+        self.load_activity_history()
 
 
         self.ctx = tk.Menu(self.root, tearoff=0)
@@ -6728,6 +6746,18 @@ class App:
               relief=[("disabled", "solid")],
               lightcolor=[("disabled", p["bg"]), ("active", p["accent_active"])],
               darkcolor=[("disabled", p["bg"]), ("active", p["accent_active"])])
+        # 4.5.5: a second primary colour (teal) for "New watcher", next to the blue "New click"
+        s.configure("Accent2.TButton", background=p["accent2"], foreground="#ffffff",
+                    bordercolor=p["accent2"], lightcolor=p["accent2"], darkcolor=p["accent2"],
+                    font=(F, 10, "bold"))
+        s.map("Accent2.TButton",
+              background=[("disabled", p["bg"]), ("pressed", p["accent2_active"]),
+                          ("active", p["accent2_active"])],
+              foreground=[("disabled", p["muted"])],
+              bordercolor=[("disabled", p["outline"])],
+              relief=[("disabled", "solid")],
+              lightcolor=[("disabled", p["bg"]), ("active", p["accent2_active"])],
+              darkcolor=[("disabled", p["bg"]), ("active", p["accent2_active"])])
         s.configure("Card.TFrame", background=p["panel"], bordercolor=p["border"],
                     relief="solid", borderwidth=1, lightcolor=p["border"],
                     darkcolor=p["border"])
@@ -6820,9 +6850,7 @@ class App:
         self.root.option_add("*TCombobox*Listbox.selectBackground", p["sel"])
         self.root.option_add("*TCombobox*Listbox.selectForeground", p["sel_fg"])
         for menu in (self.ctx, self.more_menu, self.main_menu):
-            menu.configure(bg=p["panel"], fg=p["fg"], activebackground=p["sel"],
-                           activeforeground=p["sel_fg"], disabledforeground=p["muted"],
-                           borderwidth=1, font=(F, 10))
+            self.theme_menu(menu)
 
         self.logbox.configure(bg=p["panel"], fg=p["fg"], insertbackground=p["fg"],
                               selectbackground=p["sel"], selectforeground=p["sel_fg"],
@@ -6832,6 +6860,8 @@ class App:
         self.logbox.tag_configure("warn", foreground=p["warn"])
         self.logbox.tag_configure("test", foreground=p["test"])
         self.logbox.tag_configure("time", foreground=p["muted"])
+        self.logbox.tag_configure("loc", foreground=p["accent"], underline=True)
+        self.logbox.tag_raise("loc")
 
         self.tree.tag_configure("even", background=p["panel"])
         self.tree.tag_configure("odd", background=p["panel_alt"])
@@ -6856,6 +6886,64 @@ class App:
         for w in self.root.winfo_children():
             if isinstance(w, tk.Toplevel):
                 self.theme_window(w)
+
+    def theme_menu(self, menu):
+        p, F = self.pal, self.font_family
+        menu.configure(bg=p["panel"], fg=p["fg"], activebackground=p["sel"],
+                       activeforeground=p["sel_fg"], disabledforeground=p["muted"],
+                       borderwidth=1, font=(F, 10))
+
+    def flash_status(self, text, seconds=3):
+        """A short confirmation in the status bar (e.g. "Copied 3 rows")."""
+        self._flash = (text, time.time() + seconds)
+        try:
+            self.status.configure(text=f"✔  {text}")
+        except Exception:
+            pass
+
+    def show_places(self, text, parent=None, job_name=None):
+        """Hide the app and mark every place a log line mentions, e.g. "(878, 243)" (4.5.5).
+        Where the line says a watched picture was found there, the picture's outline is
+        drawn at its size (and scale); other places get the crosshair."""
+        pts = [(int(m.group(1)), int(m.group(2)), m.start()) for m in LOC_RE.finditer(text)]
+        if not pts:
+            return
+        if getattr(self, "_spot_busy", False):
+            return
+        job = None
+        if job_name:
+            with self.lock:
+                job = next((j for j in self.jobs if j["name"] == job_name), None)
+        size = None
+        if job and job.get("watch_png") and HAVE_PIL:
+            try:
+                size = b64_to_img(job["watch_png"]).size
+            except Exception:
+                size = None
+        m = re.search(r"at (\d{2,3})% size", text)
+        sc = int(m.group(1)) / 100 if m else 1.0
+        boxes, cross = [], None
+        for x, y, pos in pts:
+            before = text[max(0, pos - 40):pos].lower()
+            is_pic = "picture" in before and "button" not in before and "spot" not in before
+            if is_pic and size:
+                w, h = size[0] * sc, size[1] * sc
+                boxes.append((round(x - w / 2), round(y - h / 2), round(w), round(h),
+                              "picture was here", cross is None and not boxes, True))
+                if cross is None and len(pts) == 1:
+                    cross = (x, y)
+            elif cross is None:
+                cross = (x, y)
+            else:
+                boxes.append((x - 14, y - 14, 28, 28, f"({x}, {y})", False, True))
+        if cross is None:
+            cross = (pts[0][0], pts[0][1])
+        where = ", ".join(f"({x}, {y})" for x, y, _ in pts)
+        self._spot_busy = True
+        restore = self.hide_app(parent)
+        cap = (f"{job_name}  ·  " if job_name else "") + f"logged at {where}"
+        self.root.after(400, lambda: self.flash_marker(cross[0], cross[1], cap, restore,
+                                                       others=boxes or None))
 
     def theme_window(self, w):
         try:
@@ -7284,8 +7372,7 @@ class App:
             if len(self.act_lines) > MAX_UI_LOG_LINES * 2:
                 del self.act_lines[:MAX_UI_LOG_LINES]
             if self.activity_shows(item):
-                self.logbox.insert("end", ts + "  ", ("time",))
-                self.logbox.insert("end", msg + "\n", tag)
+                self.insert_activity(item)
         if added:
             lines = int(self.logbox.index("end-1c").split(".")[0])
             if lines > MAX_UI_LOG_LINES:
@@ -7307,7 +7394,11 @@ class App:
         self.set_text(self.pause_btn, "▶  Resume all" if paused else "⏸  Pause all")
         tray = "tray on" if self.tray else "tray off"
         stop_hk = self.settings.get("hk_stop")
-        self.status.configure(text=f"v{VERSION}   ·   {tray}   ·   "
+        flash = getattr(self, "_flash", None)
+        if flash and flash[1] > now:
+            self.status.configure(text=f"✔  {flash[0]}")
+        else:
+            self.status.configure(text=f"v{VERSION}   ·   {tray}   ·   "
                                    + (f"Emergency stop: {stop_hk}   ·   " if stop_hk else "")
                                    + f"Data: {DATA_DIR}   ·   Shortcuts: Ctrl+N new · Enter edit · "
                                      f"Space start/stop · P pause · Ctrl+T test · Del delete")
@@ -7457,15 +7548,147 @@ class App:
 
     def activity_shows(self, item):
         f = self.v_actf.get()
-        return f == "all" or (f == "clicks" and item[3]) or (f == "problems" and item[4])
+        ok = f == "all" or (f == "clicks" and item[3]) or (f == "problems" and item[4])
+        fb = getattr(self, "act_filter", None)
+        return ok and (fb is None or fb.matches(item[0], item[1]))
+
+    def insert_activity(self, item):
+        """One Activity line; places like (878, 243) become links (4.5.5)."""
+        ts, msg, tag = item[0], item[1], item[2]
+        lb = self.logbox
+        lb.insert("end", ts + "  ", ("time",))
+        pos = 0
+        for m in LOC_RE.finditer(msg):
+            if m.start() > pos:
+                lb.insert("end", msg[pos:m.start()], tag)
+            lb.insert("end", m.group(0), tuple(tag) + ("loc",))
+            pos = m.end()
+        lb.insert("end", msg[pos:] + "\n", tag)
+
+    def activity_line_at(self, x, y):
+        idx = self.logbox.index(f"@{x},{y}")
+        return self.logbox.get(f"{idx} linestart", f"{idx} lineend")
+
+    @staticmethod
+    def job_in_line(line):
+        m = re.search(r"\[([^\]]{1,200})\]", line)
+        return m.group(1) if m else None
+
+    def activity_loc_click(self, e):
+        line = self.activity_line_at(e.x, e.y)
+        self.show_places(line, job_name=self.job_in_line(line))
+        return "break"
+
+    def activity_copy(self):
+        lb = self.logbox
+        try:
+            text = lb.get("sel.first", "sel.last")
+        except tk.TclError:
+            idx = lb.index("insert")
+            text = lb.get(f"{idx} linestart", f"{idx} lineend")
+        if text:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.flash_status("Copied")
+
+    def activity_menu(self, e):
+        lb = self.logbox
+        line = self.activity_line_at(e.x, e.y).strip()
+        idx = lb.index(f"@{e.x},{e.y}")
+        m = self.act_menu
+        m.delete(0, "end")
+        try:
+            has_sel = bool(lb.get("sel.first", "sel.last"))
+        except tk.TclError:
+            has_sel = False
+
+        def copy(text, what):
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.flash_status(f"Copied {what}")
+        if has_sel:
+            m.add_command(label="Copy selection\tCtrl+C", command=self.activity_copy)
+        if line:
+            m.add_command(label="Copy this line", command=lambda: copy(line, "the line"))
+        m.add_command(label="Copy everything shown",
+                      command=lambda: copy(lb.get("1.0", "end-1c"), "everything shown"))
+        m.add_command(label="Select all\tCtrl+A",
+                      command=lambda: lb.tag_add("sel", "1.0", "end-1c"))
+        job = self.job_in_line(line) if line else None
+        if line and LOC_RE.search(line):
+            m.add_separator()
+            m.add_command(label="📍  Show this place on screen",
+                          command=lambda: self.show_places(line, job_name=job))
+        if job:
+            m.add_separator()
+            m.add_command(label=f"Filter to \u201c{short_title(job, 30)}\u201d",
+                          command=lambda: self.act_filter.var.set(f"[{job}]"))
+            j = next((x for x in self.jobs if x["name"] == job), None)
+            if j:
+                m.add_command(label="Edit this job…",
+                              command=lambda: JobEditor(self, j, is_new=False))
+                m.add_command(label="Select it in the job list",
+                              command=lambda: self.select_job_row(j))
+        m.add_separator()
+        m.add_command(label="Filter…\tCtrl+F", command=self.act_filter.focus)
+        if self.act_filter.query():
+            m.add_command(label="Clear the filter", command=self.act_filter.clear)
+        m.add_command(label="Save what's shown as a text file…", command=self.save_activity)
+        m.add_command(label="Open the log file", command=self.open_log)
+        m.add_command(label="Clear view", command=self.clear_activity)
+        self.theme_menu(m)
+        lb.mark_set("insert", idx)
+        m.tk_popup(e.x_root, e.y_root)
+        return "break"
+
+    def select_job_row(self, job):
+        if self.v_filter.get() not in ("all", "watch" if is_watch(job) else "click"):
+            self.v_filter.set("all")
+            self.filter_changed()
+        try:
+            self.tree.selection_set(job["id"])
+            self.tree.see(job["id"])
+        except Exception:
+            pass
+
+    def save_activity(self):
+        path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".txt",
+                                            filetypes=[("Text", "*.txt")],
+                                            initialfile="clickue-activity.txt")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(self.logbox.get("1.0", "end-1c"))
+            self.flash_status(f"Saved {os.path.basename(path)}")
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Couldn't save the file:\n{e}", parent=self.root)
+
+    def load_activity_history(self):
+        """Bring back the Activity of earlier runs from the log file (4.5.5): Activity is
+        only emptied by Clear view, or at every start when Preferences → General → "Clear
+        Activity when Clickue starts" is on."""
+        if self.settings.get("activity_clear_on_start"):
+            self.settings["activity_cleared_at"] = self.session_start
+            return
+        since = str(self.settings.get("activity_cleared_at") or "")
+        lines = read_log_tail(MAX_UI_LOG_LINES)
+        items = []
+        for ts, msg in lines:
+            if ts >= self.session_start or (since and ts <= since):
+                continue
+            tag, is_click, is_problem = self.classify(msg)
+            items.append((ts, msg, tag, is_click, is_problem))
+        if items:
+            self.act_lines = items + self.act_lines
+            self.render_activity()
 
     def render_activity(self):
         self.logbox.configure(state="normal")
         self.logbox.delete("1.0", "end")
         for item in self.act_lines:
             if self.activity_shows(item):
-                self.logbox.insert("end", item[0] + "  ", ("time",))
-                self.logbox.insert("end", item[1] + "\n", item[2])
+                self.insert_activity(item)
         self.logbox.see("end")
         self.logbox.configure(state="disabled")
 
@@ -7538,6 +7761,9 @@ class App:
         self.update_buttons()
 
     def clear_activity(self):
+        # remembered, so earlier lines don't come back at the next start (4.5.5)
+        self.settings["activity_cleared_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.save()
         self.act_lines = []
         self.logbox.configure(state="normal")
         self.logbox.delete("1.0", "end")
@@ -7596,6 +7822,15 @@ class App:
             region = self.tree.identify_region(event.x, event.y)
         except Exception:
             return None
+        if region == "nothing" or (region in ("cell", "tree")
+                                   and not self.tree.identify_row(event.y)):
+            # a click on the empty part of the list: nothing selected any more (4.5.5)
+            if self.tree.selection():
+                self.tree.selection_remove(*self.tree.selection())
+                self.tree.focus("")
+                self.refresh_tree()
+                self.update_buttons()
+            return "break"
         if col != "#1" or region not in ("cell", "tree"):
             return None
         iid = self.tree.identify_row(event.y)
@@ -7822,6 +8057,10 @@ class App:
         return report
 
     def on_double(self, event=None):
+        if event is not None and getattr(event, "num", None) == 1 and \
+                getattr(event, "widget", None) is self.tree and \
+                not self.tree.identify_row(event.y):
+            return "break"            # double-click on the empty area: don't edit (4.5.5)
         if event is not None and getattr(event, "x", None) is not None and \
                 self.tree.identify_column(event.x) == "#1" and \
                 self.tree.identify_region(event.x, event.y) in ("cell", "tree"):
@@ -9549,6 +9788,257 @@ def spin_unit(parent, var, lo, hi, unit, width=5, command=None, lead=0, incremen
     ul = ttk.Label(parent, text=unit, **({"style": unit_style} if unit_style else {}))
     ul.pack(side="left", padx=(0, UNIT_AFTER))
     return sp, ul
+
+
+def read_log_tail(n):
+    """The last n lines of the log file (and its previous file) as [(time, message)];
+    continuation lines are joined to their message."""
+    out = []
+    for path in (LOG_PATH + ".1", LOG_PATH):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                for raw in fh.read().splitlines():
+                    if re.match(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d  ", raw):
+                        out.append([raw[:19], raw[21:]])
+                    elif out and raw.strip():
+                        out[-1][1] += " " + raw.strip()
+        except OSError:
+            pass
+    return [tuple(x) for x in out[-n:]]
+
+
+# ---- 4.5.5: tools for every log table (copy, filter, show on screen, side scrolling)
+LOC_RE = re.compile(r"\((-?\d{1,6}), (-?\d{1,6})\)")
+
+
+class FilterBox(ttk.Frame):
+    """A small search field: typing filters a log (case doesn't matter); ✕ clears it."""
+
+    def __init__(self, parent, on_change, width=22, hint="Filter…"):
+        super().__init__(parent)
+        self.var = tk.StringVar()
+        self._hint = hint
+        self._job = None
+        ttk.Label(self, text="🔍").pack(side="left", padx=(0, 4))
+        self.entry = ttk.Entry(self, textvariable=self.var, width=width)
+        self.entry.pack(side="left")
+        self.clear_btn = ttk.Button(self, text="✕", width=3, style="Small.TButton",
+                                    command=self.clear)
+        self.clear_btn.pack(side="left", padx=(2, 0))
+        self.on_change = on_change
+        self.var.trace_add("write", lambda *a: self._changed())
+        self.entry.bind("<Escape>", lambda e: (self.clear(), "break")[1])
+
+    def _changed(self):
+        if self._job:
+            self.after_cancel(self._job)
+        self._job = self.after(180, self._fire)
+
+    def _fire(self):
+        self._job = None
+        self.on_change()
+
+    def query(self):
+        return self.var.get().strip().lower()
+
+    def matches(self, *texts):
+        q = self.query()
+        if not q:
+            return True
+        hay = " ".join(str(t) for t in texts).lower()
+        return q in hay
+
+    def clear(self):
+        self.var.set("")
+
+    def focus(self):
+        self.entry.focus_set()
+        self.entry.select_range(0, "end")
+
+
+class LogGrid:
+    """Right-click menu and shortcuts for a log table (4.5.5): copy the selected rows, one
+    cell or everything shown (tab-separated, ready for a spreadsheet), select all, save as
+    CSV, and "Show on screen" for rows that mention a place like (878, 243). Also gives the
+    table a horizontal scrollbar that appears when its text is wider than the window."""
+
+    def __init__(self, app, tree, frame=None, owner=None, job_of=None, extra=None,
+                 locate=True, fit_col=None, filterbox=None, name="log"):
+        self.app, self.tree, self.owner = app, tree, owner
+        self.job_of = job_of or (lambda iid: None)
+        self.extra = extra
+        self.locate = locate
+        self.fit_col = fit_col
+        self.filterbox = filterbox
+        self.name = name
+        try:
+            if str(tree.cget("selectmode")) == "browse":
+                tree.configure(selectmode="extended")
+        except Exception:
+            pass
+        self.menu = tk.Menu(tree, tearoff=0)
+        tree.bind("<Button-3>", self.popup, add="+")
+        tree.bind("<Control-c>", lambda e: (self.copy_selected(), "break")[1])
+        tree.bind("<Control-a>", lambda e: (self.select_all(), "break")[1])
+        if filterbox is not None:
+            tree.bind("<Control-f>", lambda e: (filterbox.focus(), "break")[1])
+        if frame is not None:
+            self.hsb = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
+            tree.configure(xscrollcommand=self._xset)
+            self._hsb_shown = False
+        else:
+            self.hsb = None
+        if fit_col:
+            tree.bind("<Configure>", lambda e: tree.after_idle(self.fit), add="+")
+
+    # ---- side scrolling
+    def _xset(self, first, last):
+        self.hsb.set(first, last)
+        need = float(first) > 0.0 or float(last) < 1.0
+        if need != self._hsb_shown:
+            self._hsb_shown = need
+            if need:
+                self.hsb.pack(side="bottom", fill="x", before=self.tree)
+            else:
+                self.hsb.pack_forget()
+
+    def fit(self):
+        """Make the long text column wide enough for its longest text, so the table can be
+        scrolled sideways instead of cutting the text off."""
+        t, col = self.tree, self.fit_col
+        try:
+            cols = t["displaycolumns"]
+            if isinstance(cols, str):
+                cols = (cols,)
+            if not cols or cols[0] == "#all":
+                cols = t["columns"]
+            if col not in cols:
+                return
+            others = sum(int(t.column(c, "width")) for c in cols if c != col)
+            want = max(column_fit_width(t, col, limit=4000), t.winfo_width() - others - 2, 80)
+            if abs(int(t.column(col, "width")) - want) > 2:
+                t.column(col, width=want, stretch=False)
+        except Exception:
+            pass
+
+    # ---- copying
+    def columns(self):
+        t = self.tree
+        cols = t["displaycolumns"]
+        if isinstance(cols, str):
+            cols = (cols,)
+        if not cols or cols[0] == "#all":
+            cols = t["columns"]
+        return list(cols)
+
+    def row_text(self, iid):
+        return "\t".join(str(self.tree.set(iid, c)).strip() for c in self.columns())
+
+    def header(self):
+        return "\t".join(str(self.tree.heading(c, "text")) for c in self.columns())
+
+    def to_clipboard(self, text, what):
+        try:
+            w = self.tree
+            w.clipboard_clear()
+            w.clipboard_append(text)
+            w.update()
+            self.app.flash_status(f"Copied {what}")
+        except Exception:
+            pass
+
+    def copy_selected(self):
+        sel = [i for i in self.tree.selection()]
+        if not sel:
+            return
+        order = {iid: n for n, iid in enumerate(self.tree.get_children())}
+        sel.sort(key=lambda i: order.get(i, 0))
+        self.to_clipboard("\n".join(self.row_text(i) for i in sel),
+                          f"{len(sel)} row{'s' if len(sel) != 1 else ''}")
+
+    def copy_all(self):
+        kids = self.tree.get_children()
+        self.to_clipboard("\n".join([self.header()] + [self.row_text(i) for i in kids]),
+                          f"{len(kids)} rows with headings")
+
+    def copy_cell(self, iid, col):
+        self.to_clipboard(str(self.tree.set(iid, col)).strip(), "the cell")
+
+    def select_all(self):
+        kids = self.tree.get_children()
+        if kids:
+            self.tree.selection_set(kids)
+
+    def save_csv(self):
+        path = filedialog.asksaveasfilename(
+            parent=self.owner or self.tree.winfo_toplevel(), defaultextension=".csv",
+            filetypes=[("CSV", "*.csv"), ("Text", "*.txt")],
+            initialfile=f"clickue-{self.name}.csv")
+        if not path:
+            return
+        try:
+            import csv
+            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+                w = csv.writer(fh)
+                w.writerow([self.tree.heading(c, "text") for c in self.columns()])
+                for i in self.tree.get_children():
+                    w.writerow([str(self.tree.set(i, c)).strip() for c in self.columns()])
+            self.app.flash_status(f"Saved {os.path.basename(path)}")
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Couldn't save the file:\n{e}",
+                                 parent=self.owner or self.tree.winfo_toplevel())
+
+    # ---- menu
+    def popup(self, e):
+        t = self.tree
+        iid = t.identify_row(e.y)
+        col_id = t.identify_column(e.x)
+        col = None
+        try:
+            cols = self.columns()
+            k = int(col_id.lstrip("#")) - 1
+            col = cols[k] if 0 <= k < len(cols) else None
+        except Exception:
+            col = None
+        if iid and iid not in t.selection():
+            t.selection_set(iid)
+            t.focus(iid)
+        m = self.menu
+        m.delete(0, "end")
+        n_sel = len(t.selection())
+        m.add_command(label=("Copy" if n_sel <= 1 else f"Copy {n_sel} rows") + "\tCtrl+C",
+                      command=self.copy_selected,
+                      state="normal" if n_sel else "disabled")
+        if iid and col:
+            m.add_command(label=f"Copy \u201c{t.heading(col, 'text')}\u201d only",
+                          command=lambda: self.copy_cell(iid, col))
+        m.add_command(label="Copy everything shown (with headings)", command=self.copy_all)
+        m.add_command(label="Select all\tCtrl+A", command=self.select_all)
+        if iid and self.locate:
+            text = " ".join(str(v) for v in t.item(iid, "values"))
+            if LOC_RE.search(text):
+                m.add_separator()
+                m.add_command(label="📍  Show this place on screen",
+                              command=lambda: self.app.show_places(
+                                  text, parent=self.owner, job_name=self.job_of(iid)))
+        if iid and self.extra:
+            items = self.extra(iid) or []
+            if items:
+                m.add_separator()
+                for label, cmd in items:
+                    m.add_command(label=label, command=cmd)
+        m.add_separator()
+        if self.filterbox is not None:
+            m.add_command(label="Filter…\tCtrl+F", command=self.filterbox.focus)
+            if self.filterbox.query():
+                m.add_command(label="Clear the filter", command=self.filterbox.clear)
+        m.add_command(label="Save what's shown as CSV…", command=self.save_csv)
+        try:
+            self.app.theme_menu(m)
+        except Exception:
+            pass
+        m.tk_popup(e.x_root, e.y_root)
+        return "break"
 
 
 class BoxDrawer:
@@ -11736,6 +12226,12 @@ class TestDialog(Dialog):
         self.destroy()
 
 
+TEST_LEVELS = {   # what a test result's colour means (4.5.5): icon, word, explanation
+    "ok": ("✔", "OK", "as expected"),
+    "warn": ("⚠", "Attention", "worth a look, e.g. the watcher would click now"),
+    "bad": ("✖", "Failed", "the test couldn't do its job"),
+    "info": ("•", "Info", ""),
+}
 WATCH_TEST_NAMES = ("Check picture now", "Dry run (no click)", "Scheduled watcher test")
 
 
@@ -11866,29 +12362,48 @@ class TestsWindow(tk.Toplevel):
                 side="left", padx=(0, 2))
         ttk.Button(hh, text="Clear", style="Small.TButton",
                    command=lambda: app.clear_test_history(self)).pack(side="right")
+        self.hist_filter = FilterBox(hh, lambda: self.refresh(force=True), width=18)
+        self.hist_filter.pack(side="right", padx=(0, 8))
 
         hf = ttk.Frame(hist, style="Card.TFrame", padding=1)
         hf.pack(fill="both", expand=True)
-        cols = ("time", "job", "test", "result")
+        cols = ("time", "job", "test", "meaning", "result")
         self.hist = ttk.Treeview(hf, columns=cols, show="headings", height=6,
-                                 selectmode="browse")
+                                 selectmode="extended")
         enable_column_fit(self.hist)
-        self.hist_base = {"time": 120, "job": 130, "test": 150, "result": 320}
-        for c, h in (("time", "Time"), ("job", "Job"), ("test", "Test"), ("result", "Result")):
+        self.hist_base = {"time": 120, "job": 130, "test": 150, "meaning": 105, "result": 320}
+        for c, h in (("time", "Time"), ("job", "Job"), ("test", "Test"), ("meaning", "Meaning"),
+                     ("result", "Result")):
             self.hist.heading(c, text=h, anchor="w")
-            self.hist.column(c, width=self.hist_base[c], minwidth=60,
-                             stretch=(c == "result"), anchor="w")
+            self.hist.column(c, width=self.hist_base[c], minwidth=60, stretch=False,
+                             anchor="w")
         sb = ttk.Scrollbar(hf, orient="vertical", command=self.hist.yview)
         self.hist.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         self.hist.pack(side="left", fill="both", expand=True)
+        self.hist_tools = LogGrid(app, self.hist, frame=hf, owner=self, fit_col="result",
+                                  job_of=self.hist_job, filterbox=self.hist_filter,
+                                  extra=self.hist_extra, name="tests")
+        self.hist.bind("<Double-1>", self.hist_double)
         self.hist.bind("<<TreeviewSelect>>", lambda e: self.show_detail())
-        self.hist.bind("<Configure>", lambda e: self.flow_columns(e.width))
+        self.hist.bind("<Configure>", lambda e: self.flow_columns(e.width), add="+")
         self.hist_empty = ttk.Label(self.hist, style="Empty.TLabel", text="No tests yet")
+        # what the colours mean (4.5.5)
+        self.legend = ttk.Frame(hist)
+        self.legend.pack(fill="x", pady=(6, 0))
+        self.legend_lbls = []
+        for lvl in ("ok", "warn", "bad"):
+            icon, word, why = TEST_LEVELS[lvl]
+            lb = ttk.Label(self.legend, text=f"{icon} {word}: {why}")
+            lb.pack(side="left", padx=(0, 14))
+            self.legend_lbls.append((lb, lvl))
+        self._legend_stacked = False
+        hist.bind("<Configure>", lambda e: self.flow_legend(e.width), add="+")
         self.detail = ttk.Label(hist, style="Muted.TLabel", justify="left",
-                                text="Select a result to see all the details.")
-        self.detail.pack(fill="x", pady=(6, 0))
-        hist.bind("<Configure>", lambda e: self.detail.configure(wraplength=max(200, e.width)))
+                                text="Select a result to see all the details. Double-click a "
+                                     "result with a place in it to show that place on screen.")
+        self.detail.pack(fill="x", pady=(4, 0))
+        hist.bind("<Configure>", lambda e: self.detail.configure(wraplength=max(200, e.width)), add="+")
         self.hist_rows = []
         self.show_section()
 
@@ -11999,15 +12514,14 @@ class TestsWindow(tk.Toplevel):
                               uniform="b" if one_row else "")
 
     def flow_columns(self, width):
-        shown = ["time", "job", "test", "result"]
+        # 4.5.5: columns aren't hidden any more when the window is narrow; the table scrolls
+        # sideways instead, so every bit of text can be reached
+        shown = ["time", "job", "test", "meaning", "result"]
         if self.v_hf.get() == "job":
             shown.remove("job")
-        if width < 560 and "job" in shown:
-            shown.remove("job")
-        if width < 440:
-            shown.remove("test")
         if tuple(shown) != tuple(self.hist["displaycolumns"]):
             self.hist["displaycolumns"] = shown
+            self.hist_tools.fit()
 
     def keep_buttons_visible(self):
         """(4.5.3) Kept for callers; the buttons and the history no longer share a split."""
@@ -12046,6 +12560,8 @@ class TestsWindow(tk.Toplevel):
             self.hist.tag_configure(tag, foreground=col)
         self.hist.tag_configure("even", background=p["panel"])
         self.hist.tag_configure("odd", background=p["panel_alt"])
+        for lb, lvl in getattr(self, "legend_lbls", []):
+            lb.configure(foreground={"ok": p["good"], "warn": p["warn"], "bad": p["bad"]}[lvl])
 
     # ---------------------------------------------------------------- data
     def current_job(self):
@@ -12133,9 +12649,14 @@ class TestsWindow(tk.Toplevel):
 
         flt = self.v_hf.get()
         sec = self.v_sec.get()
+        fb = self.hist_filter
         rows = [e for e in hist if (flt == "all" or not job or e["job"] == job["name"])
-                and (sec == "all" or test_kind(e.get("test", "")) == sec)]
-        sig = (len(hist), hist[0]["t"] if hist else 0, flt, sec, job["name"] if job else "")
+                and (sec == "all" or test_kind(e.get("test", "")) == sec)
+                and fb.matches(e.get("job"), e.get("test"), e.get("result"),
+                               TEST_LEVELS.get(e.get("level"), ("", ""))[1],
+                               datetime.fromtimestamp(e["t"]).strftime("%m/%d %H:%M:%S"))]
+        sig = (len(hist), hist[0]["t"] if hist else 0, flt, sec, job["name"] if job else "",
+               fb.query())
         if force or dirty or sig != self._hist_sig:
             self._hist_sig = sig
             app.tests_dirty = False
@@ -12143,18 +12664,64 @@ class TestsWindow(tk.Toplevel):
             self.hist_rows = rows
             for i, e in enumerate(rows):
                 when = datetime.fromtimestamp(e["t"]).strftime("%m/%d %H:%M:%S")
-                icon = {"ok": "✔", "warn": "⚠", "bad": "✖"}.get(e.get("level"), "•")
+                icon, word, _ = TEST_LEVELS.get(e.get("level"), TEST_LEVELS["info"])
                 self.hist.insert("", "end", iid=str(i), values=(
-                    when, e["job"], e["test"], f"{icon}  {e['result']}"),
+                    when, e["job"], e["test"], f"{icon}  {word}", e["result"]),
                     tags=(e.get("level", "info"), "odd" if i % 2 else "even"))
+            self.hist_tools.fit()
             if rows:
                 self.hist_empty.place_forget()
             else:
                 what = {"all": "tests", "click": "click tests", "watch": "watcher tests"}[sec]
-                self.hist_empty.configure(text=f"No {what} for this job yet" if flt == "job"
-                                          else f"No {what} yet")
+                self.hist_empty.configure(
+                    text="Nothing matches the filter" if fb.query() else
+                    f"No {what} for this job yet" if flt == "job" else f"No {what} yet")
                 self.hist_empty.place(relx=0.5, rely=0.5, anchor="center")
             self.detail.configure(text="Select a result to see all the details.")
+
+    def flow_legend(self, width):
+        """The colour legend: one line when there's room, one per line when narrow."""
+        need = sum(lb.winfo_reqwidth() + 14 for lb, _ in self.legend_lbls)
+        stacked = width < need
+        if stacked == self._legend_stacked:
+            return
+        self._legend_stacked = stacked
+        for lb, _ in self.legend_lbls:
+            lb.pack_forget()
+            if stacked:
+                lb.pack(side="top", anchor="w")
+            else:
+                lb.pack(side="left", padx=(0, 14))
+
+    def hist_job(self, iid):
+        try:
+            return self.hist_rows[int(iid)]["job"]
+        except Exception:
+            return None
+
+    def hist_extra(self, iid):
+        try:
+            e = self.hist_rows[int(iid)]
+        except Exception:
+            return []
+        items = [("Filter to this job", lambda: self.hist_filter.var.set(e["job"])),
+                 ("Filter to this test", lambda: self.hist_filter.var.set(e["test"]))]
+        job = next((j for j in self.app.jobs if j["name"] == e["job"]), None)
+        if job:
+            items.append(("Edit this job…", lambda: JobEditor(self.app, job, is_new=False)))
+        return items
+
+    def hist_double(self, e):
+        iid = self.hist.identify_row(e.y)
+        if not iid:
+            return
+        try:
+            row = self.hist_rows[int(iid)]
+        except Exception:
+            return
+        if LOC_RE.search(row["result"]):
+            self.app.show_places(row["result"], parent=self, job_name=row["job"])
+            return "break"
 
     def show_detail(self):
         sel = self.hist.selection()
@@ -13153,16 +13720,22 @@ class DryRunDialog(Dialog):
             "now: are the targets there, are the conditions true? Loops are shown once; waits "
             "are not waited. Typed or pasted text is only counted, never shown.")).pack(
             anchor="w")
+        self.dr_filter = FilterBox(f, self.fill)
+        self.dr_filter.pack(anchor="e", pady=(8, 0))
         tf = ttk.Frame(f, style="Card.TFrame", padding=1)
-        tf.pack(fill="both", expand=True, pady=(8, 0))
+        tf.pack(fill="both", expand=True, pady=(4, 0))
         tr = ttk.Treeview(tf, columns=("n", "what", "result"), show="headings", height=12)
         enable_column_fit(tr)
         for c, h, w, st in (("n", "#", 70, False), ("what", "Step", 150, False),
-                            ("result", "What would happen", 470, True)):
+                            ("result", "What would happen", 470, False)):
             tr.heading(c, text=h, anchor="w")
             tr.column(c, width=w, minwidth=40, stretch=st, anchor="w")
         tr.pack(fill="both", expand=True)
         self.tree = tr
+        self.lines = []
+        self.tools = LogGrid(app, tr, frame=tf, owner=self, fit_col="result",
+                             job_of=lambda iid: job.get("name"), filterbox=self.dr_filter,
+                             name="dry-run")
         self.status = ttk.Label(f, style="Muted.TLabel", text="Checking the screen…")
         self.status.pack(anchor="w", pady=(6, 0))
         ttk.Button(self.footer, text="Close", command=self.destroy).pack(side="right")
@@ -13180,12 +13753,20 @@ class DryRunDialog(Dialog):
             restore()
             if not self.winfo_exists():
                 return
-            for n, w, r in lines:
-                self.tree.insert("", "end", values=(n, w, r))
+            self.lines = lines
+            self.fill()
             bad = sum(1 for _, _, r in lines if "NOT" in r or r.startswith(("couldn't", "the ")))
             self.status.configure(text=f"{len(lines)} step(s) checked." +
                                   (f" {bad} may need attention." if bad else ""))
         self.after(500, lambda: threading.Thread(target=work, daemon=True).start())
+
+
+    def fill(self):
+        self.tree.delete(*self.tree.get_children())
+        for n, w, r in self.lines:
+            if self.dr_filter.matches(n, w, r):
+                self.tree.insert("", "end", values=(n, w, r))
+        self.tools.fit()
 
 
 class StepDebugger:
@@ -13654,6 +14235,9 @@ class RunHistoryDialog(Dialog):
             self.runs.heading(c, text=h, anchor="w")
             self.runs.column(c, width=w, minwidth=40, stretch=stv, anchor="w")
         self.runs.pack(fill="both", expand=True)
+        self.run_tools = LogGrid(app, self.runs, frame=tf, owner=self, fit_col="result",
+                                 job_of=lambda iid: self.runs.set(iid, "job"),
+                                 name="run-history")
         self.runs.bind("<<TreeviewSelect>>", lambda e: self.show_run())
         ttk.Label(f, text="Steps of the selected run", style="Section.TLabel").pack(
             anchor="w", pady=(10, 2))
@@ -13668,6 +14252,11 @@ class RunHistoryDialog(Dialog):
             self.acts.heading(c, text=h, anchor="w")
             self.acts.column(c, width=w, minwidth=40, stretch=stv, anchor="w")
         self.acts.pack(fill="both", expand=True)
+        self.act_tools = LogGrid(app, self.acts, frame=tf2, owner=self, fit_col="result",
+                                 job_of=lambda iid: (self.runs.set(self.runs.selection()[0], "job")
+                                                     if self.runs.selection() else None),
+                                 extra=lambda iid: [("▶  Play video from this step", self.play)],
+                                 name="run-steps")
         self.acts.bind("<Double-1>", lambda e: self.play())
         ttk.Label(f, style="Muted.TLabel", wraplength=640, justify="left", text=(
             "Typed and pasted text is never stored here (only how many characters). Videos are "
@@ -13705,6 +14294,7 @@ class RunHistoryDialog(Dialog):
             self.runs.insert("", "end", iid=rid, values=(
                 rows[0].get("time", ""), rows[0].get("job", ""),
                 fmt_secs(end.get("elapsed", 0)) if end else "", result, "yes" if video else ""))
+        self.run_tools.fit()
 
     def show_run(self):
         sel = self.runs.selection()
@@ -13720,6 +14310,7 @@ class RunHistoryDialog(Dialog):
             self.acts.insert("", "end", iid=str(k), values=(
                 fmt_secs(r.get("elapsed", 0)), pos, r.get("step", ""), r.get("action", ""),
                 r.get("result", "")))
+        self.act_tools.fit()
 
     def video_path(self, rows):
         name = next((r.get("video") for r in rows if r.get("video")), "")
@@ -13938,7 +14529,11 @@ class StatsDialog(Dialog):
             f"Last click: {st['last']}\nLast problem: {st['last_problem']}\n"
             f"By type: {k['scheduled']} scheduled, {k['watcher']} watcher, {k['test']} test, "
             f"{k['manual']} manual")).pack(anchor="w", pady=(10, 6))
-        ttk.Label(f, text="Recent activity", style="Section.TLabel").pack(anchor="w")
+        hr = ttk.Frame(f)
+        hr.pack(fill="x")
+        ttk.Label(hr, text="Recent activity", style="Section.TLabel").pack(side="left")
+        self.st_filter = FilterBox(hr, self.fill)
+        self.st_filter.pack(side="right")
         tf = ttk.Frame(f, style="Card.TFrame", padding=1)
         tf.pack(fill="both", expand=True, pady=(4, 0))
         tr = ttk.Treeview(tf, columns=("time", "kind", "result", "detail"), show="headings",
@@ -13947,21 +14542,42 @@ class StatsDialog(Dialog):
         for c, h, w in (("time", "Time", 150), ("kind", "Type", 90), ("result", "Result", 80),
                         ("detail", "Details", 260)):
             tr.heading(c, text=h, anchor="w")
-            tr.column(c, width=w, anchor="w", stretch=(c == "detail"))
+            tr.column(c, width=w, anchor="w", stretch=False)
         sb = ttk.Scrollbar(tf, orient="vertical", command=tr.yview)
         tr.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         tr.pack(fill="both", expand=True)
-        mine = [r for r in rows if r.get("job") == job["name"]][-200:]
-        for r in reversed(mine):
-            det = r.get("detail") or (f"({r.get('x')}, {r.get('y')}) {r.get('how', '')}"
-                                      if r.get("x") else "")
-            tr.insert("", "end", values=(r["time"], r.get("kind", ""), r.get("result", ""), det))
+        self.tree = tr
+        self.tools = LogGrid(app, tr, frame=tf, owner=self, fit_col="detail",
+                             job_of=lambda iid: job["name"], filterbox=self.st_filter,
+                             name="click-history")
+        tr.bind("<Double-1>", lambda e: self.show(e))
+        self.mine = [r for r in rows if r.get("job") == job["name"]][-200:]
+        self.fill()
         b = self.footer
         ttk.Button(b, text="Close", command=self.destroy).pack(side="right")
         ttk.Button(b, text="Export this job's history…",
                    command=lambda: app.export_history(job["name"], self)).pack(side="left")
         self.finish()
+
+
+    def fill(self):
+        tr = self.tree
+        tr.delete(*tr.get_children())
+        for r in reversed(self.mine):
+            det = r.get("detail") or (f"({r.get('x')}, {r.get('y')}) {r.get('how', '')}"
+                                      if r.get("x") else "")
+            vals = (r["time"], r.get("kind", ""), r.get("result", ""), det)
+            if self.st_filter.matches(*vals):
+                tr.insert("", "end", values=vals)
+        self.tools.fit()
+
+    def show(self, e):
+        iid = self.tree.identify_row(e.y)
+        if iid:
+            text = " ".join(str(v) for v in self.tree.item(iid, "values"))
+            if LOC_RE.search(text):
+                self.app.show_places(text, parent=self, job_name=self.job["name"])
 
 
 class HelpDialog(Dialog):
@@ -14011,6 +14627,12 @@ class HelpDialog(Dialog):
              "each with its own history for this job or all jobs. Check picture outlines "
              "every copy of the picture it finds. The whole app hides while a test runs. Preferences → "
              "Clicking sets how long the marker stays and can outline every similar picture."),
+            ("Logs", "Every log (Activity, test history, run history, stats, dry run): "
+             "right-click to copy rows, one cell or everything (pastes into a spreadsheet), "
+             "save as CSV, or show a place like (878, 243) on screen; type in the 🔍 box to "
+             "filter. In Activity, click a place to see it. Activity keeps earlier lines until "
+             "Clear view (or Preferences → General). Test results say what their colour means: "
+             "OK, Attention or Failed."),
             ("Tray icon", "Point at Clickue's tray icon to see whether your jobs are running fine; "
              "right-click it → Job status for every job."),
             ("Locked screen", "Windows blocks clicks and screenshots while locked or "
@@ -14135,6 +14757,8 @@ class SettingsDialog(Dialog):
         check(p, "keep_awake", "Keep the PC and display awake")
         check(p, "tray_status", "Show the jobs' status when I point at the tray icon (and in "
                                 "its right-click menu → Job status)", HAVE_TRAY)
+        check(p, "activity_clear_on_start", "Clear Activity every time Clickue starts "
+                                            "(off: it keeps earlier lines until Clear view)")
         if not HAVE_TRAY:
             note(p, "Tray features need the pystray and pillow packages. Start Clickue.bat "
                     "installs them.", "Warn.TLabel")

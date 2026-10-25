@@ -289,6 +289,24 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
   palette colour and no fill (clam draws no border with relief flat).
 - **Tests window (4.5.4):** sections `tests_section` (all/click/watch) with `test_kind(name)`;
   per-section scope `tests_scopes`; no paned split any more (history right under the buttons).
+- **Logs (4.5.5).** `LogGrid(app, tree, frame, owner, job_of, extra, fit_col, filterbox)`
+  gives a Treeview log its right-click menu (copy rows / cell / all, select all, CSV,
+  📍 show on screen when `LOC_RE` finds "(x, y)", filter to job/test, extras), Ctrl+C/A/F,
+  and an auto-hiding horizontal scrollbar (`fit()` widens `fit_col` to its text so the table
+  scrolls instead of cutting). Used by the Tests history, Run history (both tables), Stats
+  and Dry run. `FilterBox` = the 🔍 field (phrase match, case-insensitive; 180 ms debounce);
+  each log filters its own data (not by detaching tree items). `App.show_places(text,
+  parent, job_name)` hides the app and calls `flash_marker`: crosshair on the spot, the
+  watched picture's outline (size × "at N% size") where the text says a picture was found.
+  Activity: `insert_activity` tags places with `loc` (link), `activity_menu`,
+  `load_activity_history` reads `read_log_tail(800)` lines older than `session_start` and
+  newer than `settings["activity_cleared_at"]` (set by Clear view, or at start when
+  `activity_clear_on_start`). Tests history: `meaning` column from `TEST_LEVELS`, legend
+  (`flow_legend` stacks it when narrow); columns are no longer hidden when narrow.
+  Job list: `on_tree_click` unselects on the empty area, `on_double` ignores mouse
+  double-clicks there (it used to open the editor, which click-outside closed again).
+  `Accent2.TButton` (teal, `accent2` palette keys) for New watcher. `flash_status()` shows a
+  short confirmation in the status bar.
 - **Draw box (watcher)** captures with the pointer moved aside and, 0.6 s later,
   `picture_changes()` captures the box again: if > 1 % of its pixels changed by > 24 grey
   levels, the user is warned (exact mode) that the box contains changing content.
@@ -492,8 +510,8 @@ pythonw src\clickue.py          rem or double-click scripts\Start Clickue.bat
   `scripts\make_version_file.py` for the exe's version details, then PyInstaller `--onefile
   --noconsole --icon assets\clickue.ico --version-file build\version_info.txt
   --hidden-import pystray._win32`).
-- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.5.4`, run
-  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.5.4.exe`. The installer shows
+- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.5.5`, run
+  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.5.5.exe`. The installer shows
   `installer/before-install.txt` first; its uninstaller removes the HKCU Run value only when it
   points at `{app}`, and deletes `%APPDATA%\Clickue` only if the user says Yes (skipped when
   Clickue's own Uninstall passes `/KEEPDATA`).
@@ -571,6 +589,11 @@ Run from the repository root.
      number changes → not found, partial → found on every card; the three filters show their
      own columns, fitted to text; ▲ / ▼ and dragging the divider; disabled toolbar buttons
      are outlines; Tests sections and their history scopes.
+   - 4.5.5: right-click → Copy in each log and paste into Excel; the 🔍 filters; click a
+     place in Activity / double-click a test row → the app hides and marks it; narrow Tests
+     window → the history scrolls sideways; exit and start → Activity still there, Clear view
+     → gone after the next start; New watcher is teal; click below the job rows unselects,
+     double-click there does nothing.
 
 ## 10. GitHub: repository, CI and releases
 

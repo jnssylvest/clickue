@@ -1,5 +1,40 @@
 # Changelog
 
+## 4.5.5 - Logs you can copy, filter and show on screen; Activity kept across restarts
+
+> Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken
+> during development, but AI-assisted development does not guarantee bug-free or secure
+> software. Review the source and use normal precautions. Test automations safely, protect
+> notification credentials, and avoid unattended use for consequential actions.
+
+**Logs**
+- **Right-click → Copy** in every log: Activity, the Tests window's history, Run history (runs
+  and steps), a job's Stats and Dry run results. Copy the selected rows, one cell, or
+  everything shown with headings (tab-separated, pastes into a spreadsheet); Select all; Save
+  as CSV (Activity: text file); Filter to this job or test; Edit this job; Ctrl+C, Ctrl+A,
+  Ctrl+F.
+- **🔍 Filter box** on every log: shows only the lines containing what you type.
+- **Show on screen:** a place in a log line, like *(878, 243)*, is a link in Activity, and a
+  right-click (or double-click) item in the test and stats logs. Clickue hides and marks it
+  like Check picture, with the watched picture's outline where the line says it was found.
+- **What the colours mean:** every test-history row says *OK*, *Attention* or *Failed* in a new
+  Meaning column, and a legend under the table explains them.
+- **Horizontal scrollbar** in the logs when the text is wider than the window (the Tests
+  history no longer hides columns or cuts results off when the window is narrow).
+- **Activity keeps its lines when Clickue exits and starts again.** Only *Clear view* removes
+  them (for good), or Preferences → General → *Clear Activity every time Clickue starts*.
+
+**Main window**
+- **New watcher** is now a teal primary button next to the blue New click.
+- **Click the empty part of the job list** to unselect the row. A double-click there no
+  longer opens (and immediately closes) the editor; only a double-click on a row edits it.
+
+**Data:** new settings `activity_clear_on_start` (off) and `activity_cleared_at`. No job or
+schema changes.
+
+**Docs:** guide sections 3, 10 (colour meanings), 15 (logs: copy, filter, show on screen;
+Activity kept across restarts), 20, 23; feature list, quick start, developer guide.
+
 ## 4.5.4 - More accurate picture matching, zoom while drawing, smarter job list, cleaner Tests window
 
 > Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken

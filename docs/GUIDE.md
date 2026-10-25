@@ -11,7 +11,7 @@
 
 This guide explains **every feature** of Clickue, with real-world scenarios and example
 pictures. Read it from top to bottom to learn everything, or jump to the part you need.
-In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.5.4.
+In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.5.5.
 
 > [!NOTE]
 > The example pictures show an invented "Example App" so the ideas are easy to see. Your own
@@ -124,7 +124,7 @@ From the [Releases page](https://github.com/jnssylvest/clickue/releases/latest):
   (shown as *Before a fresh start* in Backups), so nothing is lost.
 - **Upgrading.** Your jobs keep working. Every time a new version starts for the first time
   with your jobs, Clickue first saves a backup named *before-upgrade-&lt;version&gt;* (for
-  example *before-upgrade-4.5.4*), so you can always go back to the jobs as they were.
+  example *before-upgrade-4.5.5*), so you can always go back to the jobs as they were.
 - **Jobs file missing or damaged?** If `jobs.json` is gone or can't be read but backups exist,
   Clickue tells you and offers to **restore the newest backup** (it shows its date and the job
   names). Restored jobs start **stopped**, so nothing clicks until you start them.
@@ -147,17 +147,20 @@ From the [Releases page](https://github.com/jnssylvest/clickue/releases/latest):
    light/dark, and **☰ Menu** holds everything else (see below).
 2. **Summary cards.** The next click and its countdown, how many jobs are active, clicks
    today, and whether the screen is available (not locked or disconnected).
-3. **Toolbar.** ＋ New click, 👁 New watcher, Edit, Duplicate, Delete, ▶ Start / Stop,
+3. **Toolbar.** ＋ New click (blue) and 👁 New watcher (teal) are the two main buttons, then Edit, Duplicate, Delete, ▶ Start / Stop,
    ⏸ Pause (this job), ⏸ Pause all, 🧪 Tests, ⏺ Record, ↓ Import and ↑ Export. When the window
    is too narrow, the least-used buttons fold into **More ▾**.
 4. **Filter.** Show all jobs, only scheduled clicks, or only screen watchers.
-5. **Job list.** One row per job. **Double-click** (or Enter) to edit, **right-click** for every
-   action. The **tick box** at the start of each row selects jobs for batch actions
+5. **Job list.** One row per job. **Double-click** a row (or Enter) to edit, **right-click** for
+   every action. **Click the empty part** of the list below the rows to unselect; a
+   double-click there does nothing. The **tick box** at the start of each row selects jobs for batch actions
    ([section 14](#ticking-jobs-batch-actions)). Less important columns hide when the window
    gets narrow. Column widths can be changed (below).
-6. **Activity.** A live, colour-coded log. Filter it to **Clicks** or **Problems**. **Clear
-   view** empties the panel (the log file keeps everything); **Open log file** opens the full
-   log.
+6. **Activity.** A live, colour-coded log. Filter it to **Clicks** or **Problems**, or type in
+   the **🔍 filter** box. Places like *(878, 243)* are links: click one to see that place on
+   screen. Right-click for copy and more ([section 15](#logs-copy-filter-and-show-on-screen)).
+   It keeps lines from earlier runs; **Clear view** empties it (the log file keeps
+   everything); **Open log file** opens the full log.
 7. **Status bar.** A one-line summary.
 
 While a job is running, or jobs are waiting their turn, a **bar above the job list** shows
@@ -1121,7 +1124,19 @@ maximized, if it was), with the window you were using on top.
   to **change the test time** or **cancel** them; **Cancel pending tests** in the Tests window
   cancels them all.
 - **Test history** lists the section's results for **This job** or **All jobs**. Select a line
-  to see all the details. **Clear** empties it (all sections).
+  to see all the details. **Clear** empties it (all sections). Type in the **🔍** box to
+  filter it; right-click for copy and more ([section 15](#logs-copy-filter-and-show-on-screen)).
+- **What the colours mean.** Each row's **Meaning** column says it in words, and a legend
+  under the table repeats it:
+
+  | Colour | Meaning | Example |
+  |---|---|---|
+  | Green | ✔ **OK**: as expected | *Picture found at (878, 243)*; a test click worked |
+  | Orange | ⚠ **Attention**: worth a look | *Picture NOT on screen - the watcher would click*, a dry run that would click now |
+  | Red | ✖ **Failed**: the test couldn't do its job | the screen stayed locked; the button wasn't found |
+
+- **Double-click** a result with a place in it, like *(878, 243)*, to show that place on
+  screen. The history scrolls sideways when the window is narrow.
 - The same tests are on each job's **right-click menu**, and the editor has **Show spot**,
   **Check now** and **Dry run** buttons so you can test before saving.
 - **Test click now** goes through the same one-at-a-time queue as everything else, ahead of
@@ -1423,10 +1438,36 @@ and its result.
 ### Activity and the log file
 
 The **Activity** panel shows what's happening, colour-coded, filterable to **Clicks** or
-**Problems**. Everything also goes into the log file (**☰ Menu → Open log file**). The log
+**Problems** and with a **🔍 filter** box. Since 4.5.5 it **keeps its lines when you exit
+and start Clickue again** (the last 800 lines are read back from the log file). They're only
+removed by **Clear view** (they don't come back after that), or at every start if you turn on
+**Preferences → General → Clear Activity every time Clickue starts**. Everything also goes into the log file (**☰ Menu → Open log file**). The log
 is limited to 1 MB by default (**Preferences → Data & backups**); two older copies are kept
 and older ones are deleted, so it never grows without limit. Phone-alert credentials are
 removed from every log line, and typed or pasted text never appears in it.
+
+### Logs: copy, filter and show on screen
+
+Every log in Clickue (Activity, the Tests window's history, Run history and its steps, a
+job's Stats, and Dry run results) works the same way (4.5.5):
+
+| Do | What happens |
+|---|---|
+| **Right-click** a row (or a line in Activity) | **Copy** (the selected rows), **Copy "column" only** (just that cell), **Copy everything shown** (with the headings), **Select all**, **📍 Show this place on screen** (when the row mentions a place), **Filter to this job / test**, **Edit this job…**, **Save what's shown as CSV…** (Activity: as a text file), Clear the filter |
+| **Ctrl+C** / **Ctrl+A** | Copy the selected rows / select every row shown |
+| **Ctrl+F**, or type in the **🔍** box | Show only rows that contain that text (any column, case doesn't matter); **Esc** or **✕** clears it |
+| **Click a place** in Activity, or **double-click** a test or stats row with a place | **Show it on screen** (see below) |
+
+Copied rows are tab-separated with the columns in order, so they paste straight into a
+spreadsheet. Wide logs get a **horizontal scrollbar** as soon as their text is wider than the
+window, so long results can always be read in full.
+
+**Show on screen.** Clickue hides, like for **Check picture**, and marks every place the line
+mentions: the crosshair on the spot, and where the line says a watched picture was found, the
+picture's outline at its size (and display scaling). The marks stay for the time set in
+**Preferences → Clicking** (click or press Esc to close them early), then Clickue comes
+back. It shows where something **was** found when the line was written; to look again now,
+use **Check picture** or **Show spot**.
 
 ---
 
@@ -1514,7 +1555,7 @@ writes the reason in the Activity log and shows a warning once, instead of faili
 - Backups contain your jobs, step groups and settings, but **never your phone-alert
   credentials**.
 - **Before an upgrade:** the first time a new version starts with your jobs, it saves a backup
-  named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.4*) before saving
+  named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.5*) before saving
   anything. Older jobs keep working exactly as before.
 - **☰ Menu → Backups…** lists them (Daily, Manual, Before a restore, Before an import, Before a
   fresh start, Before an upgrade) with how many jobs each holds.
@@ -1660,6 +1701,7 @@ minimized** to go straight to the tray.
 | Start automatically when I sign in to Windows | Off |
 | Keep the PC and display awake | On |
 | Show the jobs' status when I point at the tray icon (and in its menu → Job status) | On |
+| Clear Activity every time Clickue starts (off: it keeps earlier lines until Clear view) | Off |
 
 ### Clicking
 
@@ -1944,6 +1986,8 @@ Only in admin tools where your organisation allows automation:
 | Ctrl+Z | Undo delete (a batch delete comes back all at once) |
 | X | Tick / untick the selected job (for batch actions) |
 | Ctrl+Up / Ctrl+Down | More room for Activity / for the job list |
+| Ctrl+C / Ctrl+A / Ctrl+F (in a log) | Copy the selected rows / select all / filter |
+| Click the empty part of the job list | Unselect |
 | Mouse wheel, + / −, 0, arrows, middle-drag | Zoom and move while drawing a box ([section 6](#zooming-in-while-you-draw)) |
 | Ctrl+A (in the job list) | Tick every job shown |
 | Ctrl+, | Preferences |
