@@ -11,7 +11,7 @@
 
 This guide explains **every feature** of Clickue, with real-world scenarios and example
 pictures. Read it from top to bottom to learn everything, or jump to the part you need.
-In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.5.1.
+In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.5.2.
 
 > [!NOTE]
 > The example pictures show an invented "Example App" so the ideas are easy to see. Your own
@@ -122,8 +122,17 @@ From the [Releases page](https://github.com/jnssylvest/clickue/releases/latest):
 - **Reinstalled?** If you installed again and jobs from before are still in your user folder,
   Clickue asks whether to **keep them** or **start fresh**. Starting fresh saves a backup first
   (shown as *Before a fresh start* in Backups), so nothing is lost.
-- **Upgrading from 4.4 or earlier.** Your jobs keep working. Before saving them in the new
-  format, Clickue saves a backup named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.1*).
+- **Upgrading.** Your jobs keep working. Every time a new version starts for the first time
+  with your jobs, Clickue first saves a backup named *before-upgrade-&lt;version&gt;* (for
+  example *before-upgrade-4.5.2*), so you can always go back to the jobs as they were.
+- **Jobs file missing or damaged?** If `jobs.json` is gone or can't be read but backups exist,
+  Clickue tells you and offers to **restore the newest backup** (it shows its date and the job
+  names). Restored jobs start **stopped**, so nothing clicks until you start them.
+- **Very old settings file.** A settings file from the very first versions
+  (`autoclicker_config.json` next to the program) is only offered for import when the data
+  folder has never been used, and only after asking. It is never imported over existing data.
+- **Which jobs were loaded.** The Activity log's first lines say how many jobs were loaded,
+  from which file, which version saved them and when, and their names.
 - **One copy only.** If Clickue is already running (maybe hidden in the tray), starting it
   again just tells you so, instead of opening a second copy that could double-click. Look for
   its icon near the clock (you may need to click the **^** arrow).
@@ -176,7 +185,9 @@ Like in a spreadsheet:
 
 - **Drag** the border between two column headings to make a column wider or narrower.
 - **Double-click** the border to the right of a column heading to **fit the column to its
-  contents**, so every name, target and result shows in full.
+  contents**, so every name, target and result shows in full. You can keep holding the
+  second click and drag right away; the border also responds when you grab it exactly on its
+  line.
 
 Clickue **remembers** the widths you set (fitted or dragged) and keeps them the next time it
 starts; the other columns share the remaining space. **☰ Menu → Reset column widths** goes back
@@ -1299,16 +1310,29 @@ mode). Open it with **☰ Menu → Open data folder**.
 | `diagnostics\` | Failure screenshots, if you turned them on |
 
 Your data **survives** reinstalling, updating and moving the program. If a file is ever
-damaged, it's set aside (renamed) instead of wiping your jobs.
+damaged, it's set aside (renamed to `.corrupt`) instead of wiping your jobs, and Clickue
+offers to restore the newest backup.
+
+> [!IMPORTANT]
+> **The installed version and a portable copy keep separate jobs.** The installed Clickue uses
+> `%APPDATA%\Clickue`; a portable copy uses the `ClickueData` folder next to its
+> `Clickue.exe`; running from source uses `%APPDATA%\Clickue` unless a `portable.txt` sits
+> next to `clickue.py`. If your jobs seem to have "gone back" after switching between them,
+> they're in the other folder: the status bar and the first Activity lines show which folder
+> is in use. Move jobs between them with **Export jobs…** / **Import jobs…**, or restore a
+> backup.
+
+If saving ever fails (for example another program holds the file), Clickue tries again,
+writes the reason in the Activity log and shows a warning once, instead of failing silently.
 
 ### Backups
 
 - **Automatic:** once a day, of all jobs and settings. The newest 14 are kept (adjustable).
 - Backups contain your jobs, step groups and settings, but **never your phone-alert
   credentials**.
-- **Before an upgrade:** the first time Clickue 4.5 starts with jobs from an older version, it
-  saves a backup named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.1*) before saving them in the new format. Older jobs
-  keep working exactly as before.
+- **Before an upgrade:** the first time a new version starts with your jobs, it saves a backup
+  named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.2*) before saving
+  anything. Older jobs keep working exactly as before.
 - **☰ Menu → Backups…** lists them (Daily, Manual, Before a restore, Before an import, Before a
   fresh start, Before an upgrade) with how many jobs each holds.
   - **Back up now** makes a manual backup.
@@ -1385,10 +1409,11 @@ While Clickue is minimized, **point at its tray icon** to see whether your jobs 
   FAILED*), ⚠ needs attention (a watcher seeing a change, a job waiting because the screen is
   locked), ✓ working normally (*Running · next in 4m 10s*, *Watching · Seen 13:49:58*), ⏸ paused.
 - Windows shows at most about 127 characters there, so with many jobs the tooltip ends with
-  *+N more*. **Right-click the icon → Job status** lists **every** active job in full;
-  clicking one opens the window.
+  *+N more*. **Right-click the icon → Job status** lists **every** active job in full, with
+  clock times (*next at 19:16:30*); clicking one opens the window.
 
-The status refreshes every couple of seconds. Turn it off in **Preferences → General → Show the
+The tooltip's countdowns are **live**: they count down second by second while you point at
+the icon. Turn it off in **Preferences → General → Show the
 jobs' status when I point at the tray icon**; the tooltip then just says *Clickue*.
 
 > [!NOTE]
@@ -1854,6 +1879,7 @@ signed in as that user). If Clickue was ended abruptly, Windows may leave a temp
 | **Clicks the wrong place** | Make sure **Only the exact picture** is ticked (it is by default since 4.5.1). **Show spot** to see what it finds. Use a Large picture if there are look-alikes, or **search only an area** (watchers). Make sure nothing covers the target |
 | **The editor disappeared after picking or a test** | Fixed in 4.5.1: the editor comes back on top, exactly where it was. If a window ever seems lost, click Clickue's taskbar or tray icon |
 | **A window changed size after a test** | Fixed in 4.5.1: windows come back at exactly the size and position you left them |
+| **My jobs went back to an older list after an update** | ☰ Menu → **Backups…** and restore the newest *Daily* or *before-upgrade* backup that has your jobs. Check whether you used a **portable** copy before (its jobs are in `ClickueData` next to that `Clickue.exe`) and the installed one now, or the other way round ([section 17](#where-your-data-lives)). Since 4.5.2, Clickue backs up your jobs before every upgrade and never imports a very old settings file over existing data |
 | **The tray icon shows an old name** | Update to 4.5.1 or later. Windows may also remember an old name in Settings → Personalization → Taskbar → Other system tray icons until the icon is seen again |
 | **Job shows Waiting** | It's due but can't click: the screen is locked or disconnected, you're using the mouse, or the target is covered. Check Activity for the reason |
 | **Missed while I was away** | The screen was locked or the session disconnected; see [section 18](#18-locked-screens-remote-desktop-and-virtual-machines) |

@@ -750,6 +750,20 @@ def t_fixes_451():
     ok("4.5.1 double-click a column border fits the column", region == "separator" and r == "break" and w_fit > 40,
        (region, r, w_fit))
     ok("4.5.1 fitted width is remembered", (app.settings.get("col_widths") or {}).get(c0) == w_fit)
+    mode = t.tk.eval("set ttk::treeview::State(pressMode)")
+    t.event_generate("<ButtonRelease-1>", x=x + 1, y=8); pump(50)
+    ok("4.5.1 a double-click on a border still starts a drag (not sticky)", mode == "resize", mode)
+    # a click on the thin grid line over a heading border reaches the table
+    app.draw_grid(); pump(50)
+    lines = [f for f in app.grid_lines if f.winfo_ismapped() and f.winfo_width() <= 2 and f.winfo_y() < 30]
+    if lines:
+        f = lines[0]
+        f.event_generate("<ButtonPress-1>", x=0, y=2); pump(50)
+        mode2 = t.tk.eval("set ttk::treeview::State(pressMode)")
+        f.event_generate("<ButtonRelease-1>", x=0, y=2); pump(50)
+        ok("4.5.1 grabbing a column border right on its grid line works", mode2 == "resize", mode2)
+    else:
+        ok("4.5.1 grid lines over the headings exist", False)
     ev2 = type("E", (), {"widget": t, "x": 5, "y": 8})()
     ok("4.5.1 double-click on a heading doesn't open anything", ac._autofit_double(ev2) == "break")
     app.reset_col_widths(); pump(50)
@@ -761,6 +775,8 @@ def t_fixes_451():
     for j in app.jobs[:3]:
         j["enabled"] = True
     tip2, lines2 = app.tray_status()
+    ok("4.5.1 tray menu lines use clock times, the tooltip a live countdown",
+       all("next in" not in l for l in lines2), lines2)
     ok("4.5.1 tray status lists active jobs", "active" in tip2 or "PAUSED" in tip2, (tip2, lines2))
     for j in app.jobs[:3]:
         j["enabled"] = False

@@ -700,4 +700,67 @@ ok("settings: 4.5.1 defaults", ac.DEFAULT_SETTINGS["marker_seconds"] == 5
    and ac.DEFAULT_SETTINGS["show_similar"] is False and ac.DEFAULT_SETTINGS["tray_status"] is True)
 ok("saved window sizes are kept when they fit (no shrinking)",
    ac.fit_geometry("1200x1000+10+20") == "1200x1000+10+20" or ac.virtual_screen()[3] < 1000)
+
+# ======================================================================== 4.5.1: never lose jobs
+import shutil as _sh
+def fresh_folder():
+    _sh.rmtree(ac.DATA_DIR, ignore_errors=True); os.makedirs(ac.DATA_DIR, exist_ok=True)
+fresh_folder()
+oldcfg = os.path.join(d, "autoclicker_config.json")
+json.dump({"settings": {}, "jobs": [dict(ac.new_job(), name="Deleted long ago")]}, open(oldcfg, "w"))
+ac.OLD_CONFIG = oldcfg
+asked = []
+# a used data folder (has backups / a log) but no jobs file: the old config is NEVER imported
+ac.make_backup([dict(ac.new_job(), name="My 4.5 job")], dict(ac.DEFAULT_SETTINGS), "auto")
+B = make_app(); s_, j_, mig = B.load(ask=lambda q: asked.append(q) or True)
+ok("jobs safety: old config never imported into a used data folder",
+   not j_ and not asked and not mig and B.jobs_file_state == "missing")
+# ...and the newest backup is offered instead
+B.jobs = j_
+got = B.offer_backup_recovery(lambda q: asked.append(q) or True)
+ok("jobs safety: missing jobs file -> newest backup offered and restored (stopped)",
+   got and [j["name"] for j in B.jobs] == ["My 4.5 job"] and not B.jobs[0]["enabled"]
+   and "My 4.5 job" in asked[-1], asked[-1:])
+asked.clear()
+B.jobs = []
+ok("jobs safety: saying No keeps an empty list", not B.offer_backup_recovery(lambda q: False) and not B.jobs)
+# a damaged jobs file is not treated as "never used"
+fresh_folder()
+open(ac.JOBS_PATH, "w").write("{ not json")
+ac.messagebox.showwarning = lambda *a, **k: None
+B = make_app(); s_, j_, mig = B.load(ask=lambda q: asked.append(q) or True)
+ok("jobs safety: unreadable jobs file -> no old-config import, reported as unreadable",
+   not asked and B.jobs_file_state == "unreadable" and os.path.exists(ac.JOBS_PATH + ".corrupt"))
+# a truly unused data folder: the old config is only imported after asking
+fresh_folder()
+B = make_app(); s_, j_, mig = B.load(ask=lambda q: asked.append(q) or False)
+ok("jobs safety: old config needs a Yes (No = nothing imported)", asked and not j_ and not mig)
+asked.clear()
+B = make_app(); s_, j_, mig = B.load()
+ok("jobs safety: without anyone to ask, nothing is imported", not j_ and not mig)
+B = make_app(); s_, j_, mig = B.load(ask=lambda q: True)
+ok("jobs safety: Yes imports it", mig and [j["name"] for j in j_] == ["Deleted long ago"]
+   and B.old_config_imported)
+# the version that saved the file is remembered (a backup is made on every version change)
+fresh_folder()
+json.dump({"app": "Clickue", "version": "4.5", "schema": 2, "jobs": [dict(ac.new_job(), name="J")]},
+          open(ac.JOBS_PATH, "w"))
+B = make_app(); s_, j_, mig = B.load()
+ok("jobs safety: knows which version saved the jobs", B.saved_version == "4.5" and B.jobs_file_state == "ok"
+   and "4.5" in B.jobs_file_info)
+# saving: a blocked file is retried once and then reported
+real_wj = ac.write_json
+calls = []
+def flaky(path, data):
+    calls.append(path)
+    if len(calls) == 1:
+        raise PermissionError("in use")
+    return real_wj(path, data)
+ac.write_json = flaky
+B.jobs = j_; B.settings = s_; B.save()
+ok("saving: retried after a brief lock, then saved", len(calls) == 3 and json.load(open(ac.JOBS_PATH))["jobs"][0]["name"] == "J")
+ac.write_json = lambda p, d: (_ for _ in ()).throw(PermissionError("blocked"))
+B.save()
+ok("saving: a lasting failure is reported", "blocked" in getattr(B, "save_error", ""))
+ac.write_json = real_wj
 print(f"\nRESULT {sum(R)}/{len(R)}")

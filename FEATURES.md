@@ -273,12 +273,19 @@ All tests hide the whole app while they run, so nothing is in the way.
 
 - **Daily automatic backup** of all jobs, step groups and settings (keeps the newest 14,
   adjustable). Phone-alert credentials are never copied into backups.
-- A backup is saved before upgrading jobs from an older version (*before-upgrade-<version>*, e.g. *before-upgrade-4.5.1*), before
-  an import that replaces your jobs, before a restore and before a fresh start.
+- A backup is saved **every time a new version first starts with your jobs**
+  (*before-upgrade-<version>*, e.g. *before-upgrade-4.5.2*), before an import that replaces
+  your jobs, before a restore and before a fresh start.
+- **Missing or damaged jobs file:** Clickue offers to restore the newest backup (showing its
+  date and job names); restored jobs start stopped. A settings file from the very first
+  versions is only offered when the data folder was never used, and never imported silently.
+- The Activity log says how many jobs were loaded, from which file and which version saved
+  them; a failed save is retried and then shown as a warning (never silent).
 - **Backups window** to back up now, restore (replace or add) and open the folder. Your
   current jobs are backed up before any restore.
 - Everything is stored in `%APPDATA%\Clickue` and survives reinstalling or moving the
-  program. Damaged files are set aside instead of wiping your jobs.
+  program. Damaged files are set aside instead of wiping your jobs. A portable copy keeps its
+  own jobs in `ClickueData` next to it (move jobs with Export / Import).
 - Offers to import jobs from the previous version (*Scheduled AutoClicker*). It asks first and
   never imports silently.
 - **Reinstalling:** if jobs from before are found after a fresh install, Clickue asks whether
@@ -294,8 +301,9 @@ All tests hide the whole app while they run, so nothing is in the way.
 - Minimize and/or close to the **system tray**; tray menu with Show, **Job status**, Pause all,
   Stop everything now and Exit.
 - **Job status on the tray icon.** Point at the icon to see a summary (*3 active · all OK* or
-  *1 needs attention*), what's running now, and each active job's health, problems first.
-  The tray menu's **Job status** lists every active job. Can be turned off.
+  *1 needs attention*), what's running now, and each active job's health, problems first,
+  with **live** countdowns. The tray menu's **Job status** lists every active job with clock
+  times. Can be turned off.
 - Windows shows the name **Clickue** for the tray icon, taskbar and the program file's details.
 - **Global hotkeys** that work while hidden, all changeable: pause/resume all (**Ctrl+Alt+P**),
   show/hide Clickue (**Ctrl+Alt+K**), emergency stop (**Ctrl+Alt+X**), start/stop recording
@@ -318,7 +326,8 @@ All tests hide the whole app while they run, so nothing is in the way.
 - Every window and dialog **remembers its size and position** (and whether it was maximized).
   When the app hides for a pick or a test, every window comes back exactly as it was, with the
   window you were using on top. Sizes only change if a window no longer fits on the screen.
-- **Column widths:** drag a column border, or **double-click** it to fit the column to its
+- **Column widths:** drag a column border (it responds on the first grab, also right on its
+  line and right after a double-click), or **double-click** it to fit the column to its
   contents (like a spreadsheet), in every table. The job list remembers its widths;
   ☰ Menu → Reset column widths.
 - Clear grid with column lines, status icons and colour coding.

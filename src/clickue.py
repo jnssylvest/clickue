@@ -58,7 +58,7 @@ except Exception:
 APP_NAME = "Clickue"
 APP_ID = "Clickue"
 OLD_APP_ID = "ScheduledAutoClicker"      # previous name - data is migrated from here
-VERSION = "4.5.1"
+VERSION = "4.5.2"
 REPO_URL = "https://github.com/jnssylvest/clickue"
 GUIDE_URL = REPO_URL + "/blob/main/docs/GUIDE.md"      # the complete guide (☰ Menu)
 DISCLOSURE = ("Clickue is vibe-coded and was developed with substantial AI assistance. Caution "
@@ -973,6 +973,16 @@ def read_install_id():
         return ""
 
 
+def data_folder_used():
+    """Has Clickue's data folder ever been used (backups, history, log, tests)? Then old
+    files from the very first versions must never be imported over it."""
+    for n in ("backups", "clickue.log", "click_history.csv", "test_history.json", "run_history.csv",
+              "jobs.json.corrupt", "settings.json.corrupt"):
+        if os.path.exists(os.path.join(DATA_DIR, n)):
+            return True
+    return False
+
+
 def count_saved_jobs(folder):
     """How many jobs are saved in a data folder (0 if none / unreadable)."""
     try:
@@ -1183,18 +1193,31 @@ def _autofit_double(e):
             col = _display_cols(tree)[n]
         except Exception:
             return "break"
-        w = column_fit_width(tree, col)
-        tree.column(col, width=w, stretch=False)
-        cb = getattr(tree, "_autofit_cb", None)
-        if cb:
-            try:
-                cb(col, w)
-            except Exception:
-                pass
+        # Let the table start a column drag as usual (a quick second click on a border is
+        # often the start of a drag; swallowing it made dragging feel "sticky"), then fit.
         try:
-            tree.event_generate("<<ColumnFitted>>")
+            tree.tk.call("ttk::treeview::Press", str(tree), e.x, e.y)
         except Exception:
             pass
+        tree._dragging_col = None
+
+        def fit():
+            try:
+                w = column_fit_width(tree, col)
+                tree.column(col, width=w, stretch=False)
+            except Exception:
+                return
+            cb = getattr(tree, "_autofit_cb", None)
+            if cb:
+                try:
+                    cb(col, w)
+                except Exception:
+                    pass
+            try:
+                tree.event_generate("<<ColumnFitted>>")
+            except Exception:
+                pass
+        tree.after_idle(fit)
         return "break"
     if region == "heading":
         return "break"          # double-clicking a heading does nothing else
@@ -4530,15 +4553,30 @@ class App:
                               f"are)", parent=root):
                 self.renamed_from_old = migrate_old_data()
         os.makedirs(DATA_DIR, exist_ok=True)
-        self.settings, self.jobs, migrated = self.load()
+
+        def ask(question):
+            root.withdraw()
+            return messagebox.askyesno(APP_NAME, question, parent=root)
+        self.settings, self.jobs, migrated = self.load(ask=ask)
+        self.recovery_note = ""
+        if self.jobs_file_state != "ok" and not self.jobs:
+            # the jobs file is gone or damaged: offer the newest backup that has jobs
+            try:
+                found = self.offer_backup_recovery(ask)
+            except Exception as e:
+                found = False
+                self.recovery_note = f"Couldn't look for a backup of your jobs: {e}"
+            migrated = migrated or found
         install_id = read_install_id()
         if install_id and self.settings.get("install_id") != install_id:
             # freshly installed / reinstalled: offer a clean start if jobs are left over
             if self.jobs and not asked_import:
                 root.withdraw()
+                names = ", ".join(short_title(j.get("name", "?"), 30) for j in self.jobs[:6])
                 keep = messagebox.askyesno(
                     APP_NAME, f"Clickue was just installed and found {len(self.jobs)} job(s) "
-                              f"from before on this computer.\n\nKeep them?\n\n"
+                              f"from before on this computer:\n{names}"
+                              f"{' …' if len(self.jobs) > 6 else ''}\n\nKeep them?\n\n"
                               f"Yes = keep my jobs and settings\n"
                               f"No = start fresh (your old jobs are saved in a backup first, "
                               f"so you can bring them back from \u2630 Menu \u2192 Backups)",
@@ -4560,8 +4598,9 @@ class App:
         self.setup_logging()
         keep_awake(self.settings["keep_awake"])
         self.ensure_runtime()
-        if self.schema_upgrade:
-            try:              # before the first save in the new format: keep a copy as it was
+        if self.jobs and (self.schema_upgrade or (getattr(self, "saved_version", "")
+                                                   and self.saved_version != VERSION)):
+            try:              # a new version: keep a copy of the jobs as they were (4.5.1)
                 make_backup(self.jobs, self.settings, f"before-upgrade-{VERSION}", self.groups)
             except Exception:
                 pass
@@ -4607,11 +4646,19 @@ class App:
                 set_run_at_startup(True)
         if migrated:
             self.save()
+        if getattr(self, "old_config_imported", False):
             try:
                 os.replace(OLD_CONFIG, OLD_CONFIG + ".migrated")
             except Exception:
                 pass
-            self.log("Moved your jobs and settings from the old config file into the data folder.")
+            self.log("Imported your jobs and settings from the old config file "
+                     "(you said Yes).")
+        self.log(f"Loaded {len(self.jobs)} job(s) from {JOBS_PATH}"
+                 + (f" ({self.jobs_file_info})" if getattr(self, "jobs_file_info", "") else "")
+                 + (f": {', '.join(short_title(j.get('name', ''), 30) for j in self.jobs[:8])}"
+                    + (" …" if len(self.jobs) > 8 else "") if self.jobs else ""))
+        if getattr(self, "recovery_note", ""):
+            self.log(self.recovery_note)
         if self.settings.get("paused"):
             self.log("All jobs are PAUSED (use Resume all).")
         if self.schema_upgrade:
@@ -4636,17 +4683,47 @@ class App:
         self.start_input_thread()
         threading.Thread(target=self.scheduler_loop, daemon=True).start()
         root.after(500, self.ui_tick)
+        root.after(700, self.tray_tick)
         root.after(200, self.poll_cmds)
         if self.settings.get("start_minimized") or "--minimized" in sys.argv:
             root.after(300, self.hide_window)
 
     # ------------------------------------------------------------ persistence
-    def load(self):
+    def load(self, ask=None):
+        """Read settings and jobs. `ask(question) -> bool` is used for the rare questions
+        (importing a very old config file); without it nothing is imported."""
         settings, jobs, migrated = dict(DEFAULT_SETTINGS), [], False
+        s_exists, j_exists = os.path.exists(SETTINGS_PATH), os.path.exists(JOBS_PATH)
         s_data, j_data = read_json(SETTINGS_PATH), read_json(JOBS_PATH)
-        if s_data is None and j_data is None and os.path.exists(OLD_CONFIG):
+        # 4.5.1 (second fix): remember whether the jobs file was missing or unreadable, so the
+        # start can offer the newest backup instead of quietly starting without your jobs
+        self.jobs_file_state = ("missing" if not j_exists else
+                                "unreadable" if not isinstance(j_data, dict) else "ok")
+        self.jobs_file_info = ""
+        if isinstance(j_data, dict):
+            try:
+                mt = datetime.fromtimestamp(os.path.getmtime(JOBS_PATH)).strftime("%m/%d %H:%M")
+            except Exception:
+                mt = "?"
+            self.jobs_file_info = (f"saved by Clickue {str(j_data.get('version') or '?')[:12]} "
+                                   f"on {mt}")
+        self.saved_version = str(j_data.get("version") or "") if isinstance(j_data, dict) else ""
+        self.old_config_imported = False
+        # A config file from the very first versions (next to the program). Only offered when
+        # the data folder has never been used, and only after asking: it once silently
+        # brought back long-deleted jobs.
+        if (not s_exists and not j_exists and os.path.exists(OLD_CONFIG)
+                and not data_folder_used() and ask is not None):
             old = read_json(OLD_CONFIG) or {}
-            s_data, j_data, migrated = old.get("settings", {}), {"jobs": old.get("jobs", [])}, True
+            old_jobs = old.get("jobs", []) if isinstance(old.get("jobs"), list) else []
+            names = ", ".join(str(j.get("name", "?"))[:40] for j in old_jobs[:6]
+                              if isinstance(j, dict))
+            if old_jobs and ask(f"Found an old settings file from a very early version next to "
+                                f"the program:\n{OLD_CONFIG}\n\nIt has {len(old_jobs)} job(s): "
+                                f"{names}{' …' if len(old_jobs) > 6 else ''}\n\nImport them?\n\n"
+                                f"Yes = import them\nNo = start with an empty list"):
+                s_data, j_data, migrated = old.get("settings", {}), {"jobs": old_jobs}, True
+                self.old_config_imported = True
         if isinstance(s_data, dict):
             settings.update({k: v for k, v in s_data.items() if k in DEFAULT_SETTINGS})
         self.secret_note = ""
@@ -4674,22 +4751,69 @@ class App:
             < SCHEMA_VERSION
         return settings, jobs, migrated
 
+    def offer_backup_recovery(self, ask):
+        """The jobs file was missing or unreadable at start: offer the newest backup that has
+        jobs. Returns True if jobs were restored."""
+        bks = [b for b in list_backups() if b.get("jobs")]
+        if not bks:
+            return False
+        b = bks[0]
+        try:
+            with open(b["path"], encoding="utf-8") as f:
+                names = [str(j.get("name", "?"))[:30] for j in json.load(f).get("jobs", [])
+                         if isinstance(j, dict)]
+        except Exception:
+            names = []
+        why = ("is missing" if self.jobs_file_state == "missing"
+               else "couldn't be read (a copy was kept as jobs.json.corrupt)")
+        if not ask(f"Your jobs file {why}.\n\nThe newest backup is from {(b['created'] or b['name']).replace('T', ' ')} "
+                   f"and has {b['jobs']} job(s): {', '.join(names[:6])}"
+                   f"{' …' if len(names) > 6 else ''}\n\nRestore it now?\n\nYes = restore "
+                   f"these jobs\nNo = start with an empty list (☰ Menu → Backups can restore "
+                   f"later)"):
+            self.recovery_note = "Your jobs file was missing; you chose not to restore a backup."
+            return False
+        jobs, groups, _ = load_import_file(b["path"])
+        for j in jobs:
+            j["id"] = uuid.uuid4().hex
+            for k in RUNTIME_KEYS:
+                j[k] = new_job().get(k)
+            j["enabled"] = False            # restored jobs start stopped; start them yourself
+        self.jobs = jobs
+        have = {g.get("id") for g in self.groups}
+        self.groups.extend(g for g in groups if g.get("id") not in have)
+        self.recovery_note = (f"Restored {len(jobs)} job(s) from the backup {b['name']} "
+                              f"(your jobs file {why.split(' (')[0]}). They are stopped: start "
+                              f"them when you're ready.")
+        return True
+
     def save(self):
         if self.uninstalled:
             return
         with self.lock:
-            try:
-                s = dict(self.settings)
-                if s.get("protect_secrets") and HAVE_DPAPI:
-                    for k in SECRET_KEYS:
-                        if s.get(k):
+            s = dict(self.settings)
+            if s.get("protect_secrets") and HAVE_DPAPI:
+                for k in SECRET_KEYS:
+                    if s.get(k):
+                        try:
                             s[k] = protect_text(s[k])
-                write_json(SETTINGS_PATH, s)
-                write_json(JOBS_PATH, {"app": APP_ID, "version": VERSION,
-                                       "schema": SCHEMA_VERSION, "jobs": self.jobs,
-                                       "groups": getattr(self, "groups", [])})
-            except Exception as e:
-                self.log(f"Could not save: {e}")
+                        except Exception:
+                            s[k] = ""
+            jobs_doc = {"app": APP_ID, "version": VERSION, "schema": SCHEMA_VERSION,
+                        "jobs": self.jobs, "groups": getattr(self, "groups", [])}
+            # the jobs first (they matter most), each file on its own, with one retry: on
+            # Windows another program (antivirus, backup, sync) can hold a file for a moment
+            for path, data in ((JOBS_PATH, jobs_doc), (SETTINGS_PATH, s)):
+                for attempt in (1, 2):
+                    try:
+                        write_json(path, data)
+                        break
+                    except Exception as e:
+                        if attempt == 1:
+                            time.sleep(0.3)
+                            continue
+                        self.log(f"Could not save {os.path.basename(path)}: {e}")
+                        self.save_error = f"{os.path.basename(path)}: {e}"
 
     def setup_logging(self):
         self.logger = logging.getLogger(APP_ID)
@@ -6453,6 +6577,12 @@ class App:
             lines = []
         while len(self.grid_lines) < len(lines):
             f = tk.Frame(t, bg=self.pal["grid"], bd=0, highlightthickness=0)
+            # the thin lines sit on top of the table: pass clicks and drags through to it,
+            # so a column border can be grabbed even right on its line (4.5.1)
+            for seq, kind in (("<ButtonPress-1>", "press"), ("<B1-Motion>", "motion"),
+                              ("<ButtonRelease-1>", "release"), ("<Double-Button-1>", "double"),
+                              ("<Button-3>", "right")):
+                f.bind(seq, lambda e, f=f, k=kind: self._grid_forward(f, e, k))
             self.grid_lines.append(f)
             self.grid_geom.append(None)
         for i, f in enumerate(self.grid_lines):
@@ -6461,9 +6591,33 @@ class App:
                 continue
             if g:
                 f.place(x=g[0], y=g[1], width=g[2], height=g[3])
+                try:
+                    f.configure(cursor="sb_h_double_arrow" if g[2] == 1 and g[1] < 30 else "")
+                except Exception:
+                    pass
             else:
                 f.place_forget()
             self.grid_geom[i] = g
+
+    def _grid_forward(self, f, e, kind):
+        """Hand a click on a grid line to the table underneath."""
+        t = self.tree
+        try:
+            x, y = e.x + f.winfo_x(), e.y + f.winfo_y()
+            if kind == "press":
+                t.event_generate("<ButtonPress-1>", x=x, y=y)
+            elif kind == "motion":
+                t.event_generate("<Motion>", x=x, y=y, state=0x100)
+            elif kind == "release":
+                t.event_generate("<ButtonRelease-1>", x=x, y=y)
+            elif kind == "right":
+                t.event_generate("<Button-3>", x=x, y=y, rootx=e.x_root, rooty=e.y_root)
+            elif kind == "double":
+                ev = type("E", (), {"widget": t, "x": x, "y": y})()
+                if _autofit_double(ev) is None:
+                    self.on_double()
+        except Exception:
+            pass
 
     def update_buttons(self):
         if self.tests_win is not None:
@@ -6579,8 +6733,15 @@ class App:
                                    + f"Data: {DATA_DIR}   ·   Shortcuts: Ctrl+N new · Enter edit · "
                                      f"Space start/stop · P pause · Ctrl+T test · Del delete")
         self.update_run_bar()
-        self.update_tray_status()
-        self.root.after(1000, self.ui_tick)
+        err = getattr(self, "save_error", "")
+        if err and not getattr(self, "_save_warned", False):
+            self._save_warned = True
+            messagebox.showwarning(APP_NAME, f"Clickue couldn't save your changes:\n{err}\n\n"
+                                             f"Another program may be blocking the data folder. "
+                                             f"Clickue keeps trying with every change; check "
+                                             f"the Activity log.", parent=self.root)
+        # run each second on the second, so countdowns don't skip a second now and then
+        self.root.after(1000 - int(time.time() * 1000) % 1000 + 15, self.ui_tick)
 
     def update_run_bar(self):
         """Show what's running and what's waiting its turn (hidden when idle)."""
@@ -6884,13 +7045,15 @@ class App:
                 continue
             status, name, _pos, _btn, _sched, nxt, cd, _count, last = vals
             word = status.split(maxsplit=1)[-1] if " " in status else status
-            if state == "running" and str(cd) not in ("—", ""):
-                detail = f"{nxt}" if str(nxt).startswith(("Seen", "Not showing")) else f"next in {cd}"
+            watcher_note = str(nxt).startswith(("Seen", "Not showing", "Picture", "Can't"))
+            if state == "running" and str(cd) not in ("—", "") and not watcher_note:
+                detail = f"next in {cd}"                 # live countdown (tooltip)
+                at = f"next at {str(nxt)[-8:]}"          # clock time (menu: never goes stale)
             else:
-                detail = str(nxt) if nxt not in ("—", "") else ""
+                detail = at = str(nxt) if nxt not in ("—", "") else ""
             if state == "bad" and last and last != "—":
-                detail = str(last)
-            items.append((sev.get(state, 2), names.get(iid, name), word, detail, state))
+                detail = at = str(last)
+            items.append((sev.get(state, 2), names.get(iid, name), word, detail, state, at))
         items.sort(key=lambda t: t[0])
         paused = self.settings.get("paused")
         n = len(items)
@@ -6906,12 +7069,13 @@ class App:
             if det and word.lower() in det.lower():
                 return det                     # "Missing" + "Picture missing" -> one of them
             return f"{word} · {det}" if det else word
-        lines = [f"{icon.get(st, '•')} {name}: {say(word, det)}" for _, name, word, det, st in items]
+        lines = [f"{icon.get(st, '•')} {name}: {say(word, at)}"
+                 for _, name, word, det, st, at in items]
         tip = head
         if running:
             tip += "\n▶ " + short_title(running, 40)
         shown = 0
-        for _, name, word, det, st in items:
+        for _, name, word, det, st, _at in items:
             line = (f"\n{icon.get(st, '•')} {short_title(name, 16)}: "
                     + short_title(say(word, det if st in ("bad", "warn", "running") else ""), 34))
             more = n - shown - 1
@@ -6930,14 +7094,23 @@ class App:
             lines.insert(0, "▶ " + running)
         return tip[:self.TRAY_TIP_MAX], lines
 
+    def tray_tick(self):
+        """Keeps the tray tooltip's countdowns live: looks 4 times a second and changes the
+        tooltip only when its text changes (so each second shows as it happens)."""
+        try:
+            self.update_tray_status()
+        finally:
+            try:
+                self.root.after(250, self.tray_tick)
+            except Exception:
+                pass
+
     def update_tray_status(self):
-        """Refresh the tray tooltip and the Job status menu (every couple of seconds)."""
+        """Refresh the tray tooltip (live) and the Job status menu (at most every 5 s; its
+        lines use clock times, so they don't go stale)."""
         if not self.tray:
             return
         now = time.time()
-        if now - getattr(self, "_tray_upd", 0) < 2:
-            return
-        self._tray_upd = now
         try:
             if self.settings.get("tray_status", True):
                 tip, lines = self.tray_status(now)

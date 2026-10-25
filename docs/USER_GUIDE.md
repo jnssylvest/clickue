@@ -304,6 +304,7 @@ To keep Clickue working while you're away:
 | A job waits a long time | Another job is running (see the bar above the list). Only one job uses the mouse at a time |
 | Something went wrong | **Ctrl+Alt+X** stops everything |
 | Want to start over | ☰ Menu → **Backups…** to restore, or **Uninstall…** |
+| Jobs went back to an older list after an update | ☰ Menu → **Backups…** → restore the newest backup with your jobs. A portable copy and the installed Clickue keep separate jobs |
 
 Still stuck? Open an issue with the relevant lines from the log (☰ Menu → **Open log file**),
 with anything private removed.

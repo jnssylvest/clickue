@@ -1,5 +1,37 @@
 # Changelog
 
+## 4.5.2 - Jobs can't be replaced by old files any more; smoother columns; live tray countdown
+
+> Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken
+> during development, but AI-assisted development does not guarantee bug-free or secure
+> software. Review the source and use normal precautions. Test automations safely, protect
+> notification credentials, and avoid unattended use for consequential actions.
+
+**Fixed**
+- **Jobs could come back from an old file after an update.** When the jobs and settings files
+  were missing from the data folder, Clickue silently imported a settings file from its very
+  first versions (`autoclicker_config.json` next to the program), which could bring back
+  long-deleted jobs instead of your current ones. Now that file is only offered when the data
+  folder has never been used, and only after asking (with its job names).
+- **A missing or damaged jobs file** now leads to an offer to restore the newest backup (with
+  its date and job names) instead of an empty or outdated list. Restored jobs start stopped.
+- **A backup is made every time a new version first starts** with your jobs
+  (*before-upgrade-&lt;version&gt;*), not only when the file format changes.
+- **Misleading log line:** "Moved your jobs and settings from the old config file" was also
+  written after every fresh install although nothing was moved. The log now says how many jobs
+  were loaded, from which file, which version saved them, when, and their names.
+- **Saving:** the jobs file is written first, a briefly blocked file is retried, and a lasting
+  failure shows a warning once (it was only a log line before).
+- **Column borders felt sticky:** a quick second click on a column border (taken as a
+  double-click) didn't start a drag, and the thin grid lines over the headings caught clicks
+  meant for the border. Both fixed: borders respond on the first grab.
+- **Tray countdowns jumped two seconds at a time.** The tooltip now updates live, second by
+  second; the tray menu's Job status shows clock times (*next at 19:16:30*) so it never goes
+  stale. The main window's countdown no longer skips a second now and then.
+
+**Docs:** guide sections 2, 3, 17, 19 and 26 (including where portable and installed copies
+keep their jobs), feature list, quick start.
+
 ## 4.5.1 - Exact picture matching, tray status and window fixes
 
 > Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken

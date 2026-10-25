@@ -177,6 +177,18 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
      is then stored, so each Windows user is asked once per install. Portable/source runs have
      no `install.ini` and never ask.
    - The uninstaller (Inno `[Code]`) asks whether to delete `%APPDATA%\Clickue` too.
+   - **Never let an old file replace current jobs (4.5.2).** `load(ask=)` records
+     `jobs_file_state` (`ok` / `missing` / `unreadable`), `saved_version` and
+     `jobs_file_info`. The v1 `OLD_CONFIG` (`autoclicker_config.json` next to the program) is
+     only offered when both files are missing **and** `data_folder_used()` is false (no
+     backups, log, histories, `.corrupt` files), and only after asking; before 4.5.2 it was
+     imported silently and brought back long-deleted jobs. A missing/unreadable jobs file
+     leads to `offer_backup_recovery()` (newest backup with jobs; restored jobs disabled).
+     `App.__init__` saves `before-upgrade-<VERSION>` whenever `saved_version != VERSION`
+     (not only on a schema change), and logs what was loaded. Don't set `migrated` to mean
+     anything but "save now"; the old-config log line depends on `old_config_imported`.
+   - `save()` writes `jobs.json` first, retries each file once after 0.3 s, and sets
+     `save_error`, which `ui_tick` shows once.
 
 ## 5. Behaviour decisions & hard-won lessons (keep these)
 
@@ -244,6 +256,12 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
   gets a version resource (`scripts/make_version_file.py`) so Windows shows "Clickue".
 
 **Tables**
+- A double-click on a column separator must still start ttk's own resize
+  (`ttk::treeview::Press`) before fitting (after idle); returning "break" without it made
+  dragging "sticky". The job list's grid-line frames forward presses, drags, releases and
+  double-clicks to the tree (`_grid_forward`), because they sit right on the separators.
+- `ui_tick` reschedules itself on the second (`1000 - now_ms % 1000`) so countdowns don't
+  skip; `tray_tick` (every 250 ms) changes the tooltip only when its text changes.
 - `enable_column_fit(tree, on_change)` (every Treeview): a `ColumnFit` bind tag in front of
   the widget's own tags handles double-clicks on a column separator (fit to contents) and on
   headings, returning `"break"` so the row's double-click action doesn't run. The job list
