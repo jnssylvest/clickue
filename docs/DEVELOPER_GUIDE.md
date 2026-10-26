@@ -314,6 +314,18 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
   `ui_tick`, title bar included). Exact scaled matches report the verified score. Timing:
   `first_miss_at`, `click_planned_at`, `planned_run` (runtime), `clock()`; logs and
   `last_result` include them. Tray tooltip lines are only shortened when they don't fit.
+- **4.6.1 fixes.** `tls_context()` (default SSL context + `certifi.where()`; used by
+  `https_get` and `_http_post`; never disables checks) and `friendly_net_error()`; certifi is
+  in `requirements.txt` and bundled with `--collect-data certifi`. `tray_wrap()` wraps every
+  tooltip entry to `TRAY_TIP_WIDTH` (36) characters, because Windows cuts wide lines.
+  `own_on_top(x, y)` (WindowFromPoint is ours) decides z-order: the `exclude` filter in
+  `picture_on_screen` only drops a candidate where a Clickue window is really in front, and
+  `App.own_covers(job)` (at `found_xy` / the search area's middle, else Clickue being the
+  foreground window) replaces the bare `own_visible` test for *Clickue window in front of the
+  picture* in `watch_check` and the watcher test note. Off Windows it falls back to the old
+  rectangle/visibility rules, which the headless tests use. Screen settle: `watch_check` no
+  longer returns early while `settle_until` is in the future. It looks, and only a *change*
+  (`found == appears`) is held back as an issue; no change clears `settle_until`.
 - **4.5.6 watcher engine.** `watch_check` runs during a pending click too (scheduler dues a
   `watchcheck` while `pending_click_at` is in the future; `next_check` during the delay is
   `min(interval, max(5, delay/4))`) and cancels it when the condition no longer holds;
@@ -572,8 +584,8 @@ pythonw src\clickue.py          rem or double-click scripts\Start Clickue.bat
   `scripts\make_version_file.py` for the exe's version details, then PyInstaller `--onefile
   --noconsole --icon assets\clickue.ico --version-file build\version_info.txt
   --hidden-import pystray._win32`).
-- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.6.0`, run
-  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.6.0.exe`. The installer shows
+- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.6.1`, run
+  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.6.1.exe`. The installer shows
   `installer/before-install.txt` first; its uninstaller removes the HKCU Run value only when it
   points at `{app}`, and deletes `%APPDATA%\Clickue` only if the user says Yes (skipped when
   Clickue's own Uninstall passes `/KEEPDATA`).
@@ -587,8 +599,8 @@ Run from the repository root.
 
 | Command | What | Expected |
 |---|---|---|
-| `python tests/test_watchers.py` | (4.5.6: click cancelled when the picture returns during the delay or right before the click, screen-change settle, every can't-watch check logged, recovery, can't watch = problem, closest place logged, log levels) watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries), 4.5.3: search-area margin, partial matching, pointer on the picture, import of the match fields; 4.5.4: every copy (exact and partial), one changed digit, compression/noise, 125/150 % scaling, a 15 px icon among 60 others | `RESULT 61/61` |
-| `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id, guide link + pictures, 4.5.3 batch actions / delete + undo / Edit together | `RESULT 97/97` |
+| `python tests/test_watchers.py` | (4.5.6: click cancelled when the picture returns during the delay or right before the click, screen-change settle, every can't-watch check logged, recovery, can't watch = problem, closest place logged, log levels) watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries), 4.5.3: search-area margin, partial matching, pointer on the picture, import of the match fields; 4.5.4: every copy (exact and partial), one changed digit, compression/noise, 125/150 % scaling, a 15 px icon among 60 others | `RESULT 69/69` |
+| `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id, guide link + pictures, 4.5.3 batch actions / delete + undo / Edit together | `RESULT 100/100` |
 | `python tests/test_click_spot.py` | click-spot matching at 3 picture sizes × 8 screens (100–175 % scaling, moved, look-alikes), with exact matching and with tolerant matching | `0 of 48` failures |
 | `python tests/test_workflows.py` | 4.5: alert hardening (hosts, redirects, rate limit, redaction), secrets out of backups/exports, DPAPI flow (simulated), import validation, data-folder safety, variables, blocks, if/repeat/retries/groups/limits/cancel/pause, held-input release, dry run, the input queue (order, watchers keep checking, yielding, emergency stop), conflicts, recorder compression, paste/clipboard flow, video (lifecycle, no codec, disk full, capture failure, redaction), run history + video positions, failure screenshots, schema migration, adapters | `RESULT N/N` |
 | `python tests/check_release.py` | docs links/anchors/pictures, version = changelog, disclosure placement, planned features marked planned, no secrets or private details in public files, workflow least privilege + pinned actions, uninstall boundaries | `RESULT N/N` |

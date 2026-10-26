@@ -180,6 +180,11 @@ expect("42 screen size changed (RDP -> console) -> not counted, settling", w["wa
 check(); expect("43 still settling -> still not counted", w["miss_count"]==0)
 w["settle_until"]=time.time()-1; check()
 expect("44 after settling, checks count again", w["miss_count"]==1, w["watch_note"])
+ac.virtual_screen=lambda:(0,0,1920,1080); show(scene()[0]); w["miss_count"]=0; check()
+expect("44b screen changed back and the picture is there -> 'seen' on the very next check (4.6.1)",
+       w["watch_state"]=="seen" and not w.get("settle_until"), (w["watch_state"], w["watch_note"]))
+ac.virtual_screen=lambda:(0,0,1280,800); show(scene(1.25,"ok",1920,1080)[0]); check()
+expect("44c screen changed and the picture shows at another scale -> seen right away", w["watch_state"]=="seen", w["watch_note"])
 ac.virtual_screen=_vs; w["screen_sig"]=None; w["settle_until"]=None
 logs.clear(); _sa=ac.screen_available; ac.screen_available=lambda:False
 w["issue_count"]=0; check(); check(); check()
@@ -232,5 +237,24 @@ r=ac.watched_picture(dict(w, _exclude=A.own_rects))[0]
 expect("56 a picture inside Clickue's own window doesn't count as found", not r[0], r)
 r=ac.watched_picture(dict(w, _exclude=[(1500,900,100,100)]))[0]
 expect("57 Clickue's window elsewhere doesn't hide the real picture", r[0], r)
+# 4.6.1: a Clickue window counts only where it is really in front (Windows z-order)
+_win,_oot=ac.IS_WIN,ac.own_on_top
+ac.IS_WIN=True; ac.own_on_top=lambda x,y:False          # the browser is in front of Clickue
+A.own_rects=[(0,0,1920,1080)]                            # Clickue maximized behind it
+r=ac.watched_picture(dict(w, _exclude=A.own_rects))[0]
+expect("58 Clickue maximized BEHIND the browser doesn't hide the picture", r[0], r)
+ac.own_on_top=lambda x,y:True
+r=ac.watched_picture(dict(w, _exclude=A.own_rects))[0]
+expect("59 Clickue in front of the picture still hides it", not r[0], r)
+A.own_visible=True
+ac.own_on_top=lambda x,y:False
+expect("60 Clickue open behind: a missing picture is counted (not 'can't tell')", not A.own_covers(dict(w, found_xy=[ccx,ccy])))
+ac.own_on_top=lambda x,y:True
+expect("61 Clickue in front of it: not counted", A.own_covers(dict(w, found_xy=[ccx,ccy])))
+show(scene(kind="gone")[0]); w.update(miss_count=0, issue_count=0, found_xy=[ccx,ccy]); check()
+expect("62 the problem says Clickue is in front of the picture", w["watch_state"]=="unknown" and "in front" in w["watch_note"], w["watch_note"])
+ac.own_on_top=lambda x,y:False; w["issue_count"]=0; check()
+expect("63 browser brought back in front: the missing picture counts again", w["watch_state"]=="missing" and w["miss_count"]>=1, w["watch_note"])
+ac.IS_WIN,ac.own_on_top=_win,_oot; A.own_visible=False
 A.own_rects=[]; ac.watch_window=_ww; A.log=_orig_log
 print(f"RESULT {sum(res)}/{len(res)}")

@@ -1178,7 +1178,16 @@ def t_fixes_460():
     w.update(paused=False, watch_state="seen", watch_note="seen 99%", last_seen=time.time(),
              next_check=time.time() + 12, issue_count=0, pending_click_at=None)
     tip, _ = app.tray_status()
-    ok("4.6 tray tooltip shows the whole line (with the next check)", "next check in" in tip and len(tip) <= 127, tip)
+    ok("4.6 tray tooltip shows the whole line (with the next check)",
+       "next check in" in tip.replace("\n   ", " ") and len(tip) <= 127, tip)
+    ok("4.6.1 every tray tooltip line is short enough not to be cut",
+       all(len(l) <= 40 for l in tip.split("\n")) and all(len(l) <= app.TRAY_TIP_WIDTH for l in tip.split("\n")[1:]), tip)
+    # the case from the report: a watcher that can't watch, with a long reason
+    w.update(watch_state="unknown", watch_note="Can't tell: its window isn't open (closed, or showing another page)",
+             issue_count=3)
+    tip, _ = app.tray_status()
+    ok("4.6.1 a long can't-watch reason is wrapped onto short lines, not cut",
+       len(tip) <= 127 and all(len(l) <= 40 for l in tip.split("\n")) and all(len(l) <= app.TRAY_TIP_WIDTH for l in tip.split("\n")[1:]), tip)
 
 
 for name, fn in (("main", t_main), ("add click", add_click_job), ("edit/rows", t_edit_and_rows),

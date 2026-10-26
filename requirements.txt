@@ -4,3 +4,5 @@ pillow>=12.3.0
 pystray>=0.19
 opencv-python-headless>=4.8.1.78
 numpy>=1.24
+# 4.6.1: trusted root certificates for the update check (bundled into the exe)
+certifi>=2024.7.4

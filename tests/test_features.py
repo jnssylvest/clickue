@@ -346,7 +346,7 @@ A.bump_stats("stats_clicks"); A.bump_stats("stats_clicks", watch=True)
 ok("clicks today counted for watchers separately", A.settings["stats_clicks"] == 2 and A.settings["stats_clicks_watch"] == 1)
 ok("issue hints: screen locked / Clickue window / search area",
    "console" in ac.issue_hint("screen locked or remote session disconnected")
-   and "Minimize" in ac.issue_hint("Clickue window open") and ac.issue_hint("zzz") == "")
+   and "Minimize" in ac.issue_hint("Clickue window open") and "Minimize" in ac.issue_hint("Clickue window in front of the picture") and ac.issue_hint("zzz") == "")
 
 # ---- 4.6: updates (no real network: a fake GitHub)
 ok("versions: newer / same / older / junk", ac.newer_version("v9.0.0") and not ac.newer_version(ac.VERSION)
@@ -411,5 +411,19 @@ ac._HTTPS_GET = lambda *a, **k: calls.append(a) or b"{}"
 A.cmdq = queue.Queue()
 A.check_for_updates(manual=False)
 ok("update checks off: nothing is sent anywhere", not calls)
+# 4.6.1: certificate checks trust Windows' store plus certifi's list, and stay on
+import ssl as _ssl
+_ctx = ac.tls_context()
+ok("update: certificates and host names are always checked",
+   _ctx.verify_mode == _ssl.CERT_REQUIRED and _ctx.check_hostname)
+try:
+    import certifi as _cf
+    _n = len(_ctx.get_ca_certs())
+    _plain = _ssl.create_default_context(); _plain.load_verify_locations(cafile=_cf.where())
+    ok("update: certifi's trusted root certificates are loaded", _n >= len(_plain.get_ca_certs()) > 50, _n)
+except ImportError:
+    ok("update: certifi's trusted root certificates are loaded", False, "pip install certifi")
+_msg = ac.friendly_net_error(Exception("<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1010)>"))
+ok("update: a certificate error is explained in plain words", "intercepting" in _msg and "CERTIFICATE_VERIFY_FAILED" in _msg)
 ac._HTTPS_GET = None
 print(f"\nRESULT {sum(R)}/{len(R)}")

@@ -1,5 +1,36 @@
 # Changelog
 
+## 4.6.1 - Fixes: update check certificates, tray tooltip, Clickue behind the browser, screen switches
+
+> Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken
+> during development, but AI-assisted development does not guarantee bug-free or secure
+> software. Review the source and use normal precautions. Test automations safely, protect
+> notification credentials, and avoid unattended use for consequential actions.
+
+A fixes-only version, so the last number goes up.
+
+**Fixed**
+- **"Couldn't check for a new version: CERTIFICATE_VERIFY_FAILED … unable to get local issuer
+  certificate".** Windows only adds some trusted root certificates when a program asks for
+  them in a way Python doesn't, so on some PCs GitHub's certificate couldn't be checked.
+  Clickue now trusts Windows' certificate store **plus** a bundled, up-to-date list of trusted
+  root certificates (certifi). Certificate and host-name checks stay on, always. If a check still
+  fails, the message explains in plain words that something on the PC or network (antivirus web
+  scanning, a company proxy) may be intercepting secure connections. Phone alerts use the same
+  checks.
+- **Tray tooltip lines cut off** (*⚠ Watcher 1: Can't watch · Can't tell: its win…*). Windows
+  cuts a tooltip line that is too wide, not only the whole text. Every line is now wrapped to
+  at most 36 characters (continued lines are indented), so the whole message always fits.
+- **"Can't tell: Clickue window open" while the browser was in front of Clickue.** An open or
+  maximized Clickue window only counts when it is really **in front of** the picture. Clickue
+  behind the browser no longer stops the watcher, and the picture is found there again. The
+  message now reads *Clickue window in front of the picture*.
+- **After switching between a remote session and the console, "seen" took a few checks.** For
+  15 s after the screen's size or scaling changed, the watcher didn't look at all (*the screen
+  size or scaling just changed*). It now looks right away: if the picture is there, it shows
+  **seen** on that check. Only a missing picture (a reason to click) still waits 15 s, so a
+  switch can't cause a false click.
+
 ## 4.6.0 - Upgrade in the app; window-aware watchers; full click timing in the logs
 
 > Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken

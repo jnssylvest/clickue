@@ -118,16 +118,17 @@ Everything below is available in Clickue 4.5 unless it's under
 - Optional **wait after each click** before looking again.
 - **Click only once** each time it changes, waiting until the picture comes back (or goes
   away) before clicking again. Can be turned off to keep clicking.
-- Won't count "picture missing" while Clickue's own window is open on screen (it could be
-  covering the picture). Such checks show as **⚠ Can't watch** with the reason and what to do,
+- Won't count "picture missing" while a Clickue window is in front of the picture (covering
+  it); a Clickue window behind the browser, even maximized, doesn't matter. Such checks show as **⚠ Can't watch** with the reason and what to do,
   and every one is logged.
-- **Screen changes** (remote session ↔ console, resolution, scaling): waits 15 s before
-  counting checks again; explains when a search area drawn on another screen size may no
+- **Screen changes** (remote session ↔ console, resolution, scaling): looks right away and shows
+  *seen* on the first check if the picture is there; only a missing picture isn't counted for
+  15 s; explains when a search area drawn on another screen size may no
   longer cover the picture.
 - **Watchers that click inside a window watch that window too:** missing or minimized → can't
   watch, nothing clicked (a click already counting down is cancelled); only looks inside it;
   reports when another window covers it.
-- **Never "found" inside Clickue's own windows.**
+- **Never "found" where a Clickue window is in front of the picture** (only there).
 - **Every click logged with its timing:** when the change was first seen, when the click was
   scheduled for, when it clicked (scheduled clicks: slot, random delay, due, clicked).
 - **Keeps checking during the random delay** before a click and cancels the click if the
@@ -288,6 +289,7 @@ All tests hide the whole app while they run, so nothing is in the way.
 - **⟳ Refresh** (F5): watchers check now.
 - **Steps as rows:** jobs with steps have ▸/▾ arrows and can list their steps as ↳ rows.
 - **Tray icon colours:** amber = click counting down, green = clicking, red = a problem.
+- **Tray tooltip always readable:** long lines are wrapped so Windows never cuts them off.
 - **Columns per view:** *Scheduled clicks* shows Clicks at, Schedule, Runs (active hours and
   limits), Next click, Starts in; *Screen watchers* shows Watching for (disappears/appears,
   size, area, exact or N % match), Then, Checks (interval, checks in a row, once), Picture
@@ -434,6 +436,8 @@ All tests hide the whole app while they run, so nothing is in the way.
   your jobs, installs it (installed copies: silent installer, restarts; portable: swaps the
   exe) and keeps your jobs and settings.
 - Turn checks off and Clickue never connects to the internet for updates.
+- Certificates are always checked, against Windows' store plus a bundled list of trusted root
+  certificates; a failed check is explained in plain words and nothing is downloaded.
 
 ## Install options
 

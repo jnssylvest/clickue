@@ -172,6 +172,13 @@ ok("app: update downloads only from GitHub, over HTTPS, checksum-checked",
    and "file_sha256(dest)" in src and 'u.scheme != "https"' in src)
 ok("app: update checks can be turned off and then never connect",
    '"update_check": True' in src and 'if not self.settings.get("update_check", True):' in src)
+ok("app: every HTTPS connection checks certificates (4.6.1: Windows store + certifi)",
+   src.count("ctx = tls_context()") == 2 and "ssl.create_default_context()" in src
+   and "CERT_NONE" not in src and "check_hostname = False" not in src
+   and "_create_unverified_context" not in src)
+_req = open(os.path.join(ROOT, "requirements.txt"), encoding="utf-8").read()
+ok("build: certifi's certificate list is bundled in the exe",
+   re.search(r"^certifi", _req, re.M) and "--collect-data certifi" in wf)
 ok("installer: relaunches after a silent in-app upgrade only", "WantRelaunch" in iss and "/RELAUNCH" in iss)
 
 print(f"\nRESULT {sum(R)}/{len(R)}")

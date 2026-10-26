@@ -320,8 +320,10 @@ To keep Clickue working while you're away:
 |---|---|
 | "Picture not found" | Is the spot on screen? Re-pick with text or an icon near the spot, or use a Large picture. **Show spot** (with similar pictures outlined) to check |
 | Clicks the wrong place | Keep **Only the exact picture** ticked. **Show spot**. Re-pick if the app's look changed. Make sure the target isn't covered |
-| Watcher shows "Can't tell: Clickue window open" | Minimize Clickue or send it to the tray |
+| Watcher shows "Can't tell: Clickue window in front of the picture" | Bring the watched window to the front, minimize Clickue or send it to the tray (a Clickue window behind it doesn't count) |
+| "Couldn't check for a new version: … CERTIFICATE_VERIFY_FAILED" | Install 4.6.1 or later. If it continues, antivirus HTTPS scanning or a company proxy may be intercepting secure connections - see the complete guide, Troubleshooting |
 | Watcher counted a picture as gone after switching remote session ↔ console | Update to 4.5.6 (it waits for the screen to settle and cancels the click if the picture comes back); search the whole screen or re-draw the search area |
+| After switching remote session ↔ console, "seen" took a few checks to come back | Update to 4.6.1: it looks right away and shows *seen* on the first check; only a missing picture waits 15 s |
 | Picture too small to box | Zoom in with the mouse wheel while drawing |
 | Watcher says the picture is NOT there, but it is | **Dry run** outlines the closest places. Re-draw the box around a part that never changes, or choose **Match: part of the picture is enough** |
 | Watcher never clicks again | "Click only once" is waiting for the picture to come back; untick it to keep clicking |

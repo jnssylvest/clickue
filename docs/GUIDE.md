@@ -11,7 +11,7 @@
 
 This guide explains **every feature** of Clickue, with real-world scenarios and example
 pictures. Read it from top to bottom to learn everything, or jump to the part you need.
-In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.6.0.
+In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.6.1.
 
 > [!NOTE]
 > The example pictures show an invented "Example App" so the ideas are easy to see. Your own
@@ -713,10 +713,15 @@ re-arms the watcher (no click). The next time it goes away, Clickue clicks once 
 
 ### Clickue's own window
 
-While the Clickue window is **open on screen**, a *missing* picture isn't counted, because the
-window might be covering it. The list shows **⚠ Can't watch** - *Can't tell: Clickue window
-open*. Minimize Clickue or send it to the tray when you've finished setting up. "Appears"
-watchers aren't affected.
+While a Clickue window is **in front of** the picture, a *missing* picture isn't counted,
+because the window is covering it. The list shows **⚠ Can't watch** - *Can't tell: Clickue
+window in front of the picture*. Bring the watched window to the front, or minimize Clickue or
+send it to the tray. "Appears" watchers aren't affected.
+
+Since 4.6.1 only a Clickue window that is **really in front** counts: Clickue open (even
+maximized) **behind** the browser doesn't stop the watcher, and the picture is found as usual.
+Clickue looks where the picture was last seen (or the middle of its search area); when it has
+neither, it only waits while Clickue is the window in front.
 
 ### Watchers that click inside a window
 
@@ -739,8 +744,9 @@ Watchers that click on the screen (not in a window) behave as before.
 
 ### Clickue's own windows
 
-A watched picture is **never "found" inside a Clickue window** (4.6): its windows are left out of
-the search. Before, a small picture could match something in Clickue's own window when it
+A watched picture is **never "found" where a Clickue window is in front of it** (4.6): those
+places are left out of the search. A Clickue window **behind** other windows doesn't hide
+anything (4.6.1). Before, a small picture could match something in Clickue's own window when it
 covered the real one, so a watcher said *picture seen* (or *picture came back* and cancelled a
 click) although the real picture was hidden.
 
@@ -766,9 +772,18 @@ Switching between a remote-desktop session and the machine's own console (or cha
 resolution or scaling) changes the screen under the watcher. Since 4.5.6:
 
 - When a watcher sees that the screen's size or scaling changed since its last check, it
-  **waits 15 seconds** before counting checks again (logged: *the screen changed from
-  2560×1440 (125% scaling) to 1280×800 (100%)*), so a picture that's briefly gone during the
-  switch doesn't count.
+  **still looks right away** (4.6.1). If the picture is there, it shows **seen** on that very
+  check, at whatever size it now appears. Only a **missing** picture (a reason to click) isn't
+  counted for **15 seconds** (logged: *the screen changed from 2560×1440 (125% scaling) to
+  1280×800 (100%) - a missing picture isn't counted for 15 s*; meanwhile ⚠ *Can't watch: the
+  screen size or scaling just changed*, checking every 5 s). So a picture that's briefly gone
+  during the switch doesn't cause a click. Before 4.6.1 the watcher didn't look at all during
+  those 15 s, so *seen* came back only a few checks later.
+- The first check at a new size can take a moment longer: Clickue tries the picture at other
+  sizes, then remembers the size that matched.
+- **Adjust the spot if the window changes size** (in the job's click settings) moves the
+  **click** spot when its window is resized. It doesn't change how the watched picture is
+  found; the watcher finds that at any scaling by itself.
 - A **search area** is scaled with the screen size. Windows don't always move that way (a
   browser re-flows its page), so after a switch the picture can end up outside the area. The
   log then says so: *searched only its area … drawn on a 2560×1440 screen and the screen is
@@ -1777,6 +1792,8 @@ While Clickue is minimized, **point at its tray icon** to see whether your jobs 
 - Then one line per active job, **problems first**: ✖ failed (for example *Missed* or *Click
   FAILED*), ⚠ needs attention (a watcher seeing a change, a job waiting because the screen is
   locked), ✓ working normally (*Running · next in 4m 10s*, *Watching · Seen 13:49:58*), ⏸ paused.
+- Long lines are wrapped onto short ones (Windows cuts lines that are too wide), so every
+  message shows in full.
 - Windows shows at most about 127 characters there, so with many jobs the tooltip ends with
   *+N more*. **Right-click the icon → Job status** lists **every** active job in full, with
   clock times (*next at 19:16:30*); clicking one opens the window.
@@ -2316,11 +2333,14 @@ signed in as that user). If Clickue was ended abruptly, Windows may leave a temp
 | **The tray icon shows an old name** | Update to 4.5.1 or later. Windows may also remember an old name in Settings → Personalization → Taskbar → Other system tray icons until the icon is seen again |
 | **Job shows Waiting** | It's due but can't click: the screen is locked or disconnected, you're using the mouse, or the target is covered. Check Activity for the reason |
 | **Missed while I was away** | The screen was locked or the session disconnected; see [section 18](#18-locked-screens-remote-desktop-and-virtual-machines) |
-| **Watcher says "Can't tell: Clickue window open"** | Minimize Clickue or send it to the tray |
+| **Watcher says "Can't tell: Clickue window in front of the picture"** (before 4.6.1: *Clickue window open*) | A Clickue window is in front of where the picture is. Bring the watched window to the front, minimize Clickue or send it to the tray. Since 4.6.1 a Clickue window **behind** the browser (even maximized) doesn't count |
+| **After switching between a remote session and the console, "seen" only came back a few checks later** (first check: *the screen size or scaling just changed*) | That was the 15-second wait before 4.6.1, when the watcher didn't look at all. Since 4.6.1 it looks right away and shows *seen* on the first check if the picture is there; only a missing picture waits 15 s |
 | **The picture was "gone" and a click counted down after switching between a remote session and the console** | The switch changed the screen. Since 4.5.6 the watcher waits 15 s after the screen changes, keeps checking during the random delay and cancels the click if the picture is back. If it keeps happening: search the whole screen (or re-draw the search area on this screen), and draw a bigger box around a part that looks the same in both sessions ([section 6](#when-the-screen-changes-remote-session--console)) |
 | **The status says Can't watch** | Hover over the job: it says why and what to do |
 | **"its window … isn't open" although the browser is open** | The watcher's button is *Inside a window* and windows are found by their **title**. A browser's title changes with the page or tab. Show the page you picked it on, or pick the button again |
 | **A watcher said "picture seen" while Clickue's window covered it** | Fixed in 4.6: Clickue's own windows are left out of the search |
+| **"Couldn't check for a new version: … CERTIFICATE_VERIFY_FAILED …"** | Fixed in 4.6.1 for PCs that were missing GitHub's root certificate (Clickue now carries its own list too) - install 4.6.1 by hand once. If it still happens, something on the PC or network is intercepting secure connections (antivirus "HTTPS scanning", a company proxy or filter). Allow `api.github.com` and `github.com` there, or download new versions from the release page yourself. Clickue never connects without a valid certificate |
+| **Tray tooltip text was cut off** | Fixed in 4.6.1: long lines are wrapped |
 | **The upgrade bar keeps coming back** | Use **Skip this version**, or turn off Preferences → General → Check for new versions |
 | **Watcher says "Picture NOT on screen (best 77%)" but it is there** | Something inside the box changes (a number, a time, an animation), the box was drawn while the mouse made a button look different, or a search area was drawn tighter than the picture (fixed in 4.5.3). Run **Dry run**: the closest places are outlined. Then re-draw a box around a part that never changes, or choose **Match: part of the picture is enough** ([section 6](#exact-or-partial-matching)) |
 | **Watcher says "Can't tell: mouse pointer on the picture"** | The pointer rests on the watched picture, which can change how it looks. Move the mouse away; when the computer is idle for 20 s Clickue checks with the pointer moved aside |

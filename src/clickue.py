@@ -58,7 +58,7 @@ except Exception:
 APP_NAME = "Clickue"
 APP_ID = "Clickue"
 OLD_APP_ID = "ScheduledAutoClicker"      # previous name - data is migrated from here
-VERSION = "4.6.0"
+VERSION = "4.6.1"
 REPO_URL = "https://github.com/jnssylvest/clickue"
 GUIDE_URL = REPO_URL + "/blob/main/docs/GUIDE.md"      # the complete guide (☰ Menu)
 DISCLOSURE = ("Clickue is vibe-coded and was developed with substantial AI assistance. Caution "
@@ -343,6 +343,17 @@ def window_at(x, y):
     """Top-level window under a screen point."""
     h = user32.WindowFromPoint(wt.POINT(int(x), int(y)))
     return user32.GetAncestor(h, 2) if h else None   # GA_ROOT
+
+
+def own_on_top(x, y):
+    """4.6.1: is one of Clickue's own windows the window actually seen at this screen point
+    (in front of everything else there)? A Clickue window that is open but behind another
+    window doesn't count."""
+    try:
+        h = window_at(x, y)
+        return bool(h) and is_own_window(h)
+    except Exception:
+        return False
 
 
 def same_window(a, b):
@@ -1148,7 +1159,15 @@ def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None, report=Non
     if exclude:
         def outside(c):
             box = (c[1] - tw0 * c[3] / 2 + vx, c[2] - th0 * c[3] / 2 + vy, tw0 * c[3], th0 * c[3])
-            return not any(rects_overlap(box, r) for r in exclude)
+            if not any(rects_overlap(box, r) for r in exclude):
+                return True
+            if not IS_WIN:
+                return False
+            # 4.6.1: only where a Clickue window is really in front (not behind the browser)
+            bx, by, bw, bh = box
+            pts = ((bx + bw / 2, by + bh / 2), (bx + 1, by + 1), (bx + bw - 2, by + 1),
+                   (bx + 1, by + bh - 2), (bx + bw - 2, by + bh - 2))
+            return not any(own_on_top(px, py) for px, py in pts)
         cands = [c for c in cands if outside(c)]
         if not cands:
             return False, 0, 0, 0.0, None
@@ -2305,10 +2324,36 @@ def redact(text, secrets=()):
     return text
 
 
+def tls_context():
+    """4.6.1: an SSL context that checks certificates and host names. It trusts Windows'
+    certificate store plus the bundled certifi list of trusted root certificates. Windows
+    only adds some roots when something asks for them, so on some PCs GitHub's root isn't
+    in the store yet and the check failed ("unable to get local issuer certificate").
+    Checks are never turned off."""
+    import ssl
+    ctx = ssl.create_default_context()        # verifies certificates and host names
+    try:
+        import certifi
+        ctx.load_verify_locations(cafile=certifi.where())
+    except Exception:
+        pass                                  # no certifi (source copy): Windows' store only
+    return ctx
+
+
+def friendly_net_error(e):
+    """Short text for a network error; explains certificate failures in plain words."""
+    t = str(e)
+    if "CERTIFICATE_VERIFY_FAILED" in t:
+        return ("the secure connection couldn't be checked (certificate not trusted). "
+                "Something on this PC or network may be intercepting HTTPS - for example "
+                "antivirus web scanning or a company proxy. Clickue won't connect without "
+                "a valid certificate. Details: " + t)[:400]
+    return t[:200]
+
+
 def _http_post(url, body, content_type):
     """POST over HTTPS with certificate checks; no redirects; bounded time and response.
     Returns the HTTP status. Raises on errors. (Replaced by a fake in the tests.)"""
-    import ssl
     import urllib.request
     if not (url.startswith("https://") or (_ALLOW_PLAIN_HTTP_FOR_TESTS and
                                            url.startswith("http://127.0.0.1:"))):
@@ -2318,7 +2363,7 @@ def _http_post(url, body, content_type):
         def redirect_request(self, *a, **k):
             return None                       # a 3xx becomes an error instead of being followed
 
-    ctx = ssl.create_default_context()        # verifies certificates and host names
+    ctx = tls_context()                       # verifies certificates and host names
     opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=ctx))
     req = urllib.request.Request(url, data=body, method="POST", headers={
         "Content-Type": content_type, "User-Agent": f"{APP_NAME}/{VERSION}"})
@@ -2358,7 +2403,6 @@ def https_get(url, max_bytes, dest=None, progress=None, stop=None):
     with `dest` writes the file there (via .part) and returns its size. Raises on errors."""
     if _HTTPS_GET is not None:
         return _HTTPS_GET(url, max_bytes, dest, progress)
-    import ssl
     import urllib.error
     import urllib.parse
     import urllib.request
@@ -2366,7 +2410,7 @@ def https_get(url, max_bytes, dest=None, progress=None, stop=None):
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *a, **k):
             return None
-    ctx = ssl.create_default_context()
+    ctx = tls_context()
     opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=ctx))
     for _ in range(6):
         u = urllib.parse.urlsplit(url)
@@ -6428,6 +6472,30 @@ class App:
         job["issue_count"] = 0
         job["issue_since"] = None
 
+    def own_covers(self, job):
+        """4.6.1: is a Clickue window in front of where this watcher's picture is? Only a
+        window that is really on top counts: Clickue open (even maximized) behind the
+        browser doesn't. Looks where the picture was last seen, else the middle of its
+        search area; with neither, only when Clickue is the window in front."""
+        if not self.own_visible:
+            return False
+        if not IS_WIN:
+            return True
+        pts = []
+        xy = job.get("found_xy")
+        if xy:
+            pts.append(tuple(xy))
+        r = job.get("_search_rect") or job_area(job)
+        if r:
+            pts.append((r[0] + r[2] / 2, r[1] + r[3] / 2))
+        if pts:
+            return any(own_on_top(x, y) for x, y in pts)
+        try:
+            fg = user32.GetForegroundWindow()
+            return bool(fg) and is_own_window(fg)
+        except Exception:
+            return True
+
     def watch_check(self, job):
         """Look for the watched picture once and decide whether to click (or, while a click
         is waiting for its random delay, whether it's still wanted)."""
@@ -6457,14 +6525,14 @@ class App:
                 job["miss_count"] = 0
             settle = (job.get("settle_until") or 0) > now
         if settle:
+            # 4.6.1: it still looks right away; only a change (a reason to click) waits
             with self.lock:
                 job["next_check"] = min(job["next_check"], now + min(interval, 5))
             if prev and prev != sig:
                 self.log(f"[{name}] the screen changed from {prev[2]}×{prev[3]} "
                          f"({prev[4] * 100 // 96}% scaling) to {sig[2]}×{sig[3]} "
-                         f"({sig[4] * 100 // 96}%) - waiting {SCREEN_SETTLE_S} s before counting "
-                         f"checks again")
-            return self.watch_issue(job, "the screen size or scaling just changed", now)
+                         f"({sig[4] * 100 // 96}%) - a missing picture isn't counted for "
+                         f"{SCREEN_SETTLE_S} s")
         with self.lock:
             snap = dict(job)
         # 4.6: a watcher that clicks inside a window also watches that window
@@ -6492,15 +6560,20 @@ class App:
         except Exception as e:
             return self.watch_issue(job, f"couldn't look at the screen ({e})", now)
         appears = snap.get("watch_trigger") == "appears"
+        if settle:
+            if found == appears:              # a change right after the screen changed
+                return self.watch_issue(job, "the screen size or scaling just changed", now)
+            with self.lock:
+                job["settle_until"] = None    # no change: it's settled, back to normal
         if not found and wstate == "ok" and not appears:
             cover = window_covering(snap, snap.get("found_xy"))
             if cover:
                 return self.watch_issue(job, f"its window \u201c{wt_}\u201d is covered by "
                                              f"\u201c{short_title(cover, 30)}\u201d where the "
                                              f"picture was", now)
-        if not found and self.own_visible and not appears:
-            # This app's own window might be covering the picture - don't count it
-            return self.watch_issue(job, "Clickue window open", now)
+        if not found and not appears and self.own_covers(snap):
+            # This app's own window is in front of the picture - don't count it
+            return self.watch_issue(job, "Clickue window in front of the picture", now)
         if not found and pointer and not appears:
             # Hovering can change how the picture looks - don't count it (4.5.3)
             return self.watch_issue(job, "the mouse pointer is resting on the picture", now)
@@ -6711,7 +6784,7 @@ class App:
                 ok, msg, _, x, y, how = self.perform(snap, check_idle=False, point=pt)
                 clicked = (ok, msg)
         text, level = self.describe_dry_run(r, clicked)
-        if (not r["error"] and not r["picture"][0] and self.own_visible
+        if (not r["error"] and not r["picture"][0] and self.own_covers(snap)
                 and not r.get("appears")):
             text += " (note: the Clickue window was open and may have covered it)"
             level = "warn" if level == "ok" else level
@@ -9189,6 +9262,15 @@ class App:
     # ------------------------------------------------------------ tray / window
     # ---- 4.5.1: job status on the tray icon
     TRAY_TIP_MAX = 127          # Windows shows at most 127 characters in a tray tooltip
+    TRAY_TIP_WIDTH = 36         # 4.6.1: and cuts lines wider than ~45 characters, so wrap
+                                # (the first line, at most 38 characters, stays whole)
+
+    def tray_wrap(self, text, width=None):
+        """Wrap one tooltip entry onto lines of at most TRAY_TIP_WIDTH characters; follow-on
+        lines are indented. Words longer than a line are split."""
+        import textwrap
+        return "\n".join(textwrap.wrap(text, width or self.TRAY_TIP_WIDTH, subsequent_indent="   ",
+                                        break_long_words=True, break_on_hyphens=False)) or text
 
     def tray_status(self, now=None):
         """What the tray icon tells you when you hover over it.
@@ -9240,19 +9322,21 @@ class App:
             return f"{word} · {det}" if det else word
         lines = [f"{icon.get(st, '•')} {name}: {say(word, at)}"
                  for _, name, word, det, st, at in items]
-        tip = head
+        tip = self.tray_wrap(head, 40)    # at most 38 characters: kept on one line
         if running:
-            tip += "\n▶ " + short_title(running, 40)
+            tip += "\n▶ " + short_title(running, self.TRAY_TIP_WIDTH - 2)
+        wrap = self.tray_wrap
         shown = 0
         for _, name, word, det, st, _at in items:
             text = say(word, det if st in ("bad", "warn", "running") else "")
             more = n - shown - 1
             tail = f"\n+{more} more (right-click → Job status)" if more else ""
-            # the whole line when it fits (4.6: it was cut at 34 characters), else shortened
-            line = f"\n{icon.get(st, '•')} {short_title(name, 24)}: {text}"
+            # 4.6.1: Windows cuts a tooltip line that is too wide (not only the whole text at
+            # 127 characters), so each job is wrapped onto short lines that always fit.
+            line = "\n" + wrap(f"{icon.get(st, '•')} {short_title(name, 24)}: {text}")
             if len(tip) + len(line) + len(tail) > self.TRAY_TIP_MAX:
-                line = (f"\n{icon.get(st, '•')} {short_title(name, 16)}: "
-                        + short_title(text.replace("next check in", "check in"), 34))
+                line = "\n" + wrap(f"{icon.get(st, '•')} {short_title(name, 16)}: "
+                                   + short_title(text.replace("next check in", "check in"), 34))
             if len(tip) + len(line) + len(tail) > self.TRAY_TIP_MAX:
                 rest = n - shown
                 end = f"\n+{rest} more (right-click → Job status)"
@@ -9661,7 +9745,7 @@ class App:
             try:
                 info, err = fetch_latest_release(), ""
             except Exception as e:
-                info, err = None, str(e)[:200]
+                info, err = None, friendly_net_error(e)
             self.cmdq.put(lambda: done(info, err))
 
         def done(info, err):
@@ -11099,17 +11183,21 @@ ISSUE_HINTS = (    # (words in the message, what to do) - shown in logs and tool
                       "session, hand it to the console instead of disconnecting."),
     ("using the mouse", "Clickue waits until the mouse and keyboard have been idle for the time "
                         "set in Preferences → Clicking."),
-    ("Clickue window open", "A missing picture isn't counted while a Clickue window is open on "
-                            "screen (it could be covering it). Minimize Clickue or send it to "
-                            "the tray."),
+    ("Clickue window in front", "A missing picture isn't counted while a Clickue window is in "
+                                "front of it (covering it). Minimize Clickue, send it to the "
+                                "tray, or bring the watched window to the front."),
+    ("Clickue window open", "A missing picture isn't counted while a Clickue window is in "
+                            "front of it (covering it). Minimize Clickue, send it to the tray, "
+                            "or bring the watched window to the front."),
     ("covering the spot", "Minimize Clickue or move its window away from the spot."),
     ("mouse pointer", "Move the mouse away from the watched picture (hovering can change how "
                       "it looks)."),
     ("no picture saved", "Edit the watcher and click Draw box around picture."),
     ("not installed", "Run Start Clickue.bat (or pip install -r requirements.txt)."),
     ("screen size or scaling", "The screen changed (e.g. switching between a remote session "
-                               "and the console). Clickue waits a few seconds before counting "
-                               "checks again."),
+                               "and the console). It still looks: a picture that's there shows "
+                               "as seen right away; only a missing picture isn't counted for "
+                               "15 s, so the switch can't cause a click."),
     ("on screen", "The same picture is on screen several times. Re-pick with a Large picture, "
                   "or use Inside a window."),
     ("exact picture", "Run Show spot to see what Clickue finds. Is the spot visible (not scrolled "
@@ -16525,7 +16613,7 @@ class UpgradeDialog(Dialog):
                 path, err = download_update(self.info, self.kind, prog,
                                             stop=lambda: self.cancel_flag), ""
             except Exception as e:
-                path, err = None, str(e)[:300]
+                path, err = None, friendly_net_error(e)[:300]
             app.cmdq.put(lambda: self.downloaded(path, err))
         threading.Thread(target=work, daemon=True).start()
 
@@ -16667,10 +16755,13 @@ class HelpDialog(Dialog):
             ("Updates", "When a new version is out, a bar appears: Upgrade now downloads it from "
              "GitHub, checks it and installs it, keeping your jobs and settings. ☰ Menu → Check "
              "for updates. Turn checks off in Preferences → General and Clickue never goes "
-             "online for updates."),
+             "online for updates. A certificate error means the connection couldn't be "
+             "trusted (often antivirus HTTPS scanning or a company proxy); Clickue then doesn't "
+             "connect."),
             ("Watchers and windows", "A watcher whose button is inside a window watches that "
              "window too: closed or minimized means Can't watch and no click. A watched "
-             "picture never counts as found inside Clickue's own windows."),
+             "picture never counts as found where a Clickue window is in front of it; a "
+             "Clickue window behind the browser doesn't matter."),
             ("Is everything OK?", "Hover over a job: it says what the job is doing, any "
              "problem and what to do. A watcher that can't see its picture shows ⚠ Can't watch. "
              "The tray icon dot: amber = a click is counting down, green = clicking now, red = "

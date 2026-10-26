@@ -1396,28 +1396,32 @@ def pick_cancel():
 
 
 def tray_status():
-    p = Pic(980, 380, "Job status on the tray icon",
+    import textwrap
+    p = Pic(980, 410, "Job status on the tray icon",
             "Point at Clickue's tray icon to see what your jobs are doing while it's minimized.")
     tx, ty = 32, 96
-    p.rect(tx, ty, tx + 420, ty + 138, fill="#2b2b2b", r=6)
-    lines = ("Clickue: 3 active · 1 needs attention",
-             "▶ Running “Refresh dashboard” · step 2 of 4",
-             "⚠ Reconnect watcher: Picture missing",
-             "✓ Refresh dashboard: Running · next in 4m 10s",
-             "✓ Stay signed in: Watching · Not showing")
+    entries = ("Clickue: 3 active · 1 needs attention",
+               "▶ Running “Refresh dashboard” · st…",
+               "⚠ Reconnect watcher: Picture missing",
+               "✓ Refresh dashboard: Running · next in 4m 10s",
+               "✓ Stay signed in: Watching · Not showing")
+    lines = []                       # wrapped like the app (4.6.1: at most 36 characters a line)
+    for i, e in enumerate(entries):
+        lines += textwrap.wrap(e, 40 if i == 0 else 36, subsequent_indent="   ")
+    p.rect(tx + 0, ty, tx + 330, ty + 20 + len(lines) * 21, fill="#2b2b2b", r=6)
     for i, l in enumerate(lines):
-        p.text(tx + 14, ty + 16 + i * 23, l, 12, "bold" if i == 0 else "regular",
+        p.text(tx + 14, ty + 14 + i * 21, l, 12, "bold" if i == 0 else "regular",
                fill="#ffffff")
     # taskbar
-    p.rect(32, 250, 948, 290, fill="#1f2937", r=4)
+    p.rect(32, 280, 948, 320, fill="#1f2937", r=4)
     for k in range(4):
-        p.rect(760 + k * 32, 260, 782 + k * 32, 280, fill="#374151", r=4)
-    p.circle(889, 270, 9, fill=ACCENT)
-    p.text(889, 270, "C", 10, "bold", fill="#ffffff", anchor="mm")
-    cursor(p, 886, 268)
-    p.arrow(452, 170, 870, 252, MUTED)
+        p.rect(760 + k * 32, 290, 782 + k * 32, 310, fill="#374151", r=4)
+    p.circle(889, 300, 9, fill=ACCENT)
+    p.text(889, 300, "C", 10, "bold", fill="#ffffff", anchor="mm")
+    cursor(p, 886, 298)
+    p.arrow(362, 200, 870, 282, MUTED)
     # menu
-    mx, my = 520, 84
+    mx, my = 400, 84
     p.rect(mx, my, mx + 210, my + 150, fill=WIN, outline=LINE, r=6)
     for i, t in enumerate(("Show window", "Job status  ›", "Pause all", "Stop everything now",
                            "Exit")):
@@ -1429,9 +1433,9 @@ def tray_status():
     for i, t in enumerate(("⚠ Reconnect watcher: Picture missing", "✓ Refresh dashboard: Running",
                            "✓ Stay signed in: Watching")):
         p.text(sx + 12, my + 52 + i * 26, t, 11, anchor="lm")
-    p.text(32, 312, "Right-click the icon → Job status lists every active job. Turn it off in "
+    p.text(32, 342, "Right-click the icon → Job status lists every active job. Turn it off in "
                     "Preferences → General.", 12, fill=MUTED)
-    p.text(32, 334, "Order: problems first (failed, then needs attention), then working, "
+    p.text(32, 364, "Order: problems first (failed, then needs attention), then working, "
                     "then paused.", 12, fill=MUTED)
     p.save("tray-status.png")
 
