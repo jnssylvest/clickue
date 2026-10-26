@@ -109,6 +109,11 @@ security checks. See [Responsible use & warnings](#%EF%B8%8F-responsible-use--wa
   Match the exact picture (every pixel area checked), or let **part of the picture** be
   enough when something inside the box changes; every copy on screen is found. Zoom in up to
   24× with a pixel magnifier while drawing the box.
+- 🖱️ **Moves like a person (optional).** Smooth, curved mouse movements to each click instead
+  of jumps, per job, per step or for recorded macros.
+- 🩺 **Honest status.** Hover a job to see what it's doing, any problem and what to do; the
+  tray icon turns amber, green or red. Logs say what went wrong, every time.
+- 🎨 **Your colours.** Change every colour of the app with a colour wheel or codes.
 - ☑️ **Batch actions.** Tick jobs in the list to start, stop, pause, resume, duplicate or
   delete them together, or **Edit together** to change the same settings on all of them.
 - 🎯 **Only the exact picture.** By default a similar-looking button is never clicked, even when

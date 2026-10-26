@@ -58,7 +58,7 @@ except Exception:
 APP_NAME = "Clickue"
 APP_ID = "Clickue"
 OLD_APP_ID = "ScheduledAutoClicker"      # previous name - data is migrated from here
-VERSION = "4.5.5"
+VERSION = "4.5.6"
 REPO_URL = "https://github.com/jnssylvest/clickue"
 GUIDE_URL = REPO_URL + "/blob/main/docs/GUIDE.md"      # the complete guide (☰ Menu)
 DISCLOSURE = ("Clickue is vibe-coded and was developed with substantial AI assistance. Caution "
@@ -96,7 +96,8 @@ RUNTIME_KEYS = ("base_next", "next_run", "deadline", "test_at", "test_deadline",
                 "next_check", "last_check", "last_seen", "miss_count", "watch_state",
                 "armed", "pending_click_at", "pending_since", "watch_scale", "watch_note",
                 "wtest_at", "wtest_deadline", "wtest_click", "once_logged", "run_clicks",
-                "found_xy", "pointer_logged")
+                "found_xy", "pointer_logged", "issue_count", "issue_since", "screen_sig",
+                "settle_until")
 
 # ---------------------------------------------------------------- Windows API
 if IS_WIN:
@@ -203,15 +204,79 @@ def idle_seconds():
     return ((kernel32.GetTickCount() - lii.dwTime) & 0xFFFFFFFF) / 1000.0
 
 
-def do_click(x, y, button="left", clicks=1, restore_cursor=True):
+HUMAN_SPEEDS = {"slow": 1.6, "normal": 1.0, "fast": 0.55}   # 4.5.6: movement time factor
+
+
+def human_path(x0, y0, x1, y1, speed="normal", rnd=None):
+    """Points for moving the mouse like a person (4.5.6): a slightly curved path (Bézier with
+    a random bend), quick in the middle and slow at both ends (ease in/out), sometimes a tiny
+    overshoot that's corrected, with a little jitter. Returns [(t seconds, x, y)], ending
+    exactly on (x1, y1). Pure, so it's tested without a mouse."""
+    import math
+    rnd = rnd or random.Random()
+    dx, dy = x1 - x0, y1 - y0
+    dist = math.hypot(dx, dy)
+    if dist < 2:
+        return [(0.0, int(x1), int(y1))]
+    f = HUMAN_SPEEDS.get(speed, 1.0)
+    # Fitts-like: longer moves take longer, but not proportionally (0.15 - 1.1 s)
+    dur = f * min(1.1, 0.12 + 0.11 * math.log2(1 + dist / 12)) * rnd.uniform(0.85, 1.15)
+    bend = rnd.uniform(-0.18, 0.18) * dist
+    nx, ny = (-dy / dist, dx / dist)
+    cx, cy = x0 + dx * 0.5 + nx * bend, y0 + dy * 0.5 + ny * bend
+    over = rnd.random() < 0.3 and dist > 120
+    ox, oy = (x1 + dx / dist * rnd.uniform(3, 9), y1 + dy / dist * rnd.uniform(3, 9)) \
+        if over else (x1, y1)
+    n = max(6, min(90, int(dur / 0.012)))
+    pts = []
+    for i in range(1, n + 1):
+        u = i / n
+        e = u * u * (3 - 2 * u)                       # ease in / out
+        bx = (1 - e) ** 2 * x0 + 2 * (1 - e) * e * cx + e * e * ox
+        by = (1 - e) ** 2 * y0 + 2 * (1 - e) * e * cy + e * e * oy
+        j = 1.2 * (1 - abs(2 * u - 1))                # jitter, none at the ends
+        pts.append((dur * u, round(bx + rnd.uniform(-j, j)), round(by + rnd.uniform(-j, j))))
+    if over:
+        t = dur
+        for k in range(1, 6):
+            t += 0.016
+            pts.append((t, round(ox + (x1 - ox) * k / 5), round(oy + (y1 - oy) * k / 5)))
+    pts[-1] = (pts[-1][0], int(x1), int(y1))
+    return pts
+
+
+def glide(x, y, speed="normal", stop=None):
+    """Move the real mouse to (x, y) along human_path. Returns False if it couldn't move.
+    Bounded (at most ~1.3 s x speed); `stop()` true ends it early."""
+    if not IS_WIN:
+        return False
+    x0, y0 = get_cursor()
+    start = time.time()
+    for t, px, py in human_path(x0, y0, x, y, speed):
+        if stop and stop():
+            return False
+        wait = start + t - time.time()
+        if wait > 0:
+            time.sleep(min(wait, 0.05))
+        if not user32.SetCursorPos(int(px), int(py)):
+            return False
+    return True
+
+
+def do_click(x, y, button="left", clicks=1, restore_cursor=True, human=None):
+    """Click at (x, y). human = None (jump there, as always) or a speed ("slow" / "normal" /
+    "fast") to move the mouse there like a person first (4.5.6)."""
     if not IS_WIN:
         return False, "this program only clicks on Windows"
     with CURSOR_LOCK:
-        return _do_click(x, y, button, clicks, restore_cursor)
+        return _do_click(x, y, button, clicks, restore_cursor, human)
 
 
-def _do_click(x, y, button, clicks, restore_cursor):
+def _do_click(x, y, button, clicks, restore_cursor, human=None):
     old = get_cursor()
+    if human:
+        glide(x, y, human)
+        time.sleep(random.uniform(0.04, 0.12))         # a person settles before clicking
     if not user32.SetCursorPos(int(x), int(y)):
         return False, "could not move the mouse (no active screen)"
     time.sleep(0.05)
@@ -226,8 +291,22 @@ def _do_click(x, y, button, clicks, restore_cursor):
             time.sleep(0.08)
     if restore_cursor:
         time.sleep(0.05)
+        if human:
+            glide(old[0], old[1], human)
         user32.SetCursorPos(*old)
     return True, "clicked"
+
+
+def mouse_style(settings, job=None, step=None):
+    """How to get the mouse to a click: None = jump (classic), or a speed for moving like a
+    person. A step's own choice wins, then the job's, then Preferences → Clicking."""
+    for src in (step, job):
+        v = (src or {}).get("human_move")
+        if v is True:
+            return settings.get("human_speed", "normal")
+        if v is False:
+            return None
+    return settings.get("human_speed", "normal") if settings.get("human_move") else None
 
 
 # ---- window-anchored targets ------------------------------------------------
@@ -804,6 +883,8 @@ PARTIAL_FLAT_LIGHT = 12.0    # a plain tile matches when its brightness differs 
 PARTIAL_TILE_COLOR = 18.0    # ...and its colour less than this (Lab units)
 SPLIT_MIN, SPLIT_MAX = 0.08, 0.94   # job list share of the main window's lower part (4.5.4)
 PICTURE_MIN_PX = 8           # smallest picture box (zoom in to draw small ones), 4.5.4
+TRAY_DUE_S = 60              # a scheduled click this close turns the tray icon amber
+SCREEN_SETTLE_S = 15         # after the screen changes size/scaling, wait before counting
 POINTER_IDLE_S = 20          # a watcher may move the pointer aside after this much idle time
 AREA_PAD_MIN = 24            # a drawn search area is searched with this much margin (px)
 
@@ -1172,6 +1253,105 @@ def picture_changes(crop, box, vx, vy):
         return 0.0
 
 
+def job_health(app, j, iid="", now=None):
+    """Plain-language status of one job, for the job list's hover text (4.5.6): what it's
+    doing, whether anything is wrong and what to do, and what comes next."""
+    now = now or time.time()
+    with app.lock:
+        j = dict(j)
+        waits = {k[1]: v for k, v in app.wait_msgs.items() if k[0] == j["id"]}
+        paused_all = app.settings.get("paused")
+    kind = "Screen watcher" if is_watch(j) else "Scheduled click"
+    n_steps = len(j.get("steps") or [])
+    head = f"{j['name']}  ·  {kind}" + (f"  ·  ☰ {n_steps} step{'s' if n_steps != 1 else ''}"
+                                         if n_steps else "")
+    lines = [head]
+    if iid.startswith(("test:", "wtest:")):
+        lines.append("A test that runs once. It doesn't change the job's schedule.")
+    if iid.startswith("step:"):
+        try:
+            k = int(iid.rsplit(":", 1)[1])
+            lines.append("Step {}: {}".format(k + 1, " - ".join(
+                x for x in describe_step(j['steps'][k], private=True) if x)))
+        except Exception:
+            pass
+    problems = []
+    if not j.get("enabled"):
+        lines.append("Stopped: it doesn't click or watch until you start it.")
+    elif paused_all or j.get("paused"):
+        lines.append("Paused" + (" (all jobs)" if paused_all else "") +
+                     ": nothing is clicked until you resume.")
+    elif is_watch(j):
+        st, note = j.get("watch_state"), j.get("watch_note") or ""
+        appears = j.get("watch_trigger") == "appears"
+        seen = j.get("last_seen")
+        where = (f" at ({j['found_xy'][0]}, {j['found_xy'][1]})" if j.get("found_xy") else "")
+        if note == "outside active hours":
+            lines.append(f"Outside its active hours ({describe_hours(j)}): not watching now.")
+        elif st == "unknown":
+            n = int(j.get("issue_count") or 0)
+            since = j.get("issue_since")
+            problems.append(f"PROBLEM: can't watch - {note}"
+                            + (f" ({n} checks in a row, for {fmt_dur(now - since)})"
+                               if since and n > 1 else ""))
+            hint = issue_hint(note)
+            if hint:
+                problems.append("What to do: " + hint)
+        elif st == "seen":
+            lines.append(f"OK: picture seen {datetime.fromtimestamp(seen).strftime('%H:%M:%S') if seen else ''}"
+                         f"{where}." + (" Waiting for it to go away." if appears else ""))
+        elif st == "missing":
+            lines.append(("Picture not showing" if appears else "Picture NOT found")
+                         + (f" ({note})" if note else "") + "."
+                         + (f" Last seen {datetime.fromtimestamp(seen).strftime('%H:%M:%S')}{where}."
+                            if seen else ""))
+        else:
+            lines.append("Starting: the first check is coming up.")
+        if j.get("pending_click_at"):
+            lines.append(f"CLICKING in {fmt_dur(j['pending_click_at'] - now)} "
+                         f"(at {fmt_time(j['pending_click_at'])}). Checks continue; the click is "
+                         f"cancelled if the picture {'goes away' if appears else 'comes back'}.")
+        if j.get("next_check"):
+            lines.append(f"Next check in {fmt_dur(max(0, j['next_check'] - now))} "
+                         f"(every {fmt_compact(j.get('watch_interval_s', 30))}, "
+                         f"{int(j.get('watch_confirm', 2))} in a row to act).")
+    else:
+        if j.get("next_run"):
+            lines.append(f"Next click {fmt_time(j['next_run'])} "
+                         f"(in {fmt_dur(max(0, j['next_run'] - now))}).")
+    for kind_, msg in waits.items():
+        problems.append(f"PROBLEM: {'test ' if kind_ == 'test' else ''}click waiting - {msg}")
+        hint = issue_hint(msg)
+        if hint:
+            problems.append("What to do: " + hint)
+    last = j.get("last_result") or ""
+    if last.startswith(("Missed", "Click FAILED", "Test FAILED")):
+        problems.append(f"PROBLEM: last result: {last}. See Activity for the reason.")
+    elif last:
+        lines.append(f"Last result: {last}")
+    lines.append(f"Clicks at: {target_text(j)}" if j.get("main_click", True)
+                 else f"Runs {n_steps} step{'s' if n_steps != 1 else ''} (no click of its own)")
+    if not problems and j.get("enabled") and not (paused_all or j.get("paused")):
+        lines.insert(1, "✔ No problems.")
+    return "\n".join(lines[:1] + problems + lines[1:])
+
+
+def watch_area_note(job):
+    """If a watcher's search area was drawn on a different screen size, say so (the area is
+    scaled, which may not match how the window's content moved)."""
+    a, ref = job.get("watch_area"), job.get("watch_area_screen")
+    if not a:
+        return ""
+    vx, vy, vw, vh = virtual_screen()
+    x, y, w, h = job_area(job)
+    txt = f"searched only its area {w}×{h} at ({x}, {y})"
+    if ref and tuple(ref[:2]) != (vw, vh):
+        txt += (f"; that search area was drawn on a {ref[0]}×{ref[1]} screen and the screen is "
+                f"{vw}×{vh} now, so it was scaled - if the picture is outside it, draw the "
+                f"search area again on this screen")
+    return txt
+
+
 def watched_picture(job, report=None, move_ok=False):
     """Look for a watcher's picture with its own settings (search area, exact or partial).
     If it isn't found while the mouse pointer rests on it, hovering may have changed how it
@@ -1250,6 +1430,22 @@ VIEW_DROP = {           # hidden first when the window is too narrow
 class RowVals(tuple):
     """A job-list row: the classic 9 values (status, name, target, button, schedule, next,
     countdown, count, last), plus `cells`, every column's text for the views."""
+
+
+def step_row(job, k, st, groups=None):
+    """A job-list row for one step of a job (shown when the job is expanded, 4.5.6)."""
+    try:
+        kind_, detail = describe_step(st, private=True, groups=groups)
+    except Exception:
+        kind_, detail = st.get("type", "step"), ""
+    what = detail or kind_
+    label = (st.get("label") or "").strip()
+    name = f"      ↳ {k + 1}. {label or kind_}"
+    r = RowVals(("", name, what, "", "", "", "", "", ""))
+    r.cells = dict(status="   step", kind="  ↳ step", name=name, what=what, target=what,
+                   schedule="", hours="", next="", countdown="", watchfor=what, then="",
+                   every="", seen="", nextcheck="", count="", last="")
+    return (f"step:{job['id']}:{k}", r, "step")
 
 
 def test_vals(v):
@@ -2158,6 +2354,22 @@ def trim_history():
         pass
 
 
+def rewrite_history(keep):
+    """Delete click-history rows for good: keeps only rows where keep(row) is true (4.5.6).
+    Returns how many rows were deleted."""
+    import csv
+    rows = read_history()
+    kept = [r for r in rows if keep(r)]
+    with _HIST_LOCK:
+        tmp = HISTORY_PATH + ".tmp"
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=HISTORY_FIELDS, extrasaction="ignore")
+            w.writeheader()
+            w.writerows(kept)
+        os.replace(tmp, HISTORY_PATH)
+    return len(rows) - len(kept)
+
+
 def job_stats(rows, name):
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
@@ -2472,6 +2684,8 @@ def sanitize_step(st):
                  scale_with_screen=bool(st.get("scale_with_screen", False)))
         if not s["snap_png"]:
             s["use_image"] = False
+        if st.get("human_move") in (True, False):
+            s["human_move"] = st["human_move"]          # 4.5.6; missing = follow the job
     elif t == "wait":
         lo = _clamp_num(st.get("min", 1), 0, 86400, 1, as_int=False)
         hi = _clamp_num(st.get("max", lo), 0, 86400, lo, as_int=False)
@@ -2486,6 +2700,8 @@ def sanitize_step(st):
                  timeout=_clamp_num(st.get("timeout", 60), 1, STEP_MAX_WAIT_S, 60),
                  on_timeout="continue" if st.get("on_timeout") == "continue" else "stop",
                  area=_clean_rect(st.get("area")))
+        if st.get("human_move") in (True, False):
+            s["human_move"] = st["human_move"]
     elif t in ("type", "paste"):
         limit = MAX_TYPE_CHARS if t == "type" else MAX_PASTE_CHARS
         text = st.get("text", "")
@@ -2610,6 +2826,8 @@ def sanitize_job(j):
             base[k] = _clean_point(v[:2]) if isinstance(v, list) and len(v) >= 2 else None
         elif k == "pick_dpi":
             base[k] = _clamp_num(v, 48, 960, None) if v else None
+        elif k == "human_move":
+            base[k] = v if v in (True, False, None) else None
         elif k == "hours_days":
             base[k] = sorted({int(x) for x in v if isinstance(x, int) and 0 <= x <= 6}) \
                 if isinstance(v, list) else d
@@ -3774,6 +3992,23 @@ def read_runlog():
         return []
 
 
+def rewrite_runlog(keep):
+    """Delete run-history rows for good (keeps rows where keep(row) is true). Returns how
+    many rows were deleted."""
+    import csv
+    rows = read_runlog()
+    kept = [r for r in rows if keep(r)]
+    with _RUNLOG_LOCK:
+        p = runlog_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p + ".tmp", "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=RUNLOG_FIELDS, extrasaction="ignore")
+            w.writeheader()
+            w.writerows(kept)
+        os.replace(p + ".tmp", p)
+    return len(rows) - len(kept)
+
+
 def trim_runlog():
     import csv
     rows = read_runlog()
@@ -4328,7 +4563,7 @@ class WorkflowRun:
                 return True, (f"the picture is showing now ({score:.0%})" if found else
                               f"the picture isn't showing now (best {score:.0%}); it would wait "
                               f"up to {fmt_dur(int(st.get('timeout', 60)))}")
-            return self.app.wait_for_picture(st, tick=self.tick)
+            return self.app.wait_for_picture(st, tick=self.tick, job=self.job)
         if t == "set":
             try:
                 val = expand_vars(st.get("value", ""), self.vars, 1000)
@@ -4358,7 +4593,8 @@ class WorkflowRun:
                 return False, f"(click) {msg}"
             if dry:
                 return True, f"would click at ({x}, {y}) - found {how}"
-            return do_click(x, y, st.get("button", "left"), int(st.get("clicks", 1)), rs)
+            return do_click(x, y, st.get("button", "left"), int(st.get("clicks", 1)), rs,
+                            human=mouse_style(self.app.settings, self.job, st))
         if t in TEXT_STEPS:
             text, why = self.text_of(st)
             if text is None:
@@ -4842,6 +5078,15 @@ DEFAULT_SETTINGS = {
     "main_zoomed": False,
     "dlg_geom": {},
     "activity_filter": "all",
+    "human_move": False,            # 4.5.6: default for jobs: move the mouse like a person
+    "human_speed": "normal",        # slow / normal / fast
+    "rec_human": False,             # recorded macros: move like a person when they play
+    "custom_colors": {},            # 4.5.6: {"light": {key: "#rrggbb"}, "dark": {...}}
+    "tray_colors": True,            # 4.5.6: tray icon dot: amber/green/red
+    "log_level": "normal",          # 4.5.6: "quiet" / "normal" / "detailed"
+    "stats_clicks_watch": 0,        # 4.5.6: today's watcher clicks (for the watcher summary)
+    "stats_missed_watch": 0,
+    "log_order": {},                # 4.5.6: per log, "new" (newest first) or "old"
     "activity_clear_on_start": False,   # 4.5.5: off = Activity keeps earlier runs' lines
     "activity_cleared_at": "",          # 4.5.5: "Clear view" time; older lines stay hidden
     "tests_geom": "",
@@ -4927,6 +5172,11 @@ def new_job(n=1):
         "watch_area_screen": None,  # screen size when the area was drawn
         "found_xy": None,
         "pointer_logged": False,
+        "human_move": None,         # 4.5.6: move the mouse like a person (None = Preferences)
+        "issue_count": 0,           # 4.5.6: checks in a row that couldn't tell (runtime)
+        "issue_since": None,
+        "screen_sig": None,         # screen size + scaling at the last check (runtime)
+        "settle_until": None,
         # ---- extra steps after the click
         "steps": [],
         "watch_random_on": True,    # watcher: random delay before clicking
@@ -5012,13 +5262,51 @@ LIGHT = dict(bg="#f4f5f7", panel="#ffffff", panel_alt="#f7f8fa", head="#f0f1f4",
              btn_border="#d5d8de", btn_active="#eef0f3", accent="#2563eb",
              accent_active="#1d4ed8", sel="#dbe7ff", sel_fg="#0b1b3f", field="#ffffff",
              warn="#b45309", good="#15803d", bad="#c62828", test="#7c3aed", grid="#e2e5ea",
-             tick="#e8f0fe", outline="#b8bec8", accent2="#0f766e", accent2_active="#115e59")
+             tick="#e8f0fe", outline="#b8bec8", accent2="#0f766e", accent2_active="#115e59",
+             accent3="#be123c", accent3_active="#9f1239")
 DARK = dict(bg="#18191c", panel="#212226", panel_alt="#26282c", head="#1c1d21",
             fg="#e8e9ec", muted="#9097a1", border="#30333a", btn="#2a2c31",
             btn_border="#363940", btn_active="#34373d", accent="#3b82f6",
             accent_active="#2f6fe0", sel="#24406e", sel_fg="#ffffff", field="#26282c",
             warn="#f5a524", good="#4ade80", bad="#f87171", test="#c4a8ff", grid="#383b43",
-            tick="#1f2f4d", outline="#4b505a", accent2="#0d9488", accent2_active="#0f766e")
+            tick="#1f2f4d", outline="#4b505a", accent2="#0d9488", accent2_active="#0f766e",
+            accent3="#e11d48", accent3_active="#be123c")
+
+
+COLOR_NAMES = (   # palette key, what it colours (4.5.6: Preferences → Appearance → colours)
+    ("bg", "Window background"), ("panel", "Tables, cards and panels"),
+    ("panel_alt", "Every other table row"), ("head", "Table headings"),
+    ("fg", "Text"), ("muted", "Labels and secondary text"), ("border", "Borders and frames"),
+    ("grid", "Grid lines in the job list"), ("field", "Input fields"),
+    ("btn", "Buttons"), ("btn_border", "Button borders"), ("btn_active", "Buttons under the mouse"),
+    ("outline", "Outline of buttons you can't use right now"),
+    ("accent", "New click, highlights and links"), ("accent_active", "New click under the mouse"),
+    ("accent2", "New watcher and steps"), ("accent2_active", "New watcher under the mouse"),
+    ("accent3", "Record"), ("accent3_active", "Record under the mouse"),
+    ("sel", "Selected row"), ("sel_fg", "Selected row text"), ("tick", "Ticked rows"),
+    ("good", "OK / good"), ("warn", "Attention / warning"), ("bad", "Problem / failed"),
+    ("test", "Tests"),
+)
+HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def theme_palette(settings, dark):
+    """The colours in use: the light or dark palette with the user's own colours on top."""
+    p = dict(DARK if dark else LIGHT)
+    mine = (settings.get("custom_colors") or {}).get("dark" if dark else "light") or {}
+    for k, v in mine.items():
+        if k in p and isinstance(v, str) and HEX_RE.match(v):
+            p[k] = v.lower()
+    return p
+
+
+def hex_to_rgb(h):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def rgb_to_hex(r, g, b):
+    return "#%02x%02x%02x" % tuple(max(0, min(255, int(round(v)))) for v in (r, g, b))
 
 
 def fmt_compact(sec):
@@ -5038,6 +5326,8 @@ class App:
         self.root = root
         self.lock = threading.RLock()
         self.checked = set()          # job ids ticked in the job list (4.5.3, not saved)
+        self.expanded = set()         # jobs whose steps are shown in the list (4.5.6)
+        self.retry_counts = {}        # (job id, kind) -> tries of a waiting click (4.5.6)
         self.logq = queue.Queue()
         self.cmdq = queue.Queue()
         self.stop = threading.Event()
@@ -5364,8 +5654,12 @@ class App:
                 except Exception:
                     pass
 
-    def log(self, msg):
+    def log(self, msg, level="info"):
+        """level: "detail" (only with Preferences → Log level: Detailed), "info" (Normal and
+        Detailed; with Quiet only if it's a click or a problem) or "important" (always)."""
         settings = getattr(self, "settings", None) or {}
+        if not log_wanted(settings.get("log_level", "normal"), level, msg):
+            return
         msg = redact(msg, [settings.get(k) for k in SECRET_KEYS])
         self.logq.put(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  {msg}")
         try:
@@ -5549,6 +5843,25 @@ class App:
                     txt += f" of {info['total']}"
             txt += f" · {fmt_dur(time.time() - running.get('started', time.time()))}"
         return txt, [it["label"] for it in aq.waiting()]
+
+    def log_retry(self, job, wkey, msg, when, test=False):
+        """Log every try of a click that has to wait (4.5.6): the first one with the target and
+        what to do; the following ones short. Waiting for an idle mouse is logged at most
+        every 30 s."""
+        name = job["name"]
+        rc = self.__dict__.setdefault("retry_counts", {})
+        tries = rc.get(wkey, 0) + 1 if self.wait_msgs.get(wkey) else 1
+        rc[wkey] = tries
+        what = "test click" if test else "click"
+        if tries == 1 or self.wait_msgs.get(wkey) != msg:
+            hint = issue_hint(msg)
+            self.log(f"[{name}] {what} WAITING - {msg}. Target: {target_text(job)}; {when}."
+                     + (f" What to do: {hint}" if hint else ""))
+            rc[wkey] = 1
+            return
+        if "using the mouse" in msg and tries % 6:
+            return
+        self.log(f"[{name}] {what} still waiting (try {tries}) - {msg}; {when}")
 
     def note_waiting(self):
         """Log once when a queued action has waited a while for another job."""
@@ -5744,6 +6057,8 @@ class App:
                             if j.get("pending_click_at"):
                                 if j["pending_click_at"] <= now:
                                     due.append((j, "watchclick"))
+                                elif j.get("next_check") and j["next_check"] <= now:
+                                    due.append((j, "watchcheck"))   # still wanted? (4.5.6)
                             elif j.get("next_check") is None:
                                 j["next_check"] = now
                             elif j["next_check"] <= now:
@@ -5789,8 +6104,33 @@ class App:
                    watch_state="", watch_note="")
         self.wait_msgs.pop((job["id"], "watch"), None)
 
+    def watch_issue(self, job, note, now):
+        """A check that couldn't tell whether the picture is there (4.5.6): the job shows it
+        as a problem, and every such check is logged - the first one with what to do."""
+        with self.lock:
+            name = job["name"]
+            n = int(job.get("issue_count") or 0) + 1
+            job.update(watch_state="unknown", watch_note=note, issue_count=n)
+            job["issue_since"] = job.get("issue_since") or now
+        if n == 1:
+            hint = issue_hint(note)
+            self.log(f"[{name}] CAN'T WATCH: {note}." + (f" What to do: {hint}" if hint else "")
+                     + " (The picture isn't counted as gone meanwhile.)")
+        else:
+            since = fmt_dur(now - (job.get("issue_since") or now))
+            self.log(f"[{name}] check {n}: still can't watch - {note} (for {since})")
+
+    def watch_ok_again(self, job):
+        """After checks that couldn't tell, note that the watcher can see again."""
+        if job.get("issue_count"):
+            self.log(f"[{job['name']}] watching again - the problem is gone "
+                     f"({job.get('watch_note') or 'checks work'})")
+        job["issue_count"] = 0
+        job["issue_since"] = None
+
     def watch_check(self, job):
-        """Look for the watched picture once and decide whether to click."""
+        """Look for the watched picture once and decide whether to click (or, while a click
+        is waiting for its random delay, whether it's still wanted)."""
         now = time.time()
         with self.lock:
             if not self.find_job(job) or not job.get("enabled"):
@@ -5799,62 +6139,89 @@ class App:
             interval = max(1, int(job.get("watch_interval_s", 30)))
             job["next_check"] = now + interval
             job["last_check"] = now
+            pending = bool(job.get("pending_click_at"))
         if not png:
-            with self.lock:
-                job["watch_state"], job["watch_note"] = "unknown", "no picture saved"
-            return
+            return self.watch_issue(job, "no picture saved", now)
         if not HAVE_CV:
-            with self.lock:
-                job["watch_state"], job["watch_note"] = "unknown", "picture matching not installed"
-            return
+            return self.watch_issue(job, "picture matching not installed", now)
         if not screen_available():
+            return self.watch_issue(job, "screen locked or remote session disconnected", now)
+        # the screen changed size or scaling (e.g. a remote session handed to the console):
+        # give it a few seconds to settle before counting checks (4.5.6)
+        sig = list(virtual_screen()) + [system_dpi()]
+        with self.lock:
+            prev = job.get("screen_sig")
+            job["screen_sig"] = sig
+            if prev and prev != sig:
+                job["settle_until"] = now + SCREEN_SETTLE_S
+                job["miss_count"] = 0
+            settle = (job.get("settle_until") or 0) > now
+        if settle:
             with self.lock:
-                job["watch_state"], job["watch_note"] = "unknown", "screen locked"
-            return
+                job["next_check"] = min(job["next_check"], now + min(interval, 5))
+            if prev and prev != sig:
+                self.log(f"[{name}] the screen changed from {prev[2]}×{prev[3]} "
+                         f"({prev[4] * 100 // 96}% scaling) to {sig[2]}×{sig[3]} "
+                         f"({sig[4] * 100 // 96}%) - waiting {SCREEN_SETTLE_S} s before counting "
+                         f"checks again")
+            return self.watch_issue(job, "the screen size or scaling just changed", now)
         try:
             with self.lock:
                 snap = dict(job)
-            (found, x, y, score, sc), _, pointer = watched_picture(
+            (found, x, y, score, sc), wnote, pointer = watched_picture(
                 snap, move_ok=self.may_move_pointer())
         except Exception as e:
-            with self.lock:
-                job["watch_state"], job["watch_note"] = "unknown", f"couldn't look ({e})"
-            self.log(f"[{name}] couldn't check the screen: {e}")
-            return
+            return self.watch_issue(job, f"couldn't look at the screen ({e})", now)
+        appears = snap.get("watch_trigger") == "appears"
+        if not found and self.own_visible and not appears:
+            # This app's own window might be covering the picture - don't count it
+            return self.watch_issue(job, "Clickue window open", now)
+        if not found and pointer and not appears:
+            # Hovering can change how the picture looks - don't count it (4.5.3)
+            return self.watch_issue(job, "the mouse pointer is resting on the picture", now)
+        part = watch_partial(snap)
+        how = (f"{score:.0%} of it matches" if part else f"{score:.0%}") + (
+            "" if not sc or abs(sc - 1) < 0.01 else f" at {sc:.0%} size")
+        where = f"at ({x}, {y})"
+        area_note = watch_area_note(snap) if not found else ""
 
         with self.lock:
             if not self.find_job(job) or not job.get("enabled"):
                 return
-            appears = job.get("watch_trigger") == "appears"
+            self.watch_ok_again(job)
+            job["pointer_logged"] = False
             if found:
                 job.update(last_seen=now, watch_scale=sc, found_xy=[x, y])
-            if not found and self.own_visible and not appears:
-                # This app's own window might be covering the picture - don't count it
-                job["watch_state"], job["watch_note"] = "unknown", "Clickue window open"
-                return
-            if not found and pointer and not appears:
-                # Hovering can change how the picture looks - don't count it (4.5.3)
-                job["watch_state"], job["watch_note"] = "unknown", "mouse pointer on the picture"
-                if not job.get("pointer_logged"):
-                    job["pointer_logged"] = True
-                    self.log(f"[{name}] the mouse pointer is resting on the watched picture, "
-                             f"which can change how it looks - not counting it as gone until "
-                             f"the pointer moves away (or the computer is idle for "
-                             f"{POINTER_IDLE_S} s)")
-                return
-            job["pointer_logged"] = False
             hit = found if appears else not found
+            seen_txt = (f"picture seen {where}, {how}" if found
+                        else f"picture not on screen (best {how}, closest place {where})"
+                        + (f"; {area_note}" if area_note else ""))
             if not hit:
+                if pending:
+                    # it changed back during the random delay: the click isn't wanted any more
+                    job["pending_click_at"] = job["pending_since"] = None
+                    job["armed"] = True
+                    job["last_result"] = ("Click cancelled - picture went away again" if appears
+                                          else "Click cancelled - picture came back")
+                    self.log(f"[{name}] click CANCELLED - {seen_txt} before the click was due")
                 # the condition isn't met: reset, and allow the next click
-                prev = job.get("watch_state")
-                if found and prev == "missing":
-                    self.log(f"[{name}] picture is back ({score:.0%})")
-                elif not found and prev == "seen" and appears:
-                    self.log(f"[{name}] picture went away")
+                prev_state = job.get("watch_state")
+                if found and prev_state == "missing":
+                    self.log(f"[{name}] picture is back - {seen_txt}")
+                elif not found and prev_state == "seen" and appears:
+                    self.log(f"[{name}] picture went away - {seen_txt}")
+                else:
+                    self.log(f"[{name}] check: {seen_txt}", "detail")
                 job.update(miss_count=0, armed=True, once_logged=False,
                            watch_state="seen" if found else "missing",
                            watch_note=(f"seen {score:.0%}" if found
                                        else f"not showing (best {score:.0%})"))
+                return
+            if pending:
+                # still the same during the random delay: keep waiting for the click
+                job["watch_state"] = "seen" if found else "missing"
+                self.log(f"[{name}] check during the click delay: {seen_txt} - still clicking "
+                         f"in {fmt_dur(job['pending_click_at'] - now)}", "detail")
                 return
             job["miss_count"] = int(job.get("miss_count", 0)) + 1
             job["watch_state"] = "seen" if found else "missing"
@@ -5862,13 +6229,9 @@ class App:
             what = "showing" if appears else "missing"
             job["watch_note"] = (f"{what} ({job['miss_count']} of {need} checks)"
                                  if job["miss_count"] < need else what)
-            if job["miss_count"] == 1:
-                if appears:
-                    self.log(f"[{name}] picture appeared ({score:.0%}) - "
-                             + ("confirming" if need > 1 else "clicking"))
-                else:
-                    self.log(f"[{name}] picture not found (best {score:.0%}) - "
-                             + ("confirming" if need > 1 else "clicking"))
+            self.log(f"[{name}] {'picture appeared' if appears else 'picture NOT found'} "
+                     f"(check {job['miss_count']} of {need}) - {seen_txt}"
+                     + (" - confirming" if job["miss_count"] < need else ""))
             if job["miss_count"] < need:
                 job["next_check"] = now + min(interval, 5)   # confirm quickly
                 return
@@ -5892,8 +6255,12 @@ class App:
             job["pending_click_at"] = now + delay
             job["pending_since"] = now
             job["armed"] = False
+            # keep looking during the delay, so a picture that comes back cancels the click
+            job["next_check"] = now + min(interval, max(5, delay // 4 or 5))
             self.log(f"[{name}] picture {'APPEARED' if appears else 'GONE'} - clicking in "
-                     f"{fmt_dur(delay)}")
+                     f"{fmt_dur(delay)}"
+                     + (" (random delay; checks continue, and the click is cancelled if the "
+                        f"picture {'goes away' if appears else 'comes back'})" if delay else ""))
             self.save()
 
     def may_move_pointer(self):
@@ -5949,13 +6316,16 @@ class App:
         appears = r.get("appears")
         would = found if appears else not found
         size = "" if not sc or abs(sc - 1) < 0.01 else f" at {sc:.0%} size"
+        at = f" at ({px}, {py})" if (px or py) else ""
         if r.get("partial"):
             need = f"{r['partial']:.0%} needed"
-            pic = (f"Picture found ({score:.0%} of it matches, {need}{size})" if found
-                   else f"Picture NOT on screen (best: {score:.0%} of it matches, {need})")
+            pic = (f"Picture found{at} ({score:.0%} of it matches, {need}{size})" if found
+                   else f"Picture NOT on screen (best: {score:.0%} of it matches, {need}"
+                        + (f", closest place{at}" if at else "") + ")")
         else:
-            pic = (f"Picture found ({score:.0%}{size})" if found
-                   else f"Picture NOT on screen (best {score:.0%})")
+            pic = (f"Picture found{at} ({score:.0%}{size})" if found
+                   else f"Picture NOT on screen (best {score:.0%}"
+                        + (f", closest place{at}" if at else "") + ")")
         if r.get("note"):
             pic += f" ({r['note']})"
         btn = ("no click of its own, runs its steps" if bhow == "steps only" else
@@ -6044,6 +6414,24 @@ class App:
                 self.log(f"[{name}] picture went away before the click - nothing clicked")
                 return
             point = (px, py)
+        elif snap.get("watch_png") and HAVE_CV and screen_available():
+            # look once more right before clicking: still gone (or still showing)? (4.5.6)
+            try:
+                (f, px, py, score, sc), _, _ = watched_picture(snap)
+            except Exception:
+                f = not appears
+            if f != appears:
+                with self.lock:
+                    job["pending_click_at"] = job["pending_since"] = None
+                    job["armed"] = True
+                    job["miss_count"] = 0
+                    job["last_result"] = ("Click cancelled - picture went away again" if appears
+                                          else "Click cancelled - picture came back")
+                self.log(f"[{name}] click CANCELLED - "
+                         + (f"the picture is back at ({px}, {py}), {score:.0%}," if f else
+                            "the picture went away")
+                         + " right before the click was due - nothing clicked")
+                return
         ok, msg, retry_in, x, y, how = self.perform(snap, check_idle=True, point=point)
         now = time.time()
         wkey = (job["id"], "watch")
@@ -6053,7 +6441,7 @@ class App:
             if ok:
                 self.wait_msgs.pop(wkey, None)
                 job["count"] = int(job.get("count", 0)) + 1
-                self.bump_stats("stats_clicks")
+                self.bump_stats("stats_clicks", watch=True)
                 job["last_run"] = now
                 job["last_result"] = "Clicked " + stamp() + (" (picture appeared)" if appears
                                                              else " (picture gone)")
@@ -6077,7 +6465,7 @@ class App:
                 job["armed"] = True          # allow another try on the next check
                 job["next_check"] = now + max(1, int(job.get("watch_interval_s", 30)))
                 job["last_result"] = "Click FAILED " + stamp()
-                self.bump_stats("stats_missed")
+                self.bump_stats("stats_missed", watch=True)
                 m = f"[{name}] couldn't click within {retry_s // 60} min ({msg})."
                 self.log(m)
                 self.notify(m, "problem")
@@ -6085,8 +6473,8 @@ class App:
             else:
                 job["pending_click_at"] = now + retry_in
                 job["last_result"] = "Click waiting: " + msg
-                if self.wait_msgs.get(wkey) != msg:
-                    self.log(f"[{name}] click waiting - {msg}. Retrying.")
+                self.log_retry(job, wkey, msg, f"retrying in {fmt_dur(retry_in)}, giving up "
+                               f"after {retry_s // 60} min")
                 self.wait_msgs[wkey] = msg
             self.save()
 
@@ -6115,7 +6503,8 @@ class App:
                 if debugger:
                     debugger.before_main(job, x, y, how)
                 ok, msg = do_click(x, y, job["button"], job["clicks"],
-                                   self.settings["restore_cursor"])
+                                   self.settings["restore_cursor"],
+                                   human=mouse_style(self.settings, job))
                 if ctx.get("run"):
                     append_runlog({"run": ctx["run"], "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                    "job": job.get("name", ""),
@@ -6150,7 +6539,7 @@ class App:
             return True, f"ran {len(steps)} step{'s' if len(steps) != 1 else ''}"
         return True, f"clicked + {len(steps)} extra step{'s' if len(steps) != 1 else ''}"
 
-    def wait_for_picture(self, st, tick=None):
+    def wait_for_picture(self, st, tick=None, job=None):
         """A chain step: wait until a picture appears (optionally click it) or disappears.
         Returns (ok, message); a message starting with "timeout" means it didn't happen in time.
         tick() is called while waiting (stop checks; may raise StopRun)."""
@@ -6173,7 +6562,8 @@ class App:
                 if found == appear:
                     if appear and st.get("click_it"):
                         ok, m = do_click(x, y, st.get("button", "left"), int(st.get("clicks", 1)),
-                                         self.settings["restore_cursor"])
+                                         self.settings["restore_cursor"],
+                                         human=mouse_style(self.settings, job, st))
                         if not ok:
                             return False, f"couldn't click it ({m})"
                         return True, f"appeared ({score:.0%}) and was clicked at ({x}, {y})"
@@ -6324,9 +6714,8 @@ class App:
                          "waiting: picture not found" if "saved picture" in msg else
                          "waiting: " + msg)
                 job["last_result"] = ("Test: " if kind == "test" else "") + short
-                if self.wait_msgs.get(wkey) != msg:
-                    self.log(f"[{name}] {'test ' if kind == 'test' else ''}click waiting - {msg}."
-                             f" Retrying until {fmt_time(job[dl_key])}.")
+                self.log_retry(job, wkey, msg, f"retrying until {fmt_time(job[dl_key])}",
+                               test=kind == "test")
                 self.wait_msgs[wkey] = msg
             else:
                 job["last_result"] = "Manual failed " + stamp()
@@ -6349,7 +6738,8 @@ class App:
         self.main_menu = tk.Menu(self.root, tearoff=0)
         self.theme_btn = ttk.Button(hdr, text="", command=self.toggle_theme)
         self.theme_btn.pack(side="right", padx=6, anchor="n")
-        self.cards_btn = ttk.Button(hdr, text="", command=self.toggle_cards)
+        self.cards_btn = ttk.Button(hdr, text="", command=self.toggle_cards,
+                                    style="Summary.TButton")
         self.cards_btn.pack(side="right", anchor="n")
         self.hdr = hdr
         tbox = ttk.Frame(hdr)
@@ -6375,11 +6765,14 @@ class App:
         self.card_frames = []
         self._cards_cols = None
         self.card_vals = {}
+        self.card_titles = {}
+        self.cards_caption = ttk.Label(cards, style="Section.TLabel")
         for i, (key, title) in enumerate((("next", "NEXT CLICK"), ("active", "ACTIVE JOBS"),
                                           ("today", "CLICKS TODAY"), ("screen", "SCREEN"))):
             c = ttk.Frame(cards, style="Card.TFrame", padding=(14, 10))
             self.card_frames.append(c)
-            ttk.Label(c, text=title, style="CardTitle.TLabel").pack(anchor="w")
+            self.card_titles[key] = ttk.Label(c, text=title, style="CardTitle.TLabel")
+            self.card_titles[key].pack(anchor="w")
             v = ttk.Label(c, text="—", style="CardValue.TLabel")
             v.pack(anchor="w", pady=(2, 0))
             sub = ttk.Label(c, text="", style="CardSub.TLabel")
@@ -6388,8 +6781,8 @@ class App:
         cards.bind("<Configure>", lambda e: self.layout_cards())
         if not self.settings.get("show_cards", True):
             cards.pack_forget()
-        self.cards_btn.configure(text="▴  Summary" if self.settings.get("show_cards", True)
-                                 else "▾  Summary")
+        self.cards_btn.configure(text=self.summary_btn_text(self.settings.get("show_cards",
+                                                                               True)))
 
         # ---- toolbar: one row; buttons that don't fit move into the "More" menu
         bar = ttk.Frame(main, height=36)
@@ -6411,6 +6804,8 @@ class App:
         # prio: higher stays visible longer (New click always stays)
         tool("＋  New click", self.add_job, 0, 100, "Accent.TButton")
         tool("👁  New watcher", self.add_watcher, 0, 95, "Accent2.TButton")
+        tool("⏺  Record", lambda: self.toggle_recording(from_hotkey=False), 0, 92,
+             "Accent3.TButton")
         tool("Edit", self.edit_job, 0, 85, needs_sel=True)
         tool("Duplicate", self.duplicate_job, 0, 30, needs_sel=True)
         tool("Delete", self.delete_job, 0, 40, needs_sel=True)
@@ -6418,7 +6813,6 @@ class App:
         self.jpause_btn = tool("⏸  Pause", self.toggle_pause_job, 1, 80, needs_sel=True)
         self.pause_btn = tool("⏸  Pause all", self.toggle_pause_all, 1, 75)
         tool("🧪  Tests", self.open_tests, 2, 70)
-        tool("⏺  Record", lambda: self.toggle_recording(from_hotkey=False), 2, 65)
         tool("↓  Import", self.import_jobs, 3, 20, right=True)
         tool("↑  Export", self.export_jobs, 3, 25, right=True)
         self.more_btn = ttk.Button(bar, text="More  ▾", command=self.show_more_menu)
@@ -6447,6 +6841,8 @@ class App:
                                  style="Seg.TRadiobutton", command=self.filter_changed)
             rb.pack(side="left", padx=(0, 2))
             self.filter_btns[val] = (rb, text)
+        ttk.Button(fl, text="⟳ Refresh", style="Small.TButton",
+                   command=self.refresh_all).pack(side="right")
 
         # ---- job table
         self.undo_bar = ttk.Frame(main, style="Card.TFrame", padding=(10, 4))
@@ -6494,6 +6890,7 @@ class App:
         self.empty_lbl = ttk.Label(self.tree, style="Empty.TLabel", justify="center",
                                    text="No clicks yet\nClick  ＋ New click  to add one.")
         self.tree.bind("<Button-1>", self.on_tree_click)
+        self.row_tip = HoverTip(self, self.tree, self.row_tip_text)
         self.tree.bind("<Double-1>", self.on_double)
         self.tree.bind("<Return>", self.on_double)
         self.tree.bind("<Delete>", lambda e: self.delete_job())
@@ -6509,12 +6906,17 @@ class App:
         self.root.bind("<Control-N>", lambda e: self.add_watcher())
         self.root.bind("<Control-t>", lambda e: self.open_tests())
         self.root.bind("<Control-p>", lambda e: self.toggle_pause_all())
+        self.root.bind("<F5>", lambda e: self.refresh_all())
         self.root.bind("<Control-Up>", lambda e: self.nudge_split(-0.12))
         self.root.bind("<Control-Down>", lambda e: self.nudge_split(0.12))
         self.tree.bind("<p>", lambda e: self.toggle_pause_job())
         self.tree.bind("<Control-a>", lambda e: (self.set_checks(self.visible_job_ids()),
                                                  "break")[1])
         self.tree.bind("<x>", lambda e: self.toggle_check_selected())
+        for key, show in (("<Right>", True), ("<Left>", False)):
+            self.tree.bind(key, lambda e, show=show: (
+                [self.toggle_steps(i, show) for i in self.tree.selection() if ":" not in i
+                 and (self._job_for_iid(i) or {}).get("steps")], None)[1])
 
         # ---- activity (with a filter: everything / clicks only / problems only)
         ah = ttk.Frame(self.bottom_pane)
@@ -6538,11 +6940,19 @@ class App:
         self.size_btns = sz
         self.act_tools = ttk.Frame(ah)
         self.act_tools.pack(side="right")
+        ttk.Button(self.act_tools, text="Delete log…", style="Small.TButton",
+                   command=self.delete_activity_log).pack(side="right")
         ttk.Button(self.act_tools, text="Clear view", style="Small.TButton",
-                   command=self.clear_activity).pack(side="right")
+                   command=self.clear_activity).pack(side="right", padx=(4, 4))
+        self.act_order_btn = ttk.Button(self.act_tools, text="", style="Small.TButton",
+                                        command=self.toggle_activity_order)
+        self.act_order_btn.pack(side="right")
+        ttk.Button(self.act_tools, text="⟳ Refresh", style="Small.TButton",
+                   command=self.refresh_activity).pack(side="right", padx=(0, 4))
         ttk.Button(self.act_tools, text="Open log file", style="Small.TButton",
-                   command=self.open_log).pack(side="right", padx=6)
-        ah.bind("<Configure>", lambda e: self.act_tools.pack_forget() if e.width < 560
+                   command=self.open_log).pack(side="right", padx=(0, 4))
+        self.set_activity_order_text()
+        ah.bind("<Configure>", lambda e: self.act_tools.pack_forget() if e.width < 760
                 else (self.act_tools.winfo_ismapped() or self.act_tools.pack(side="right")))
 
         self.bottom = ttk.Frame(self.bottom_pane)
@@ -6657,6 +7067,10 @@ class App:
         b = self.more_btn
         m.tk_popup(b.winfo_rootx() + b.winfo_width() - 180, b.winfo_rooty() + b.winfo_height() + 2)
 
+    @staticmethod
+    def summary_btn_text(shown):
+        return "📊  Hide summary  ▴" if shown else "📊  Show summary  ▾"
+
     def toggle_cards(self):
         show = not self.settings.get("show_cards", True)
         self.settings["show_cards"] = show
@@ -6664,7 +7078,7 @@ class App:
             self.cards.pack(fill="x", pady=(12, 12), after=self.hdr)
         else:
             self.cards.pack_forget()
-        self.cards_btn.configure(text="▴  Summary" if show else "▾  Summary")
+        self.cards_btn.configure(text=self.summary_btn_text(show))
         self.save()
 
     def on_header_resize(self, e):
@@ -6688,9 +7102,10 @@ class App:
         for i in range(4):
             self.cards.columnconfigure(i, weight=1 if i < ncols else 0,
                                        uniform="cards" if i < ncols else "")
+        self.cards_caption.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
         for i, c in enumerate(self.card_frames):
             r, col = divmod(i, ncols)
-            c.grid(row=r, column=col, sticky="nsew",
+            c.grid(row=r + 1, column=col, sticky="nsew",
                    padx=(0 if col == 0 else 10, 0), pady=(0 if r == 0 else 10, 0))
 
     def set_text(self, widget, text):
@@ -6710,7 +7125,7 @@ class App:
 
     def apply_theme(self):
         dark = self.is_dark()
-        p = self.pal = DARK if dark else LIGHT
+        p = self.pal = theme_palette(self.settings, dark)
         F = self.font_family
         s = self.style
         s.theme_use("clam")
@@ -6758,6 +7173,24 @@ class App:
               relief=[("disabled", "solid")],
               lightcolor=[("disabled", p["bg"]), ("active", p["accent2_active"])],
               darkcolor=[("disabled", p["bg"]), ("active", p["accent2_active"])])
+        # 4.5.6: the Summary toggle stands out (accent outline and text)
+        s.configure("Summary.TButton", background=p["btn"], foreground=p["accent"],
+                    bordercolor=p["accent"], lightcolor=p["btn"], darkcolor=p["btn"],
+                    relief="solid", font=(F, 10, "bold"))
+        s.map("Summary.TButton", background=[("pressed", p["btn_active"]),
+                                             ("active", p["btn_active"])])
+        # 4.5.6: Record is a primary task too (rose)
+        s.configure("Accent3.TButton", background=p["accent3"], foreground="#ffffff",
+                    bordercolor=p["accent3"], lightcolor=p["accent3"], darkcolor=p["accent3"],
+                    font=(F, 10, "bold"))
+        s.map("Accent3.TButton",
+              background=[("disabled", p["bg"]), ("pressed", p["accent3_active"]),
+                          ("active", p["accent3_active"])],
+              foreground=[("disabled", p["muted"])],
+              bordercolor=[("disabled", p["outline"])],
+              relief=[("disabled", "solid")],
+              lightcolor=[("disabled", p["bg"]), ("active", p["accent3_active"])],
+              darkcolor=[("disabled", p["bg"]), ("active", p["accent3_active"])])
         s.configure("Card.TFrame", background=p["panel"], bordercolor=p["border"],
                     relief="solid", borderwidth=1, lightcolor=p["border"],
                     darkcolor=p["border"])
@@ -6861,6 +7294,7 @@ class App:
         self.logbox.tag_configure("test", foreground=p["test"])
         self.logbox.tag_configure("time", foreground=p["muted"])
         self.logbox.tag_configure("loc", foreground=p["accent"], underline=True)
+        self.logbox.tag_configure("step", foreground=p["accent2"])
         self.logbox.tag_raise("loc")
 
         self.tree.tag_configure("even", background=p["panel"])
@@ -6872,6 +7306,7 @@ class App:
         self.tree.tag_configure("warn", foreground=p["warn"])
         self.tree.tag_configure("bad", foreground=p["bad"])
         self.tree.tag_configure("test", foreground=p["test"])
+        self.tree.tag_configure("step", foreground=p["accent2"])
         for f in self.grid_lines:
             f.configure(bg=p["grid"])
         if self.tests_win is not None:
@@ -6928,8 +7363,10 @@ class App:
             is_pic = "picture" in before and "button" not in before and "spot" not in before
             if is_pic and size:
                 w, h = size[0] * sc, size[1] * sc
+                closest = "closest" in before
                 boxes.append((round(x - w / 2), round(y - h / 2), round(w), round(h),
-                              "picture was here", cross is None and not boxes, True))
+                              "closest place (not a match)" if closest else "picture was here",
+                              cross is None and not boxes and not closest, not closest))
                 if cross is None and len(pts) == 1:
                     cross = (x, y)
             elif cross is None:
@@ -6950,7 +7387,7 @@ class App:
             w.configure(bg=self.pal["bg"])
         except Exception:
             pass
-        set_dark_titlebar(w, self.pal is DARK)
+        set_dark_titlebar(w, self.is_dark())
 
     def describe_schedule(self, j):
         if is_watch(j):
@@ -6984,7 +7421,10 @@ class App:
         if note == "outside active hours":
             return "🌙  Off hours", sched, f"Active {describe_hours(j)}", "—", "paused"
         if st == "unknown":
-            return "👁  Watching", sched, f"Can't tell: {note}", cd, "paused"
+            # it can't see the picture right now: that's a problem, not "fine" (4.5.6)
+            n = int(j.get("issue_count") or 0)
+            return ("⚠  Can't watch", sched, f"Can't tell: {note}"
+                    + (f" ({n} checks)" if n > 1 else ""), cd, "warn")
         if appears:
             if st == "seen":
                 return "⚠  Showing", sched, note or "Picture showing", cd, "warn"
@@ -6999,6 +7439,27 @@ class App:
         return "👁  Watching", sched, "Starting…", cd, "running"
 
     def build_rows(self, now, flt=None):
+        """Rows for the job list. Jobs with steps get ▸ / ▾ in front of their name, and
+        their steps as indented ↳ rows when expanded (4.5.6)."""
+        rows = self._build_rows(now, flt)
+        out = []
+        exp = getattr(self, "expanded", set())
+        by_id = {j["id"]: j for j in self.jobs}
+        for iid, vals, state in rows:
+            j = by_id.get(iid)
+            steps = (j.get("steps") or []) if j else []
+            if steps and hasattr(vals, "cells"):
+                arrow = "▾" if iid in exp else "▸"
+                vals.cells["name"] = f"{arrow} {vals.cells['name']}"
+                vals.cells["kind"] = vals.cells.get("kind", "") + " ☰"
+            out.append((iid, vals, state))
+            if steps and iid in exp:
+                for k, st in enumerate(steps[:200]):
+                    out.append(step_row(j, k, st, self.groups if hasattr(self, "groups")
+                                        else None))
+        return out
+
+    def _build_rows(self, now, flt=None):
         rows = []
         paused = self.settings.get("paused")
         if flt is None:
@@ -7302,58 +7763,117 @@ class App:
             self.jpause_btn.state(["disabled"])
 
     def update_cards(self, now):
+        """The summary at the top. It follows the job-list filter (4.5.6): All shows every
+        job, Scheduled clicks only clicks, Screen watchers only what watchers are doing."""
+        view = self.view_key() if hasattr(self, "tree") else "all"
         with self.lock:
             paused = self.settings.get("paused")
-            total = len(self.jobs)
-            enabled = [j for j in self.jobs
+            jobs = [j for j in self.jobs if view == "all"
+                    or (view == "watch") == is_watch(j)]
+            total = len(jobs)
+            enabled = [j for j in jobs
                        if j.get("enabled") and not j.get("paused")
                        and (j.get("next_run") or is_watch(j))]
-            n_jpaused = sum(1 for j in self.jobs if j.get("enabled") and j.get("paused"))
+            n_jpaused = sum(1 for j in jobs if j.get("enabled") and j.get("paused"))
             upcoming = [] if paused else [
                 (j["next_run"], j["name"], False) for j in enabled if j.get("next_run")]
             upcoming += [] if paused else [
                 (j["pending_click_at"], j["name"], False) for j in enabled
                 if is_watch(j) and j.get("pending_click_at")]
             n_watch = sum(1 for j in enabled if is_watch(j))
-            upcoming += [(j["test_at"], j["name"], True) for j in self.jobs if j.get("test_at")]
-            upcoming += [(j["wtest_at"], j["name"], True) for j in self.jobs if j.get("wtest_at")]
-            if self.settings.get("stats_date") == datetime.now().strftime("%Y-%m-%d"):
-                today, missed = self.settings.get("stats_clicks", 0), \
-                    self.settings.get("stats_missed", 0)
+            upcoming += [(j["test_at"], j["name"], True) for j in jobs if j.get("test_at")]
+            upcoming += [(j["wtest_at"], j["name"], True) for j in jobs if j.get("wtest_at")]
+            st = self.settings
+            if st.get("stats_date") == datetime.now().strftime("%Y-%m-%d"):
+                today, missed = st.get("stats_clicks", 0), st.get("stats_missed", 0)
+                w_today, w_missed = st.get("stats_clicks_watch", 0), st.get("stats_missed_watch", 0)
             else:
-                today = missed = 0
-
-        v, sub = self.card_vals["next"]
-        if upcoming:
-            t, name, is_test = min(upcoming)
-            v.configure(text=fmt_dur(t - now) if t > now else "now",
-                        style="CardValue.TLabel")
-            sub.configure(text=f"{name}{' (test)' if is_test else ''} · {fmt_time(t)}")
-        else:
-            v.configure(text="—", style="CardValue.TLabel")
-            sub.configure(text="All paused" if paused and enabled else
-                          ("Watchers only click when their picture disappears" if enabled
-                           else "Nothing scheduled"))
-
-        v, sub = self.card_vals["active"]
-        v.configure(text=f"{len(enabled)} of {total}",
-                    style="CardWarn.TLabel" if paused else "CardValue.TLabel")
-        sub.configure(text="All jobs paused" if paused else
-                      (f"{len(enabled) - n_watch} scheduled · {n_watch} watching"
-                       + (f" · {n_jpaused} paused" if n_jpaused else "") if enabled
-                       else (f"{n_jpaused} paused" if n_jpaused else "none running")))
-
-        v, sub = self.card_vals["today"]
-        v.configure(text=str(today), style="CardValue.TLabel")
-        sub.configure(text=f"{missed} missed" if missed else "no missed clicks")
-
+                today = missed = w_today = w_missed = 0
+            watchers = [dict(j) for j in enabled if is_watch(j)]
+        if view == "click":
+            today, missed = max(0, today - w_today), max(0, missed - w_missed)
         avail = screen_available()
+        caption = {"all": "Summary · all jobs", "click": "Summary · scheduled clicks",
+                   "watch": "Summary · screen watchers"}[view]
+        if self.cards_caption.cget("text") != caption:
+            self.cards_caption.configure(text=caption)
+
+        def card(key, title, value, sub, style="CardValue.TLabel"):
+            t = self.card_titles[key]
+            if t.cget("text") != title:
+                t.configure(text=title)
+            v, s_ = self.card_vals[key]
+            v.configure(text=value, style=style)
+            s_.configure(text=sub)
+
+        if view == "watch":
+            nxt = [(j["next_check"], j["name"]) for j in watchers if j.get("next_check")]
+            pend = [(j["pending_click_at"], j["name"]) for j in watchers
+                    if j.get("pending_click_at")]
+            if paused:
+                card("next", "NEXT CHECK", "—", "All jobs paused", "CardWarn.TLabel")
+            elif nxt:
+                t, name = min(nxt)
+                card("next", "NEXT CHECK", fmt_dur(max(0, t - now)),
+                     f"{name}" + (f" · CLICK in {fmt_dur(min(pend)[0] - now)} ({min(pend)[1]})"
+                                  if pend else ""),
+                     "CardWarn.TLabel" if pend else "CardValue.TLabel")
+            else:
+                card("next", "NEXT CHECK", "—", "No watcher running")
+            issues = [j for j in watchers if j.get("watch_state") == "unknown"
+                      and j.get("watch_note") != "outside active hours"]
+            seen = sum(1 for j in watchers if j.get("watch_state") == "seen")
+            gone = sum(1 for j in watchers if j.get("watch_state") == "missing")
+            if issues:
+                card("active", "WATCHERS", f"{len(issues)} can't watch",
+                     f"{issues[0]['name']}: {issues[0].get('watch_note')}"
+                     + (f" (+{len(issues) - 1} more)" if len(issues) > 1 else ""),
+                     "CardBad.TLabel")
+            else:
+                card("active", "WATCHERS",
+                     f"{len(watchers)} of {total} watching" if watchers else "none watching",
+                     f"picture seen: {seen} · not showing: {gone}"
+                     + (f" · {n_jpaused} paused" if n_jpaused else ""),
+                     "CardGood.TLabel" if watchers else "CardValue.TLabel")
+            card("today", "WATCHER CLICKS TODAY", str(w_today),
+                 f"{w_missed} failed" if w_missed else "no failed clicks",
+                 "CardBad.TLabel" if w_missed else "CardValue.TLabel")
+        else:
+            label = "NEXT CLICK"
+            if upcoming:
+                t, name, is_test = min(upcoming)
+                card("next", label, fmt_dur(t - now) if t > now else "now",
+                     f"{name}{' (test)' if is_test else ''} · {fmt_time(t)}")
+            else:
+                card("next", label, "—",
+                     "All paused" if paused and enabled else
+                     ("Watchers only click when their picture changes" if enabled
+                      else "Nothing scheduled"))
+            if view == "click":
+                waiting = [j for j in jobs if (j["id"], "scheduled") in self.wait_msgs]
+                card("active", "SCHEDULED CLICKS", f"{len(enabled)} of {total} running",
+                     (f"{len(waiting)} waiting: {self.wait_msgs.get((waiting[0]['id'], 'scheduled'))}"
+                      if waiting else "All paused" if paused else
+                      (f"{n_jpaused} paused" if n_jpaused else "none paused")),
+                     "CardWarn.TLabel" if waiting or paused else "CardValue.TLabel")
+                card("today", "CLICKS TODAY", str(today),
+                     f"{missed} missed" if missed else "no missed clicks",
+                     "CardBad.TLabel" if missed else "CardValue.TLabel")
+            else:
+                card("active", "ACTIVE JOBS", f"{len(enabled)} of {total}",
+                     "All jobs paused" if paused else
+                     (f"{len(enabled) - n_watch} scheduled · {n_watch} watching"
+                      + (f" · {n_jpaused} paused" if n_jpaused else "") if enabled
+                      else (f"{n_jpaused} paused" if n_jpaused else "none running")),
+                     "CardWarn.TLabel" if paused else "CardValue.TLabel")
+                card("today", "CLICKS TODAY", str(today),
+                     f"{missed} missed" if missed else "no missed clicks")
         x, y = get_cursor()
-        v, sub = self.card_vals["screen"]
-        v.configure(text="Available" if avail else "Locked",
-                    style="CardGood.TLabel" if avail else "CardBad.TLabel")
-        sub.configure(text=f"Idle {fmt_dur(idle_seconds())} · Mouse {x}, {y}" if avail
-                      else "Clicks will wait for the screen")
+        card("screen", "SCREEN", "Available" if avail else "Locked",
+             (f"Idle {fmt_dur(idle_seconds())} · Mouse {x}, {y}" if avail
+              else ("Watchers can't look while it's locked" if view == "watch"
+                    else "Clicks will wait for the screen")),
+             "CardGood.TLabel" if avail else "CardBad.TLabel")
 
     def ui_tick(self):
         added = False
@@ -7372,12 +7892,15 @@ class App:
             if len(self.act_lines) > MAX_UI_LOG_LINES * 2:
                 del self.act_lines[:MAX_UI_LOG_LINES]
             if self.activity_shows(item):
-                self.insert_activity(item)
+                self.insert_activity(item, top=self.activity_newest_first())
         if added:
             lines = int(self.logbox.index("end-1c").split(".")[0])
             if lines > MAX_UI_LOG_LINES:
-                self.logbox.delete("1.0", f"{lines - MAX_UI_LOG_LINES}.0")
-            self.logbox.see("end")
+                if self.activity_newest_first():
+                    self.logbox.delete(f"{MAX_UI_LOG_LINES + 1}.0", "end-1c")
+                else:
+                    self.logbox.delete("1.0", f"{lines - MAX_UI_LOG_LINES}.0")
+            self.logbox.see("1.0" if self.activity_newest_first() else "end")
             self.logbox.configure(state="disabled")
 
         now = time.time()
@@ -7462,6 +7985,23 @@ class App:
                 self.paned.sashpos(0, int(h * frac))
         except Exception:
             pass
+
+    def refresh_all(self):
+        """⟳ Refresh / F5 (4.5.6): every running watcher looks at the screen right away,
+        and the job list, its columns and the summary are rebuilt."""
+        now = time.time()
+        n = 0
+        with self.lock:
+            for j in self.jobs:
+                if is_watch(j) and j.get("enabled") and not j.get("paused"):
+                    j["next_check"] = now
+                    n += 1
+        self._auto_w = {}
+        self.refresh_tree(full=True)
+        self.apply_view(force=True)
+        self.update_buttons()
+        self.flash_status("Refreshed" + (f" - {n} watcher{'s' if n != 1 else ''} checking now"
+                                         if n else ""))
 
     def nudge_split(self, delta):
         """▲ / ▼ next to Activity (and Ctrl+Up / Ctrl+Down): give the job list or the
@@ -7552,18 +8092,28 @@ class App:
         fb = getattr(self, "act_filter", None)
         return ok and (fb is None or fb.matches(item[0], item[1]))
 
-    def insert_activity(self, item):
-        """One Activity line; places like (878, 243) become links (4.5.5)."""
+    def insert_activity(self, item, top=False):
+        """One Activity line; places like (878, 243) become links (4.5.5); lines about a
+        step of a job are marked with ↳ (4.5.6). top=True puts it first (newest first)."""
         ts, msg, tag = item[0], item[1], item[2]
         lb = self.logbox
-        lb.insert("end", ts + "  ", ("time",))
+        if top:
+            lb.mark_set("ins", "1.0")
+            lb.mark_gravity("ins", "right")
+            at = "ins"
+        else:
+            at = "end"
+        lb.insert(at, ts + "  ", ("time",))
+        if STEP_LINE_RE.search(msg):
+            lb.insert(at, "↳ ", ("step",))
+            tag = tuple(tag) + ("step",) if not tag else tuple(tag)
         pos = 0
         for m in LOC_RE.finditer(msg):
             if m.start() > pos:
-                lb.insert("end", msg[pos:m.start()], tag)
-            lb.insert("end", m.group(0), tuple(tag) + ("loc",))
+                lb.insert(at, msg[pos:m.start()], tag)
+            lb.insert(at, m.group(0), tuple(tag) + ("loc",))
             pos = m.end()
-        lb.insert("end", msg[pos:] + "\n", tag)
+        lb.insert(at, msg[pos:] + "\n", tag)
 
     def activity_line_at(self, x, y):
         idx = self.logbox.index(f"@{x},{y}")
@@ -7633,9 +8183,15 @@ class App:
         m.add_command(label="Filter…\tCtrl+F", command=self.act_filter.focus)
         if self.act_filter.query():
             m.add_command(label="Clear the filter", command=self.act_filter.clear)
+        m.add_command(label="⟳ Refresh", command=self.refresh_activity)
+        m.add_command(label="Show oldest first" if self.activity_newest_first() else
+                      "Show newest first", command=self.toggle_activity_order)
         m.add_command(label="Save what's shown as a text file…", command=self.save_activity)
         m.add_command(label="Open the log file", command=self.open_log)
-        m.add_command(label="Clear view", command=self.clear_activity)
+        m.add_command(label="Clear view (hide what's shown, for now)",
+                      command=self.clear_activity)
+        m.add_command(label="Delete the log file (for good)…",
+                      command=self.delete_activity_log)
         self.theme_menu(m)
         lb.mark_set("insert", idx)
         m.tk_popup(e.x_root, e.y_root)
@@ -7686,11 +8242,75 @@ class App:
     def render_activity(self):
         self.logbox.configure(state="normal")
         self.logbox.delete("1.0", "end")
-        for item in self.act_lines:
+        newest = self.activity_newest_first()
+        for item in (reversed(self.act_lines) if newest else self.act_lines):
             if self.activity_shows(item):
                 self.insert_activity(item)
-        self.logbox.see("end")
+        self.logbox.see("1.0" if newest else "end")
         self.logbox.configure(state="disabled")
+
+    def activity_newest_first(self):
+        return (self.settings.get("log_order") or {}).get("activity") == "new"
+
+    def set_activity_order_text(self):
+        btn = getattr(self, "act_order_btn", None)
+        if btn is not None:
+            btn.configure(text="↓ Newest first" if self.activity_newest_first()
+                          else "↑ Oldest first")
+
+    def toggle_activity_order(self):
+        orders = dict(self.settings.get("log_order") or {})
+        orders["activity"] = "old" if self.activity_newest_first() else "new"
+        self.settings["log_order"] = orders
+        self.save()
+        self.set_activity_order_text()
+        self.render_activity()
+
+    def refresh_activity(self):
+        """Read Activity again from the log file (this run and earlier ones)."""
+        since = str(self.settings.get("activity_cleared_at") or "")
+        hide = getattr(self, "act_hidden_before", "")
+        items = []
+        for ts, msg in read_log_tail(MAX_UI_LOG_LINES):
+            if (since and ts <= since) or (hide and ts <= hide):
+                continue
+            tag, is_click, is_problem = self.classify(msg)
+            items.append((ts, msg, tag, is_click, is_problem))
+        self.act_lines = items
+        self.render_activity()
+        self.flash_status("Activity refreshed")
+
+    def delete_activity_log(self, confirm=True):
+        """Delete the log file (and its older copies) for good, and empty Activity."""
+        if confirm and not messagebox.askyesno(APP_NAME, "Delete the log file for good?\n\nActivity and "
+                                             "every line in the log file (and its older "
+                                             "copies) are removed. This can't be undone.",
+                                   parent=self.root):
+            return
+        try:
+            for h in list(self.logger.handlers):
+                try:
+                    h.acquire()
+                    if getattr(h, "stream", None):
+                        h.stream.seek(0)
+                        h.stream.truncate()
+                finally:
+                    h.release()
+            for k in (1, 2, 3):
+                pth = f"{LOG_PATH}.{k}"
+                if os.path.exists(pth):
+                    os.remove(pth)
+            if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH):
+                with open(LOG_PATH, "w", encoding="utf-8"):
+                    pass
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Couldn't delete the log file:\n{e}",
+                                 parent=self.root)
+            return
+        self.act_lines = []
+        self.act_hidden_before = ""
+        self.render_activity()
+        self.log("Log file deleted (by you)")
 
     def cancel_wtest(self, job):
         with self.lock:
@@ -7759,11 +8379,12 @@ class App:
         self._auto_w = {}
         self.refresh_tree(full=True)
         self.update_buttons()
+        self.update_cards(time.time())
 
     def clear_activity(self):
-        # remembered, so earlier lines don't come back at the next start (4.5.5)
-        self.settings["activity_cleared_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.save()
+        """Empty the Activity view for now (4.5.6: nothing is deleted; ⟳ Refresh and the next
+        start bring the lines back; Delete log… removes them for good)."""
+        self.act_hidden_before = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.act_lines = []
         self.logbox.configure(state="normal")
         self.logbox.delete("1.0", "end")
@@ -7779,7 +8400,7 @@ class App:
             messagebox.showerror(APP_NAME, str(e), parent=self.root)
 
     def _job_for_iid(self, iid):
-        jid = iid.split(":", 1)[1] if ":" in iid else iid
+        jid = iid.split(":")[1] if ":" in iid else iid
         with self.lock:
             return next((j for j in self.jobs if j["id"] == jid), None)
 
@@ -7815,6 +8436,26 @@ class App:
         for i in sel:
             self.toggle_check(i)
 
+    def toggle_steps(self, jid, show=None):
+        """Show or hide a job's steps as rows under it."""
+        show = (jid not in self.expanded) if show is None else show
+        if show:
+            self.expanded.add(jid)
+        else:
+            self.expanded.discard(jid)
+        self.refresh_tree()
+        self.apply_view(force=True)
+
+    def row_tip_text(self, x, y):
+        """Hover text for a job-list row: everything about how the job is doing (4.5.6)."""
+        iid = self.tree.identify_row(y)
+        if not iid:
+            return ""
+        job = self._job_for_iid(iid)
+        if not job:
+            return ""
+        return job_health(self, job, iid)
+
     def on_tree_click(self, event):
         """A click in the tick-box column ticks or unticks that job (or all, on the heading)."""
         try:
@@ -7831,6 +8472,19 @@ class App:
                 self.refresh_tree()
                 self.update_buttons()
             return "break"
+        iid0 = self.tree.identify_row(event.y)
+        if iid0 and ":" not in iid0 and region == "cell":
+            try:
+                cols = list(self.tree["displaycolumns"])
+                cname = cols[int(col.lstrip("#")) - 1]
+            except Exception:
+                cname = ""
+            if cname == "name":
+                bx = self.tree.bbox(iid0, "name")
+                job = self._job_for_iid(iid0)
+                if bx and job and job.get("steps") and event.x - bx[0] < 28:
+                    self.toggle_steps(iid0)
+                    return "break"
         if col != "#1" or region not in ("cell", "tree"):
             return None
         iid = self.tree.identify_row(event.y)
@@ -8089,6 +8743,12 @@ class App:
         job = self._job_for_iid(iid)
         if not job:
             return
+        if job.get("steps") and not iid.startswith(("test:", "wtest:")):
+            jid = job["id"]
+            m.add_command(label="Hide its steps" if jid in self.expanded else
+                          f"Show its {len(job['steps'])} steps",
+                          command=lambda: self.toggle_steps(jid))
+            m.add_separator()
         if iid.startswith("wtest:"):
             m.add_command(label="Change test time…",
                           command=lambda: WatchTestDialog(self, job))
@@ -8154,7 +8814,7 @@ class App:
         icon = {"bad": "✖", "warn": "⚠", "running": "✓", "paused": "⏸"}
         items = []
         for iid, vals, state in rows:
-            if iid.startswith(("test:", "wtest:")) or state == "stopped":
+            if iid.startswith(("test:", "wtest:", "step:")) or state == "stopped":
                 continue
             status, name, _pos, _btn, _sched, nxt, cd, _count, last = vals
             word = status.split(maxsplit=1)[-1] if " " in status else status
@@ -8164,7 +8824,11 @@ class App:
                 at = f"next at {str(nxt)[-8:]}"          # clock time (menu: never goes stale)
             else:
                 detail = at = str(nxt) if nxt not in ("—", "") else ""
-            if state == "bad" and last and last != "—":
+                if watcher_note and str(cd).startswith("check in"):
+                    detail = f"{nxt} · next {cd}"        # live countdown to the next check
+            if status.startswith("⚡"):
+                detail = at = f"{nxt} · {cd}"            # "Picture gone · click in 4m 59s"
+            elif state == "bad" and last and last != "—":
                 detail = at = str(last)
             items.append((sev.get(state, 2), names.get(iid, name), word, detail, state, at))
         items.sort(key=lambda t: t[0])
@@ -8232,6 +8896,13 @@ class App:
         except Exception:
             return
         try:
+            badge = self.tray_badge(now) if self.settings.get("tray_colors", True) else None
+            if badge != getattr(self, "_tray_badge", "x"):
+                self._tray_badge = badge
+                self.tray.icon = self.make_icon(badge)
+        except Exception:
+            pass
+        try:
             if tip != getattr(self, "_tray_tip", None):
                 self._tray_tip = tip
                 self.tray.title = tip
@@ -8243,8 +8914,40 @@ class App:
         except Exception:
             pass
 
-    def make_icon(self):
-        return make_logo(64)
+    def make_icon(self, badge=None):
+        """The tray icon; `badge` adds a coloured dot (4.5.6): amber = a click is coming up,
+        green = clicking right now, red = a job has a problem."""
+        img = make_logo(64)
+        if badge and HAVE_PIL:
+            img = img.copy().convert("RGBA")
+            col = {"due": (245, 165, 36), "clicking": (34, 197, 94), "issue": (239, 68, 68)}[badge]
+            d = ImageDraw.Draw(img)
+            d.ellipse((34, 34, 63, 63), fill=(255, 255, 255, 255))
+            d.ellipse((38, 38, 59, 59), fill=col + (255,))
+        return img
+
+    def tray_badge(self, now=None):
+        """Which colour the tray icon shows: "clicking" while a job is using the mouse,
+        "due" while a click is counting down (a watcher's delay, or a scheduled click less
+        than TRAY_DUE_S away), "issue" when a job has a problem, else None."""
+        now = now or time.time()
+        aq = getattr(self, "aq", None)
+        if aq is not None and getattr(aq, "running", None):
+            return "clicking"
+        with self.lock:
+            paused = self.settings.get("paused")
+            jobs = [j for j in self.jobs if j.get("enabled") and not j.get("paused")]
+            due = not paused and any(
+                (j.get("pending_click_at") and j["pending_click_at"] - now < 3600) or
+                (not is_watch(j) and j.get("next_run") and 0 <= j["next_run"] - now <= TRAY_DUE_S)
+                for j in jobs)
+            issue = any(j.get("watch_state") == "unknown" and
+                        j.get("watch_note") != "outside active hours" for j in jobs if is_watch(j)) \
+                or any(k[0] == j["id"] for k in self.wait_msgs for j in jobs) \
+                or any(str(j.get("last_result", "")).startswith(("Missed", "Click FAILED",
+                                                                  "Test FAILED"))
+                       for j in jobs)
+        return "due" if due else "issue" if issue else None
 
     def start_tray(self):
         if not HAVE_TRAY:
@@ -8543,11 +9246,15 @@ class App:
         self.root.destroy()
 
     # ------------------------------------------------------------ job actions
-    def bump_stats(self, key):
+    def bump_stats(self, key, watch=False):
+        """Count today's clicks / missed clicks (all jobs, and watchers separately, 4.5.6)."""
         today = datetime.now().strftime("%Y-%m-%d")
         if self.settings.get("stats_date") != today:
-            self.settings.update(stats_date=today, stats_clicks=0, stats_missed=0)
+            self.settings.update(stats_date=today, stats_clicks=0, stats_missed=0,
+                                 stats_clicks_watch=0, stats_missed_watch=0)
         self.settings[key] = int(self.settings.get(key, 0)) + 1
+        if watch:
+            self.settings[key + "_watch"] = int(self.settings.get(key + "_watch", 0)) + 1
 
     def selected_job(self):
         """The selected job (a test row counts as its job)."""
@@ -8560,7 +9267,7 @@ class App:
 
     def selected_is_test(self):
         sel = self.tree.selection()
-        return bool(sel) and ":" in sel[0]
+        return bool(sel) and sel[0].startswith(("test:", "wtest:"))
 
     def add_job(self):
         with self.lock:
@@ -8734,7 +9441,8 @@ class App:
             n = sum(1 for j in self.jobs if j.get("name", "").startswith("Recorded macro")) + 1
         job = new_job(n)
         job.update(name=self._rec_name or f"Recorded macro {n}", main_click=False, steps=steps,
-                   use_image=False, interval_s=8 * 3600)
+                   use_image=False, interval_s=8 * 3600,
+                   human_move=True if self.settings.get("rec_human") else None)
         self.log(f"Recorded {len(steps)} steps. Check them, then save the job.")
         self.show_window()
         JobEditor(self, job, is_new=True, start_on=False)
@@ -8808,6 +9516,7 @@ class App:
         m.add_command(label="Preferences…", accelerator="Ctrl+,", command=self.open_settings)
         m.add_command(label="Open data folder", command=self.open_data_folder)
         m.add_command(label="Open log file", command=self.open_log)
+        m.add_command(label="Delete logs and history…", command=lambda: DeleteLogsDialog(self))
         m.add_separator()
         m.add_command(label="Complete guide (online)", command=self.open_guide)
         m.add_command(label="Help & shortcuts", command=lambda: HelpDialog(self))
@@ -9312,7 +10021,10 @@ class App:
             n_found = sum(1 for m in every if m[6])
             part = watch_partial(job)
             best = (f"best: {score:.0%} of it matches, {part:.0%} needed" if part
-                    else f"best {score:.0%}") + (f"; {wnote}" if wnote else "")
+                    else f"best {score:.0%}") + (f", closest place at ({x}, {y})"
+                                                 if (x or y) else "") + \
+                (f"; {wnote}" if wnote else "") + \
+                (f"; {watch_area_note(job)}" if job.get("watch_area") else "")
             if not found:
                 self.log(f"[{job['name']}] check: watched picture NOT on screen ({best})")
                 appears = job.get("watch_trigger") == "appears"
@@ -9404,13 +10116,18 @@ class App:
             o.overrideredirect(True)
             o.attributes("-topmost", True)
             lh = 18
-            W, H = max(bw, 70) + 4, bh + lh + 4
+            # the label is as wide as its text, even over a tiny picture (4.5.6: it was cut off)
+            try:
+                tw_ = tkfont.Font(family=self.font_family, size=8, weight="bold").measure(note)
+            except Exception:
+                tw_ = 7 * len(note)
+            W, H = max(bw + 4, tw_ + 14), bh + lh + 4
             oc = tk.Canvas(o, width=W, height=H, bg=key, highlightthickness=0)
             oc.pack()
             if IS_WIN:
                 o.attributes("-transparentcolor", key)
             oc.create_rectangle(1, lh + 1, bw + 2, lh + bh + 2, outline=color, width=2)
-            oc.create_rectangle(1, 0, min(W - 1, 8 + 7 * len(note)), lh, fill=color, outline="")
+            oc.create_rectangle(1, 0, min(W - 1, tw_ + 12), lh, fill=color, outline="")
             oc.create_text(5, lh // 2, text=note, anchor="w", fill="#111827",
                            font=(self.font_family, 8, "bold"))
             o.geometry(f"{W}x{H}+{bx - 2}+{by - lh - 2}")
@@ -9790,6 +10507,62 @@ def spin_unit(parent, var, lo, hi, unit, width=5, command=None, lead=0, incremen
     return sp, ul
 
 
+LOG_LEVELS = ("quiet", "normal", "detailed")
+
+
+def log_wanted(setting, level, msg):
+    """Should a log line of this level be written with the chosen log level? (4.5.6)"""
+    if level == "important":
+        return True
+    if level == "detail":
+        return setting == "detailed"
+    if setting != "quiet":
+        return True
+    m = msg.upper()
+    return any(w in m for w in ("FAILED", "MISSED", "CAN'T", "COULDN'T", "NOT ", "ERROR",
+                                "PROBLEM", " - OK", "CLICKED", "GONE", "APPEARED", "WAITING",
+                                "STARTED", "STOPPED", "PAUSED", "RESUMED", "WARNING"))
+
+
+ISSUE_HINTS = (    # (words in the message, what to do) - shown in logs and tooltips (4.5.6)
+    ("screen locked", "Windows blocks screenshots and clicks while the screen is locked or a "
+                      "remote session is disconnected. Unlock it; when leaving a remote "
+                      "session, hand it to the console instead of disconnecting."),
+    ("using the mouse", "Clickue waits until the mouse and keyboard have been idle for the time "
+                        "set in Preferences → Clicking."),
+    ("Clickue window open", "A missing picture isn't counted while a Clickue window is open on "
+                            "screen (it could be covering it). Minimize Clickue or send it to "
+                            "the tray."),
+    ("covering the spot", "Minimize Clickue or move its window away from the spot."),
+    ("mouse pointer", "Move the mouse away from the watched picture (hovering can change how "
+                      "it looks)."),
+    ("no picture saved", "Edit the watcher and click Draw box around picture."),
+    ("not installed", "Run Start Clickue.bat (or pip install -r requirements.txt)."),
+    ("screen size or scaling", "The screen changed (e.g. switching between a remote session "
+                               "and the console). Clickue waits a few seconds before counting "
+                               "checks again."),
+    ("on screen", "The same picture is on screen several times. Re-pick with a Large picture, "
+                  "or use Inside a window."),
+    ("exact picture", "Run Show spot to see what Clickue finds. Is the spot visible (not scrolled "
+                      "away, covered or minimized)? If the page looks different now, pick the "
+                      "spot again."),
+    ("saved picture", "Run Show spot. Is the spot visible? Pick it again if the page changed."),
+    ("search area", "Draw the search area again on this screen, or search the whole screen."),
+    ("couldn't look", "Clickue couldn't take a screenshot; see the message. If it repeats, "
+                      "restart Clickue."),
+    ("window", "Is the window open and not minimized?"),
+)
+
+
+def issue_hint(msg):
+    """What to do about a problem message (or "" if there's no advice)."""
+    m = (msg or "").lower()
+    for words, hint in ISSUE_HINTS:
+        if words.lower() in m:
+            return hint
+    return ""
+
+
 def read_log_tail(n):
     """The last n lines of the log file (and its previous file) as [(time, message)];
     continuation lines are joined to their message."""
@@ -9808,7 +10581,79 @@ def read_log_tail(n):
 
 
 # ---- 4.5.5: tools for every log table (copy, filter, show on screen, side scrolling)
+STEP_LINE_RE = re.compile(r"\bstep \d+\b|\bsteps?\b.*\b(ran|failed|done)\b", re.I)
 LOC_RE = re.compile(r"\((-?\d{1,6}), (-?\d{1,6})\)")
+
+
+class HoverTip:
+    """A tooltip that follows rows of a table (4.5.6): text_for(x, y) returns the text for
+    what's under the pointer (or "" for nothing). Shows after a short pause, updates while
+    the pointer rests on the same row, hides on leave, click or scroll."""
+
+    def __init__(self, app, widget, text_for, delay=450):
+        self.app, self.w, self.text_for, self.delay = app, widget, text_for, delay
+        self.tip = None
+        self.job = None
+        self.key = None
+        self.pos = (0, 0)
+        widget.bind("<Motion>", self.motion, add="+")
+        widget.bind("<Leave>", lambda e: self.hide(), add="+")
+        widget.bind("<ButtonPress>", lambda e: self.hide(), add="+")
+        widget.bind("<MouseWheel>", lambda e: self.hide(), add="+")
+
+    def motion(self, e):
+        self.pos = (e.x, e.y, e.x_root, e.y_root)
+        key = self.w.identify_row(e.y) if hasattr(self.w, "identify_row") else None
+        if key != self.key:
+            self.key = key
+            self.hide()
+            if self.job:
+                self.w.after_cancel(self.job)
+            self.job = self.w.after(self.delay, self.show) if key else None
+
+    def show(self, refresh=False):
+        self.job = None
+        x, y, xr, yr = self.pos
+        try:
+            text = self.text_for(x, y)
+        except Exception:
+            text = ""
+        if not text:
+            self.hide()
+            return
+        p = self.app.pal
+        if self.tip is None:
+            t = tk.Toplevel(self.w)
+            t.overrideredirect(True)
+            t.attributes("-topmost", True)
+            self.lbl = tk.Label(t, justify="left", anchor="w", bg=p["panel"], fg=p["fg"],
+                                bd=1, relief="solid", padx=10, pady=7, wraplength=520,
+                                font=(self.app.font_family, 9),
+                                highlightbackground=p["border"])
+            self.lbl.pack()
+            self.tip = t
+        self.lbl.configure(text=text)
+        if not refresh:
+            sw = self.w.winfo_screenwidth()
+            self.tip.update_idletasks()
+            tw = self.tip.winfo_reqwidth()
+            self.tip.geometry(f"+{min(xr + 16, max(0, sw - tw - 8))}+{yr + 20}")
+        # live while the pointer stays on the row (countdowns)
+        self.job = self.w.after(1000, lambda: self.show(refresh=True))
+
+    def hide(self):
+        if self.job:
+            try:
+                self.w.after_cancel(self.job)
+            except Exception:
+                pass
+            self.job = None
+        if self.tip is not None:
+            try:
+                self.tip.destroy()
+            except Exception:
+                pass
+            self.tip = None
 
 
 class FilterBox(ttk.Frame):
@@ -9863,8 +10708,14 @@ class LogGrid:
     table a horizontal scrollbar that appears when its text is wider than the window."""
 
     def __init__(self, app, tree, frame=None, owner=None, job_of=None, extra=None,
-                 locate=True, fit_col=None, filterbox=None, name="log"):
+                 locate=True, fit_col=None, filterbox=None, name="log", natural="new",
+                 refresh=None, delete=None, delete_label="Delete…"):
         self.app, self.tree, self.owner = app, tree, owner
+        self.natural = natural            # the order fill() produces: "new" or "old" first
+        self.refresh = refresh
+        self.delete = delete
+        self.delete_label = delete_label
+        self.order_btn = None
         self.job_of = job_of or (lambda iid: None)
         self.extra = extra
         self.locate = locate
@@ -9890,6 +10741,77 @@ class LogGrid:
             self.hsb = None
         if fit_col:
             tree.bind("<Configure>", lambda e: tree.after_idle(self.fit), add="+")
+
+    # ---- order, clear view, refresh (4.5.6)
+    def order(self):
+        o = (self.app.settings.get("log_order") or {}).get(self.name)
+        return o if o in ("new", "old") else self.natural
+
+    def toggle_order(self):
+        orders = dict(self.app.settings.get("log_order") or {})
+        orders[self.name] = "old" if self.order() == "new" else "new"
+        self.app.settings["log_order"] = orders
+        self.app.save()
+        self.done_filling(refilled=False)
+
+    def hidden(self):
+        return self.app.__dict__.setdefault("log_hidden", {}).setdefault(self.name, set())
+
+    def row_key(self, iid):
+        return tuple(str(v) for v in self.tree.item(iid, "values"))
+
+    def clear_view(self):
+        """Hide everything shown now, for this session only (nothing is deleted)."""
+        h = self.hidden()
+        for iid in self.tree.get_children():
+            h.add(self.row_key(iid))
+        self.done_filling(refilled=False)
+        self.app.flash_status("View cleared (nothing deleted; Show all again brings it back)")
+
+    def show_all_again(self):
+        self.hidden().clear()
+        if self.refresh:
+            self.refresh()
+
+    def done_filling(self, refilled=True):
+        """Call after (re)filling the table: hides rows cleared from view, puts the rows in
+        the chosen order, sizes the long column."""
+        t = self.tree
+        h = self.hidden()
+        if h:
+            for iid in t.get_children():
+                if self.row_key(iid) in h:
+                    t.delete(iid)
+        if refilled:
+            self._rev = False
+        want_rev = self.order() != self.natural
+        if want_rev != getattr(self, "_rev", False):
+            for k, iid in enumerate(reversed(t.get_children())):
+                t.move(iid, "", k)
+            self._rev = want_rev
+        if self.order_btn is not None:
+            self.order_btn.configure(text="↓ Newest first" if self.order() == "new"
+                                     else "↑ Oldest first")
+        self.fit()
+
+    def toolbar(self, parent, side="right"):
+        """Small buttons: ⟳ Refresh, order, Clear view, Delete… (as far as this log has them)."""
+        box = ttk.Frame(parent)
+        if self.delete:
+            ttk.Button(box, text=self.delete_label, style="Small.TButton",
+                       command=self.delete).pack(side="right", padx=(4, 0))
+        ttk.Button(box, text="Clear view", style="Small.TButton",
+                   command=self.clear_view).pack(side="right", padx=(4, 0))
+        self.order_btn = ttk.Button(box, text="", style="Small.TButton",
+                                    command=self.toggle_order)
+        self.order_btn.pack(side="right", padx=(4, 0))
+        if self.refresh:
+            ttk.Button(box, text="⟳ Refresh", style="Small.TButton",
+                       command=self.refresh).pack(side="right", padx=(4, 0))
+        self.order_btn.configure(text="↓ Newest first" if self.order() == "new"
+                                 else "↑ Oldest first")
+        box.pack(side=side)
+        return box
 
     # ---- side scrolling
     def _xset(self, first, last):
@@ -10028,6 +10950,16 @@ class LogGrid:
                 for label, cmd in items:
                     m.add_command(label=label, command=cmd)
         m.add_separator()
+        if self.refresh:
+            m.add_command(label="⟳ Refresh", command=self.refresh)
+        m.add_command(label="Show oldest first" if self.order() == "new" else
+                      "Show newest first", command=self.toggle_order)
+        m.add_command(label="Clear view (hide what's shown, for now)", command=self.clear_view)
+        if self.hidden():
+            m.add_command(label="Show all again", command=self.show_all_again)
+        if self.delete:
+            m.add_command(label=self.delete_label.replace("…", "") + " (for good)…",
+                          command=self.delete)
         if self.filterbox is not None:
             m.add_command(label="Filter…\tCtrl+F", command=self.filterbox.focus)
             if self.filterbox.query():
@@ -10406,6 +11338,19 @@ class BoxDrawer:
             self.cancel()
             return
         self.ov.after(80, self._esc_watch)
+
+
+HUMAN_CHOICES = (("default", "Mouse movement: as in Preferences"),
+                 ("human", "Move the mouse there like a person"),
+                 ("jump", "Jump straight to the spot"))
+
+
+def human_choice(v):
+    return "human" if v is True else "jump" if v is False else "default"
+
+
+def human_value(choice):
+    return True if choice == "human" else False if choice == "jump" else None
 
 
 class Dialog(tk.Toplevel):
@@ -10959,6 +11904,11 @@ class JobEditor(Dialog):
         self.v_clicks = tk.StringVar(value="double" if job["clicks"] == 2 else "single")
         ttk.Combobox(g2, values=("single", "double"), state="readonly", width=8,
                      textvariable=self.v_clicks).pack(side="left", padx=6)
+        # 4.5.6: move the mouse like a person (for this job's click and its click steps)
+        labels = dict(HUMAN_CHOICES)
+        self.v_human = tk.StringVar(value=labels[human_choice(job.get("human_move"))])
+        ttk.Combobox(g2, values=[t for _, t in HUMAN_CHOICES], state="readonly", width=36,
+                     textvariable=self.v_human).pack(side="left", padx=(6, 0))
 
         # ---------------- schedule (scheduled clicks only)
         g3 = ttk.LabelFrame(f, text="Schedule", padding=(12, 8))
@@ -11666,6 +12616,8 @@ class JobEditor(Dialog):
                 scale_with_screen=bool(self.v_scale_s.get()),
                 button=self.v_button.get(),
                 clicks=2 if self.v_clicks.get() == "double" else 1,
+                human_move=human_value({t: k for k, t in HUMAN_CHOICES}.get(
+                    self.v_human.get(), "default")),
                 interval_s=self.hms_value(self.interval),
                 delay_min_s=self.hms_value(self.dmin),
                 delay_max_s=self.hms_value(self.dmax),
@@ -12360,8 +13312,8 @@ class TestsWindow(tk.Toplevel):
             ttk.Radiobutton(hh, text=text, value=val, variable=self.v_hf,
                             style="Seg.TRadiobutton", command=self.hist_filter_changed).pack(
                 side="left", padx=(0, 2))
-        ttk.Button(hh, text="Clear", style="Small.TButton",
-                   command=lambda: app.clear_test_history(self)).pack(side="right")
+        self.hist_bar = ttk.Frame(hh)                  # filled in once the table exists
+        self.hist_bar.pack(side="right")
         self.hist_filter = FilterBox(hh, lambda: self.refresh(force=True), width=18)
         self.hist_filter.pack(side="right", padx=(0, 8))
 
@@ -12383,7 +13335,10 @@ class TestsWindow(tk.Toplevel):
         self.hist.pack(side="left", fill="both", expand=True)
         self.hist_tools = LogGrid(app, self.hist, frame=hf, owner=self, fit_col="result",
                                   job_of=self.hist_job, filterbox=self.hist_filter,
-                                  extra=self.hist_extra, name="tests")
+                                  extra=self.hist_extra, name="tests", natural="new",
+                                  refresh=lambda: self.refresh(force=True),
+                                  delete=self.delete_hist)
+        self.hist_tools.toolbar(self.hist_bar)
         self.hist.bind("<Double-1>", self.hist_double)
         self.hist.bind("<<TreeviewSelect>>", lambda e: self.show_detail())
         self.hist.bind("<Configure>", lambda e: self.flow_columns(e.width), add="+")
@@ -12668,7 +13623,7 @@ class TestsWindow(tk.Toplevel):
                 self.hist.insert("", "end", iid=str(i), values=(
                     when, e["job"], e["test"], f"{icon}  {word}", e["result"]),
                     tags=(e.get("level", "info"), "odd" if i % 2 else "even"))
-            self.hist_tools.fit()
+            self.hist_tools.done_filling()
             if rows:
                 self.hist_empty.place_forget()
             else:
@@ -12692,6 +13647,31 @@ class TestsWindow(tk.Toplevel):
                 lb.pack(side="top", anchor="w")
             else:
                 lb.pack(side="left", padx=(0, 14))
+
+    def delete_hist(self):
+        """Delete test results for good: the selected ones, or the whole history."""
+        sel = self.hist.selection()
+        app = self.app
+        if sel:
+            n = len(sel)
+            if not messagebox.askyesno(APP_NAME, f"Delete the {n} selected test result"
+                                                 f"{'s' if n != 1 else ''} for good?",
+                                       parent=self):
+                return
+            gone = {id(self.hist_rows[int(i)]) for i in sel if i.isdigit()
+                    and int(i) < len(self.hist_rows)}
+            with app.lock:
+                app.test_history = [e for e in app.test_history if id(e) not in gone]
+                app.tests_dirty = True
+                try:
+                    write_json(TESTS_PATH, app.test_history)
+                except Exception:
+                    pass
+            app.log(f"Deleted {n} test result{'s' if n != 1 else ''}")
+            self.refresh(force=True)
+        else:
+            app.clear_test_history(self)
+            self.refresh(force=True)
 
     def hist_job(self, iid):
         try:
@@ -12897,6 +13877,12 @@ class StepDialog(Dialog):
         self.v_clicks = tk.StringVar(value="double" if self.step.get("clicks") == 2 else "single")
         ttk.Combobox(r2, values=("single", "double"), state="readonly", width=8,
                      textvariable=self.v_clicks).pack(side="left", padx=6)
+        step_moves = (("default", "Mouse movement: as the job"),) + HUMAN_CHOICES[1:]
+        self._step_moves = step_moves
+        self.v_human = tk.StringVar(value=dict(step_moves)[human_choice(
+            self.step.get("human_move"))])
+        ttk.Combobox(r2, values=[t for _, t in step_moves], state="readonly", width=34,
+                     textvariable=self.v_human).pack(side="left", padx=(6, 0))
         ttk.Label(fr, text="How to find the spot").pack(anchor="w", pady=(8, 2))
         mode = ("picture" if self.step.get("use_image", True) and self.step.get("snap_png")
                 else "window" if self.step.get("target_mode") == "window" else "screen")
@@ -13557,6 +14543,8 @@ class StepDialog(Dialog):
                 mode = self.v_find.get()
                 st.update(x=int(self.v_x.get()), y=int(self.v_y.get()), button=self.v_btn.get(),
                           clicks=2 if self.v_clicks.get() == "double" else 1,
+                          human_move=human_value({t: k for k, t in self._step_moves}.get(
+                              self.v_human.get(), "default")),
                           use_image=mode == "picture" and bool(self.step.get("snap_png")),
                           snap_png=self.step.get("snap_png", ""),
                           snap_spot=self.step.get("snap_spot"),
@@ -13735,7 +14723,7 @@ class DryRunDialog(Dialog):
         self.lines = []
         self.tools = LogGrid(app, tr, frame=tf, owner=self, fit_col="result",
                              job_of=lambda iid: job.get("name"), filterbox=self.dr_filter,
-                             name="dry-run")
+                             name="dry-run", natural="old")
         self.status = ttk.Label(f, style="Muted.TLabel", text="Checking the screen…")
         self.status.pack(anchor="w", pady=(6, 0))
         ttk.Button(self.footer, text="Close", command=self.destroy).pack(side="right")
@@ -13766,7 +14754,7 @@ class DryRunDialog(Dialog):
         for n, w, r in self.lines:
             if self.dr_filter.matches(n, w, r):
                 self.tree.insert("", "end", values=(n, w, r))
-        self.tools.fit()
+        self.tools.done_filling()
 
 
 class StepDebugger:
@@ -13982,6 +14970,10 @@ class RecordDialog(Dialog):
         self.v_pause = tk.BooleanVar(value=True)
         ttk.Checkbutton(f, variable=self.v_pause, text=(
             "Pause my other jobs while I record")).pack(anchor="w", pady=(2, 0))
+        self.v_human = tk.BooleanVar(value=bool(s.get("rec_human", False)))
+        ttk.Checkbutton(f, variable=self.v_human, text=(
+            "When it plays, move the mouse to each click like a person (instead of jumping "
+            "there)")).pack(anchor="w", pady=(2, 0))
         ttk.Label(f, style="Warn.TLabel", wraplength=560, justify="left", text=(
             "Everything you type is recorded, including passwords. Don't type secrets while "
             "recording (add them afterwards as a Secret paste step). The recording stays on "
@@ -13998,7 +14990,7 @@ class RecordDialog(Dialog):
     def start(self):
         s = self.app.settings
         s.update(rec_moves=bool(self.v_moves.get()), rec_pictures=bool(self.v_pics.get()),
-                 rec_timing=bool(self.v_timing.get()))
+                 rec_timing=bool(self.v_timing.get()), rec_human=bool(self.v_human.get()))
         self.app.save()
         opts = dict(moves=bool(self.v_moves.get()), pictures=bool(self.v_pics.get()),
                     timing=bool(self.v_timing.get()))
@@ -14237,7 +15229,9 @@ class RunHistoryDialog(Dialog):
         self.runs.pack(fill="both", expand=True)
         self.run_tools = LogGrid(app, self.runs, frame=tf, owner=self, fit_col="result",
                                  job_of=lambda iid: self.runs.set(iid, "job"),
-                                 name="run-history")
+                                 name="run-history", natural="new", refresh=self.reload,
+                                 delete=self.delete_runs)
+        self.run_tools.toolbar(top)
         self.runs.bind("<<TreeviewSelect>>", lambda e: self.show_run())
         ttk.Label(f, text="Steps of the selected run", style="Section.TLabel").pack(
             anchor="w", pady=(10, 2))
@@ -14253,6 +15247,7 @@ class RunHistoryDialog(Dialog):
             self.acts.column(c, width=w, minwidth=40, stretch=stv, anchor="w")
         self.acts.pack(fill="both", expand=True)
         self.act_tools = LogGrid(app, self.acts, frame=tf2, owner=self, fit_col="result",
+                                 natural="old", refresh=self.show_run,
                                  job_of=lambda iid: (self.runs.set(self.runs.selection()[0], "job")
                                                      if self.runs.selection() else None),
                                  extra=lambda iid: [("▶  Play video from this step", self.play)],
@@ -14294,7 +15289,7 @@ class RunHistoryDialog(Dialog):
             self.runs.insert("", "end", iid=rid, values=(
                 rows[0].get("time", ""), rows[0].get("job", ""),
                 fmt_secs(end.get("elapsed", 0)) if end else "", result, "yes" if video else ""))
-        self.run_tools.fit()
+        self.run_tools.done_filling()
 
     def show_run(self):
         sel = self.runs.selection()
@@ -14310,7 +15305,29 @@ class RunHistoryDialog(Dialog):
             self.acts.insert("", "end", iid=str(k), values=(
                 fmt_secs(r.get("elapsed", 0)), pos, r.get("step", ""), r.get("action", ""),
                 r.get("result", "")))
-        self.act_tools.fit()
+        self.act_tools.done_filling()
+
+    def reload(self):
+        self.rows = read_runlog()
+        self.fill()
+        self.show_run()
+
+    def delete_runs(self):
+        """Delete run history for good: the selected runs, or all of it."""
+        sel = [i for i in self.runs.selection()]
+        q = (f"Delete the {len(sel)} selected run{'s' if len(sel) != 1 else ''} from the run "
+             f"history for good? (Their videos are kept.)" if sel else
+             "Delete the whole run history for good? (Videos are kept; ☰ Menu → Run history "
+             "& videos → Open video folder to remove them.)")
+        if not messagebox.askyesno(APP_NAME, q, parent=self):
+            return
+        try:
+            n = rewrite_runlog((lambda r: r.get("run") not in sel) if sel else (lambda r: False))
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Couldn't delete:\n{e}", parent=self)
+            return
+        self.app.log(f"Deleted {n} run history line{'s' if n != 1 else ''}")
+        self.reload()
 
     def video_path(self, rows):
         name = next((r.get("video") for r in rows if r.get("video")), "")
@@ -14550,7 +15567,9 @@ class StatsDialog(Dialog):
         self.tree = tr
         self.tools = LogGrid(app, tr, frame=tf, owner=self, fit_col="detail",
                              job_of=lambda iid: job["name"], filterbox=self.st_filter,
-                             name="click-history")
+                             name="click-history", natural="new", refresh=self.reload,
+                             delete=self.delete_rows)
+        self.tools.toolbar(hr)
         tr.bind("<Double-1>", lambda e: self.show(e))
         self.mine = [r for r in rows if r.get("job") == job["name"]][-200:]
         self.fill()
@@ -14564,13 +15583,42 @@ class StatsDialog(Dialog):
     def fill(self):
         tr = self.tree
         tr.delete(*tr.get_children())
+        self.row_of = {}
         for r in reversed(self.mine):
             det = r.get("detail") or (f"({r.get('x')}, {r.get('y')}) {r.get('how', '')}"
                                       if r.get("x") else "")
             vals = (r["time"], r.get("kind", ""), r.get("result", ""), det)
             if self.st_filter.matches(*vals):
-                tr.insert("", "end", values=vals)
-        self.tools.fit()
+                self.row_of[tr.insert("", "end", values=vals)] = r
+        self.tools.done_filling()
+
+    def reload(self):
+        self.mine = [r for r in read_history() if r.get("job") == self.job["name"]][-200:]
+        self.fill()
+
+    def delete_rows(self):
+        """Delete click history for good: the selected rows, or all of this job's rows."""
+        sel = [self.row_of[i] for i in self.tree.selection() if i in self.row_of]
+        name = self.job["name"]
+        if sel:
+            q = f"Delete the {len(sel)} selected history row{'s' if len(sel) != 1 else ''} for good?"
+        else:
+            q = f"Delete the whole click history of \u201c{name}\u201d for good?"
+        if not messagebox.askyesno(APP_NAME, q, parent=self):
+            return
+        keys = {(r.get("time"), r.get("kind"), r.get("result"), r.get("x"), r.get("y"))
+                for r in sel}
+        try:
+            n = rewrite_history(
+                (lambda r: not (r.get("job") == name and (r.get("time"), r.get("kind"),
+                                                          r.get("result"), r.get("x"),
+                                                          r.get("y")) in keys))
+                if sel else (lambda r: r.get("job") != name))
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Couldn't delete:\n{e}", parent=self)
+            return
+        self.app.log(f"[{name}] deleted {n} click history row{'s' if n != 1 else ''}")
+        self.reload()
 
     def show(self, e):
         iid = self.tree.identify_row(e.y)
@@ -14578,6 +15626,319 @@ class StatsDialog(Dialog):
             text = " ".join(str(v) for v in self.tree.item(iid, "values"))
             if LOC_RE.search(text):
                 self.app.show_places(text, parent=self, job_name=self.job["name"])
+
+
+class ColorPicker(Dialog):
+    """A colour wheel (hue around, saturation outwards), a brightness slider, the colour
+    code and R/G/B. on_pick("#rrggbb") when OK is clicked."""
+    SIZE = 220
+
+    def __init__(self, app, parent, color, on_pick, title="Pick a colour"):
+        super().__init__(app, title, parent)
+        self.on_pick = on_pick
+        self.old = color
+        import colorsys
+        self.colorsys = colorsys
+        r, g, b = hex_to_rgb(color)
+        h, sat, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+        self.h, self.s_, self.v = h, sat, v
+        f = self.body
+        top = ttk.Frame(f)
+        top.pack()
+        self.cv = tk.Canvas(top, width=self.SIZE, height=self.SIZE, highlightthickness=0,
+                            bg=app.pal["bg"], cursor="crosshair")
+        self.cv.pack(side="left")
+        self.wheel_img = None
+        self.wheel_item = self.cv.create_image(0, 0, anchor="nw")
+        self.dot = self.cv.create_oval(0, 0, 0, 0, outline="#ffffff", width=2)
+        self.cv.bind("<Button-1>", self.wheel_at)
+        self.cv.bind("<B1-Motion>", self.wheel_at)
+        right = ttk.Frame(top, padding=(14, 0, 0, 0))
+        right.pack(side="left", fill="y")
+        ttk.Label(right, text="Brightness").pack(anchor="w")
+        self.v_bright = tk.DoubleVar(value=v * 100)
+        ttk.Scale(right, from_=100, to=0, orient="vertical", length=150, variable=self.v_bright,
+                  command=lambda e: self.bright_changed()).pack(anchor="w", pady=(2, 8))
+        self.swatch = tk.Canvas(right, width=90, height=44, highlightthickness=1,
+                                highlightbackground=app.pal["border"])
+        self.swatch.pack(anchor="w")
+        self.sw_old = self.swatch.create_rectangle(0, 0, 45, 44, outline="", fill=color)
+        self.sw_new = self.swatch.create_rectangle(45, 0, 90, 44, outline="", fill=color)
+        ttk.Label(right, text="was · new", style="Muted.TLabel").pack(anchor="w")
+        row = ttk.Frame(f)
+        row.pack(anchor="w", pady=(10, 0))
+        ttk.Label(row, text="Code").pack(side="left")
+        self.v_hex = tk.StringVar(value=color)
+        e = ttk.Entry(row, textvariable=self.v_hex, width=9)
+        e.pack(side="left", padx=(6, 12))
+        e.bind("<KeyRelease>", lambda ev: self.hex_changed())
+        self.v_rgb = []
+        for lbl_, val in zip("RGB", (r, g, b)):
+            ttk.Label(row, text=lbl_).pack(side="left")
+            v_ = tk.IntVar(value=val)
+            sp = ttk.Spinbox(row, from_=0, to=255, width=4, textvariable=v_,
+                             command=self.rgb_changed)
+            sp.pack(side="left", padx=(UNIT_GAP, 10))
+            sp.bind("<KeyRelease>", lambda ev: self.rgb_changed())
+            self.v_rgb.append(v_)
+        ttk.Button(self.footer, text="OK", style="Accent.TButton", command=self.ok).pack(
+            side="right")
+        ttk.Button(self.footer, text="Cancel", command=self.destroy).pack(side="right",
+                                                                          padx=(0, 6))
+        self.draw_wheel()
+        self.update_all(skip=None)
+        self.finish()
+
+    def draw_wheel(self):
+        n = self.SIZE
+        yy, xx = np.mgrid[0:n, 0:n].astype(np.float32)
+        c = (n - 1) / 2
+        dx, dy = xx - c, yy - c
+        r = np.sqrt(dx * dx + dy * dy) / c
+        hue = (np.arctan2(-dy, dx) / (2 * np.pi)) % 1.0
+        sat = np.clip(r, 0, 1)
+        v = self.v
+        i = np.floor(hue * 6).astype(int) % 6
+        f_ = hue * 6 - np.floor(hue * 6)
+        p_, q, t = v * (1 - sat), v * (1 - sat * f_), v * (1 - sat * (1 - f_))
+        rgb = np.zeros((n, n, 3), np.float32)
+        for k, (a, b_, cc) in enumerate(((v, t, p_), (q, v, p_), (p_, v, t), (p_, q, v),
+                                         (t, p_, v), (v, p_, q))):
+            m = i == k
+            for ch, arr in enumerate((a, b_, cc)):
+                rgb[..., ch][m] = (arr if np.ndim(arr) else np.full((n, n), arr))[m]
+        bg = hex_to_rgb(self.app.pal["bg"])
+        img = (rgb * 255).astype(np.uint8)
+        img[r > 1.0] = bg
+        self.wheel_img = ImageTk.PhotoImage(Image.fromarray(img))
+        self.cv.itemconfigure(self.wheel_item, image=self.wheel_img)
+
+    def wheel_at(self, e):
+        import math
+        c = (self.SIZE - 1) / 2
+        dx, dy = e.x - c, e.y - c
+        self.h = (math.atan2(-dy, dx) / (2 * math.pi)) % 1.0
+        self.s_ = min(1.0, math.hypot(dx, dy) / c)
+        if self.v < 0.05:
+            self.v = 1.0
+            self.v_bright.set(100)
+            self.draw_wheel()
+        self.update_all(skip=None)
+
+    def bright_changed(self):
+        self.v = max(0.0, min(1.0, self.v_bright.get() / 100))
+        self.draw_wheel()
+        self.update_all(skip="bright")
+
+    def color(self):
+        r, g, b = self.colorsys.hsv_to_rgb(self.h, self.s_, self.v)
+        return rgb_to_hex(r * 255, g * 255, b * 255)
+
+    def update_all(self, skip):
+        import math
+        col = self.color()
+        c = (self.SIZE - 1) / 2
+        ang = self.h * 2 * math.pi
+        x, y = c + math.cos(ang) * self.s_ * c, c - math.sin(ang) * self.s_ * c
+        self.cv.coords(self.dot, x - 6, y - 6, x + 6, y + 6)
+        self.swatch.itemconfigure(self.sw_new, fill=col)
+        if skip != "hex":
+            self.v_hex.set(col)
+        if skip != "rgb":
+            for v_, val in zip(self.v_rgb, hex_to_rgb(col)):
+                v_.set(val)
+
+    def set_from_rgb(self, r, g, b, skip):
+        h, sat, v = self.colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+        redraw = abs(v - self.v) > 1e-3
+        self.h, self.s_, self.v = h, sat, v
+        self.v_bright.set(v * 100)
+        if redraw:
+            self.draw_wheel()
+        self.update_all(skip=skip)
+
+    def hex_changed(self):
+        t = self.v_hex.get().strip()
+        if not t.startswith("#"):
+            t = "#" + t
+        if HEX_RE.match(t):
+            self.set_from_rgb(*hex_to_rgb(t), skip="hex")
+
+    def rgb_changed(self):
+        try:
+            vals = [max(0, min(255, int(v_.get()))) for v_ in self.v_rgb]
+        except Exception:
+            return
+        self.set_from_rgb(*vals, skip="rgb")
+
+    def ok(self):
+        col = self.color()
+        self._initial = None
+        self.destroy()
+        self.on_pick(col)
+
+
+class ColorsDialog(Dialog):
+    """Preferences → Appearance → Customize colours (4.5.6): every colour of the app, for the
+    light and the dark theme separately. Changes apply right away; ↺ puts one back."""
+
+    def __init__(self, app, parent=None):
+        super().__init__(app, "Colours", parent)
+        f = self.body
+        top = ttk.Frame(f)
+        top.pack(fill="x")
+        ttk.Label(top, text="Colours", style="Title.TLabel").pack(side="left")
+        self.v_mode = tk.StringVar(value="dark" if app.is_dark() else "light")
+        for val, txt in (("light", "Light theme"), ("dark", "Dark theme")):
+            ttk.Radiobutton(top, text=txt, value=val, variable=self.v_mode,
+                            style="Seg.TRadiobutton", command=self.fill).pack(side="left",
+                                                                             padx=(12, 0))
+        ttk.Label(f, style="Muted.TLabel", wraplength=560, justify="left", text=(
+            "Click a colour (or Change…) to pick it with a colour wheel or type its code. The "
+            "theme you're editing is used while this window is open, so you see the result.")
+                  ).pack(anchor="w", pady=(6, 8))
+        self.grid = ttk.Frame(f)
+        self.grid.pack(fill="x")
+        self.rows = {}
+        for r, (key, label) in enumerate(COLOR_NAMES):
+            sw = tk.Canvas(self.grid, width=34, height=20, highlightthickness=1,
+                           highlightbackground=app.pal["border"], cursor="hand2")
+            sw.grid(row=r, column=0, padx=(0, 8), pady=2)
+            sw.bind("<Button-1>", lambda e, k=key: self.pick(k))
+            ttk.Label(self.grid, text=label).grid(row=r, column=1, sticky="w")
+            code = ttk.Label(self.grid, style="Muted.TLabel", width=9)
+            code.grid(row=r, column=2, sticky="w", padx=(10, 6))
+            ttk.Button(self.grid, text="Change…", style="Small.TButton",
+                       command=lambda k=key: self.pick(k)).grid(row=r, column=3, padx=(0, 4))
+            rb = ttk.Button(self.grid, text="↺", width=3, style="Small.TButton",
+                            command=lambda k=key: self.reset(k))
+            rb.grid(row=r, column=4)
+            self.rows[key] = (sw, code, rb)
+        ttk.Button(self.footer, text="Close", command=self.destroy).pack(side="right")
+        ttk.Button(self.footer, text="Reset all colours of this theme",
+                   command=self.reset_all).pack(side="left")
+        self._prev_theme = app.settings.get("theme", "system")
+        self.fill()
+        self.finish()
+
+    def mine(self):
+        cc = dict(self.app.settings.get("custom_colors") or {})
+        return cc, dict(cc.get(self.v_mode.get()) or {})
+
+    def fill(self):
+        # show the theme being edited
+        app = self.app
+        want = self.v_mode.get()
+        if app.is_dark() != (want == "dark"):
+            app.settings["theme"] = want
+        app.apply_theme()
+        pal = theme_palette(app.settings, want == "dark")
+        _, mine = self.mine()
+        for key, (sw, code, rb) in self.rows.items():
+            sw.configure(bg=pal[key], highlightbackground=app.pal["border"])
+            code.configure(text=pal[key] + ("  ✱" if key in mine else ""))
+            rb.state(["!disabled"] if key in mine else ["disabled"])
+
+    def save_colors(self, mine):
+        cc, _ = self.mine()
+        cc[self.v_mode.get()] = mine
+        self.app.settings["custom_colors"] = cc
+        self.app.save()
+        self.fill()
+
+    def pick(self, key):
+        pal = theme_palette(self.app.settings, self.v_mode.get() == "dark")
+        label = dict(COLOR_NAMES)[key]
+
+        def done(col):
+            _, mine = self.mine()
+            base = (DARK if self.v_mode.get() == "dark" else LIGHT)[key]
+            if col.lower() == base.lower():
+                mine.pop(key, None)
+            else:
+                mine[key] = col
+            self.save_colors(mine)
+        ColorPicker(self.app, self, pal[key], done, title=f"Colour: {label}")
+
+    def reset(self, key):
+        _, mine = self.mine()
+        mine.pop(key, None)
+        self.save_colors(mine)
+
+    def reset_all(self):
+        if messagebox.askyesno(APP_NAME, "Put every colour of this theme back to Clickue's "
+                                         "own?", parent=self):
+            self.save_colors({})
+
+    def destroy(self):
+        try:
+            if self.app.settings.get("theme") != self._prev_theme:
+                self.app.settings["theme"] = self._prev_theme
+                self.app.apply_theme()
+                self.app.save()
+        except Exception:
+            pass
+        super().destroy()
+
+
+class DeleteLogsDialog(Dialog):
+    """☰ Menu → Delete logs and history… (4.5.6): delete logs and histories for good."""
+
+    def __init__(self, app):
+        super().__init__(app, "Delete logs and history")
+        f = self.body
+        ttk.Label(f, text="Delete logs and history", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(f, style="Muted.TLabel", wraplength=520, justify="left", text=(
+            "Tick what to delete for good. Your jobs, settings and backups are not touched. "
+            "To hide lines only for now, use Clear view in the log itself.")).pack(
+            anchor="w", pady=(4, 8))
+        self.v = {}
+        for key, text in (("log", "Activity and the log file (clickue.log and its older "
+                                  "copies)"),
+                          ("tests", "Test history (the Tests window)"),
+                          ("clicks", "Click history (stats and CSV export)"),
+                          ("runs", "Run history (screen videos are kept)")):
+            self.v[key] = tk.BooleanVar(value=False)
+            ttk.Checkbutton(f, text=text, variable=self.v[key]).pack(anchor="w", pady=2)
+        ttk.Button(self.footer, text="Delete", style="Accent.TButton",
+                   command=self.go).pack(side="right")
+        ttk.Button(self.footer, text="Cancel", command=self.destroy).pack(side="right",
+                                                                          padx=(0, 6))
+        self.finish()
+
+    def go(self):
+        what = [k for k, v in self.v.items() if v.get()]
+        if not what:
+            self.destroy()
+            return
+        if not messagebox.askyesno(APP_NAME, "Delete the ticked logs for good? This can't be "
+                                             "undone.", parent=self):
+            return
+        app = self.app
+        done = []
+        try:
+            if "tests" in what:
+                with app.lock:
+                    app.test_history = []
+                    app.tests_dirty = True
+                    write_json(TESTS_PATH, app.test_history)
+                done.append("test history")
+            if "clicks" in what:
+                rewrite_history(lambda r: False)
+                done.append("click history")
+            if "runs" in what:
+                rewrite_runlog(lambda r: False)
+                done.append("run history")
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Couldn't delete everything:\n{e}", parent=self)
+        self.destroy()
+        if "log" in what:
+            app.delete_activity_log(confirm=False)
+            done.append("the log file")
+        if done:
+            app.log("Deleted for good: " + ", ".join(done))
+            if app.tests_win is not None:
+                app.tests_win.refresh(force=True)
 
 
 class HelpDialog(Dialog):
@@ -14627,11 +15988,23 @@ class HelpDialog(Dialog):
              "each with its own history for this job or all jobs. Check picture outlines "
              "every copy of the picture it finds. The whole app hides while a test runs. Preferences → "
              "Clicking sets how long the marker stays and can outline every similar picture."),
+            ("Is everything OK?", "Hover over a job: it says what the job is doing, any "
+             "problem and what to do. A watcher that can't see its picture shows ⚠ Can't watch. "
+             "The tray icon dot: amber = a click is counting down, green = clicking now, red = "
+             "a problem. ⟳ Refresh (F5) makes watchers look right away. The summary follows "
+             "the filter (all / clicks / watchers). Jobs with steps have ▸ to list their steps."),
+            ("Mouse movement", "A job (or a click step, or a recorded macro) can move the mouse "
+             "to its click like a person instead of jumping: Edit → Click → Mouse movement, "
+             "or the default in Preferences → Clicking (with a speed)."),
+            ("Colours", "Preferences → Appearance → Customize colours: every colour of the "
+             "light and dark theme, with a colour wheel or a code."),
             ("Logs", "Every log (Activity, test history, run history, stats, dry run): "
              "right-click to copy rows, one cell or everything (pastes into a spreadsheet), "
              "save as CSV, or show a place like (878, 243) on screen; type in the 🔍 box to "
              "filter. In Activity, click a place to see it. Activity keeps earlier lines until "
-             "Clear view (or Preferences → General). Test results say what their colour means: "
+             "its Delete button (Clear view only hides lines for now). ⟳ Refresh and newest/oldest "
+             "first are on every log; Preferences → Data & backups → How much to log. Test "
+             "results say what their colour means: "
              "OK, Attention or Failed."),
             ("Tray icon", "Point at Clickue's tray icon to see whether your jobs are running fine; "
              "right-click it → Job status for every job."),
@@ -14757,6 +16130,8 @@ class SettingsDialog(Dialog):
         check(p, "keep_awake", "Keep the PC and display awake")
         check(p, "tray_status", "Show the jobs' status when I point at the tray icon (and in "
                                 "its right-click menu → Job status)", HAVE_TRAY)
+        check(p, "tray_colors", "Colour the tray icon: amber = a click is coming up, green = "
+                                "clicking now, red = a job has a problem", HAVE_TRAY)
         check(p, "activity_clear_on_start", "Clear Activity every time Clickue starts "
                                             "(off: it keeps earlier lines until Clear view)")
         if not HAVE_TRAY:
@@ -14770,6 +16145,16 @@ class SettingsDialog(Dialog):
         spin(p, "idle_seconds", "Wait until mouse & keyboard have been idle for", 0, 300,
              "sec  (0 = off)")
         check(p, "restore_cursor", "Put the mouse back where it was after clicking")
+        check(p, "human_move", "Move the mouse to each click like a person (curved, smooth, "
+                               "not a jump) - jobs can choose otherwise in their editor")
+        hr = ttk.Frame(p)
+        hr.pack(anchor="w", pady=2)
+        ttk.Label(hr, text="Speed of those movements").pack(side="left", padx=(0, 8))
+        hv = tk.StringVar(value=s.get("human_speed", "normal")
+                          if s.get("human_speed") in HUMAN_SPEEDS else "normal")
+        self.vars["human_speed"] = hv
+        for val, txt in (("slow", "Slow"), ("normal", "Normal"), ("fast", "Fast")):
+            ttk.Radiobutton(hr, text=txt, value=val, variable=hv).pack(side="left", padx=(0, 10))
         note(p, "Waiting for idle keeps Clickue from grabbing the mouse while you're using it.")
         check(p, "warn_conflicts", "Warn me when two running jobs use the same window or spot")
         note(p, "Only one job clicks or types at a time (Windows has one mouse and one keyboard "
@@ -14901,6 +16286,12 @@ class SettingsDialog(Dialog):
         ttk.Combobox(row, values=("System", "Light", "Dark"), state="readonly", width=9,
                      textvariable=self.v_theme).pack(side="left", padx=6)
         check(p, "show_cards", "Show the summary cards at the top")
+        ttk.Label(p, text="Colours", style="Section.TLabel").pack(anchor="w", pady=(12, 0))
+        note(p, "Change any colour of the app - window, text, labels, borders, buttons, rows, "
+                "status colours - with a colour wheel or a code (#1e5ac8). Light and dark "
+                "themes have their own colours. Changes show right away.")
+        ttk.Button(p, text="🎨  Customize colours…",
+                   command=lambda: ColorsDialog(app, self)).pack(anchor="w", pady=(4, 0))
 
         # Data & backups
         p = self.pages["data"]
@@ -14909,6 +16300,19 @@ class SettingsDialog(Dialog):
         check(p, "history_on", "Keep a click history (for stats and CSV export)")
         spin(p, "log_max_mb", "Log file size limit", 1, 50,
              "MB  (2 older copies are kept; older ones are deleted)")
+        lr = ttk.Frame(p)
+        lr.pack(anchor="w", pady=(6, 0))
+        ttk.Label(lr, text="How much to log (Activity and the log file)").pack(side="left",
+                                                                            padx=(0, 8))
+        v = tk.StringVar(value=s.get("log_level", "normal")
+                         if s.get("log_level") in LOG_LEVELS else "normal")
+        self.vars["log_level"] = v
+        for val, txt in (("quiet", "Quiet"), ("normal", "Normal"), ("detailed", "Detailed")):
+            ttk.Radiobutton(lr, text=txt, value=val, variable=v).pack(side="left", padx=(0, 10))
+        note(p, "Quiet: clicks, problems and starts/stops only. Normal (default): also every "
+                "check that has a problem, with what to do. Detailed: also every successful "
+                "check with where the picture was seen - useful while setting up or tracking "
+                "down a problem.")
         note(p, f"Everything is stored in:\n{DATA_DIR}")
         r = ttk.Frame(p)
         r.pack(anchor="w", pady=(6, 0))

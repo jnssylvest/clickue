@@ -1,5 +1,66 @@
 # Changelog
 
+## 4.5.6 - Honest status everywhere, watcher fixes, log tools, person-like mouse, your own colours
+
+> Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken
+> during development, but AI-assisted development does not guarantee bug-free or secure
+> software. Review the source and use normal precautions. Test automations safely, protect
+> notification credentials, and avoid unattended use for consequential actions.
+
+**Fixed**
+- **A watcher clicked after its random delay even though the picture had come back.** During
+  the delay it didn't look any more. Now it keeps checking during the delay and looks once
+  more right before the click; if the picture is back (or, for "appears", gone) the click is
+  **cancelled** and logged.
+- **Switching between a remote session and the console could make a picture count as gone.**
+  When the screen's size or scaling changes, a watcher now waits 15 s before counting checks
+  again (logged with the old and new size). When a picture isn't found inside a search area
+  that was drawn on another screen size, the log says so and what to do.
+- **"Can't tell" looked like "fine".** A watcher that can't see its picture (screen locked,
+  Clickue window open, mouse pointer on it, screen just changed…) now shows **⚠ Can't
+  watch** in orange, is listed under *needs attention* in the tray, and the tray tooltip no
+  longer says *all OK*.
+- The "picture was here" label on screen was cut off for small pictures.
+- Watcher test and dry-run results now include **where the picture was found** (or the closest
+  place), not only the button.
+
+**Status and logs**
+- **Hover over a job** for its full status in plain words: any problem and what to do, the
+  next check or click (live), the last result, where it clicks.
+- **Every check that has a problem is logged** (the first one with what to do), every try of
+  a waiting click too, and missing pictures with the closest place found.
+- **Log level** (Preferences → Data & backups): Quiet, Normal, Detailed.
+- **Every log**: ⟳ Refresh, newest / oldest first, **Clear view** (hides for now, deletes
+  nothing) and **Delete…** (for good). Activity: ⟳ Refresh, order, Clear view (now temporary),
+  **Delete log…**. ☰ Menu → **Delete logs and history…** for several at once.
+- Lines about **steps** stand out in Activity (teal ↳).
+
+**Main window**
+- **Summary per view:** Scheduled clicks and Screen watchers each show their own cards (for
+  watchers: next check with a live countdown, watchers that can't watch, watcher clicks
+  today). The toggle is now a clear **📊 Hide / Show summary** button.
+- **⟳ Refresh** (F5): watchers check right away, the list is rebuilt.
+- **Record** is a rose primary button next to New click and New watcher.
+- **Jobs with steps** have ▸ / ▾ arrows; their steps can be shown as indented ↳ rows.
+- **Tray icon colours:** amber while a click counts down, green while clicking, red when a job
+  has a problem (Preferences → General).
+- Watchers' live next-check countdown also in the tray tooltip and the summary.
+
+**New**
+- **Move the mouse like a person:** smooth, slightly curved, eased movements to each click
+  (and back) instead of jumping. Per job and per click step (*Mouse movement*), for recorded
+  macros (Record dialog), and as the default with a speed in Preferences → Clicking.
+- **Your own colours:** Preferences → Appearance → Customize colours… with a colour wheel,
+  brightness, colour codes and R/G/B, for every colour of the light and the dark theme.
+
+**Data:** new job key `human_move` (empty = Preferences) and click/wait-for-picture step key
+`human_move`; new settings `log_level`, `log_order`, `tray_colors`, `human_move`,
+`human_speed`, `rec_human`, `custom_colors`, `stats_clicks_watch`, `stats_missed_watch`.
+Existing jobs behave as before (mouse still jumps). No schema change.
+
+**Docs:** guide sections 3, 5, 6, 9, 15, 19, 20, 23, 26; feature list, quick start, README,
+developer guide.
+
 ## 4.5.5 - Logs you can copy, filter and show on screen; Activity kept across restarts
 
 > Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken

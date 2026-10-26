@@ -1035,9 +1035,111 @@ def t_fixes_455():
     app.load_activity_history(); pump(100)
     ok("4.5.5 Activity: lines from earlier runs come back", any("from an earlier run" in it[1] for it in app.act_lines))
     app.clear_activity(); pump(50)
-    app.load_activity_history(); pump(50)
-    ok("4.5.5 Activity: Clear view keeps them away", not any("from an earlier run" in it[1] for it in app.act_lines))
+    ok("4.5.6 Activity: Clear view empties the view", not app.act_lines)
+    app.refresh_activity(); pump(50)
+    ok("4.5.6 Activity: Clear view is temporary (⟳ Refresh shows only newer lines)",
+       not any("from an earlier run" in it[1] for it in app.act_lines))
+    app.act_hidden_before = ""; app.refresh_activity(); pump(50)
+    ok("4.5.6 Activity: nothing was deleted by Clear view", any("from an earlier run" in it[1] for it in app.act_lines))
     app.act_lines = keep; app.render_activity()
+
+
+def t_fixes_456():
+    w = next(j for j in app.jobs if j.get("kind") == "watch")
+    # a watcher that can't watch is a problem: list status, hover text, tray
+    w.update(enabled=True, paused=False, watch_state="unknown", watch_note="Clickue window open",
+             issue_count=3, issue_since=time.time() - 60, next_check=time.time() + 20)
+    app.v_filter.set("watch"); app.filter_changed(); pump(300)
+    ok("4.5.6 can't watch shows as a problem", "Can't watch" in app.tree.set(w["id"], "status"),
+       app.tree.set(w["id"], "status"))
+    txt = ac.job_health(app, w, w["id"])
+    ok("4.5.6 hover text says what's wrong and what to do", "PROBLEM" in txt and "What to do" in txt
+       and "Next check in" in txt, txt)
+    tip, lines = app.tray_status()
+    ok("4.5.6 tray tooltip doesn't say all OK when a watcher can't watch",
+       "all OK" not in tip and "attention" in tip, tip)
+    ok("4.5.6 tray icon turns red for a problem", app.tray_badge() == "issue")
+    w["pending_click_at"] = time.time() + 300
+    ok("4.5.6 tray icon turns amber while a click counts down", app.tray_badge() == "due")
+    w["pending_click_at"] = None
+    ok("4.5.6 tray icon image gets a coloured dot", app.make_icon("due").getpixel((48, 48))[:3] == (245, 165, 36))
+    # summary follows the view
+    app.update_cards(time.time()); pump(50)
+    ok("4.5.6 watcher summary: next check, watcher status, watcher clicks",
+       app.card_titles["next"].cget("text") == "NEXT CHECK" and app.card_titles["today"].cget("text") == "WATCHER CLICKS TODAY"
+       and "can't watch" in app.card_vals["active"][0].cget("text"), app.card_vals["active"][0].cget("text"))
+    app.v_filter.set("click"); app.filter_changed(); pump(200)
+    ok("4.5.6 click summary: scheduled clicks only", app.card_titles["active"].cget("text") == "SCHEDULED CLICKS"
+       and "scheduled clicks" in app.cards_caption.cget("text"))
+    app.v_filter.set("all"); app.filter_changed(); pump(200)
+    ok("4.5.6 summary toggle says what it does", "summary" in str(app.cards_btn.cget("text")).lower())
+    rec = next(it for it in app.tool_items if "Record" in str(it["w"].cget("text")))
+    ok("4.5.6 Record is a coloured primary button next to New watcher",
+       str(rec["w"].cget("style")) == "Accent3.TButton" and rec["group"] == 0)
+    w.update(watch_state="seen", watch_note="", issue_count=0)
+    # steps as rows with arrows
+    sj = next((j for j in app.jobs if j.get("steps")), None)
+    if sj:
+        app.expanded.discard(sj["id"]); app.refresh_tree(full=True); pump(100)
+        ok("4.5.6 a job with steps has a ▸ arrow", app.tree.set(sj["id"], "name").strip().startswith("▸"))
+        app.toggle_steps(sj["id"]); pump(200)
+        kids = [i for i in app.tree.get_children() if i.startswith("step:" + sj["id"])]
+        ok("4.5.6 expanding shows its steps as ↳ rows", len(kids) == len(sj["steps"]) and "↳" in app.tree.set(kids[0], "name"))
+        app.tree.selection_set(kids[0]); pump(50)
+        ok("4.5.6 a step row belongs to its job", app._job_for_iid(kids[0]) is sj and not app.selected_is_test())
+        app.toggle_steps(sj["id"]); pump(100)
+    # refresh
+    w["next_check"] = time.time() + 999; t0 = time.time()
+    app.refresh_all(); pump(1500)
+    ok("4.5.6 ⟳ Refresh makes watchers check now", w["next_check"] <= time.time() + 1
+       or (w.get("last_check") or 0) >= t0, (w["next_check"] - time.time(), w.get("last_check"), t0))
+    # log order in the Tests window + clear view + delete selected
+    app.record_test(w["name"], "Check picture now", "older result", "ok"); time.sleep(0.01)
+    app.record_test(w["name"], "Check picture now", "newer result", "ok")
+    app.open_tests(); pump(400)
+    tw = app.tests_win
+    tw.v_sec.set("all"); tw.section_changed(); tw.v_hf.set("all"); tw.hist_filter_changed(); pump(200)
+    first = lambda: tw.hist.set(tw.hist.get_children()[0], "result")
+    a = first(); tw.hist_tools.toggle_order(); pump(100); b = first()
+    ok("4.5.6 logs: oldest / newest first", a == "newer result" and b != a, (a, b))
+    tw.hist_tools.toggle_order(); pump(100)
+    n0 = len(tw.hist.get_children())
+    tw.hist_tools.clear_view(); pump(100)
+    ok("4.5.6 logs: Clear view hides without deleting", not tw.hist.get_children() and len(app.test_history) >= n0)
+    tw.hist_tools.show_all_again(); pump(200)
+    ok("4.5.6 logs: Show all again", len(tw.hist.get_children()) == n0)
+    tw.hist.selection_set(tw.hist.get_children()[0]); before = len(app.test_history)
+    tw.delete_hist(); pump(200)
+    ok("4.5.6 logs: delete selected results for good", len(app.test_history) == before - 1)
+    tw.close(); pump(200)
+    # Activity newest first
+    app.toggle_activity_order(); pump(100)
+    app.log("[Z] newest line"); pump(1300)
+    top = app.logbox.get("1.0", "1.end")
+    ok("4.5.6 Activity newest first", "newest line" in top, top)
+    app.toggle_activity_order(); pump(100)
+    # preferences: log level, colours
+    app.open_settings(); pump(400)
+    sd = find_dialog(ac.SettingsDialog)
+    ok("4.5.6 preferences: log level, human movement, tray colours",
+       sd and all(k in sd.vars for k in ("log_level", "human_move", "human_speed", "tray_colors")))
+    if sd:
+        btn(sd, "Cancel").invoke(); pump(100)
+    cd = ac.ColorsDialog(app); pump(400)
+    ok("4.5.6 colours dialog lists every colour", len(cd.rows) == len(ac.COLOR_NAMES))
+    cd.v_mode.set("dark"); cd.fill(); pump(100)
+    cd.save_colors({"accent": "#ff00aa"}); pump(200)
+    ok("4.5.6 a custom colour applies right away", app.pal["accent"] == "#ff00aa")
+    cp = ac.ColorPicker(app, cd, "#1e5ac8", lambda c: None); pump(300)
+    cp.v_hex.set("#00ff00"); cp.hex_changed(); pump(50)
+    ok("4.5.6 colour picker: typing a code sets the wheel and R/G/B", cp.color() == "#00ff00" and cp.v_rgb[1].get() == 255)
+    cp.destroy(); cd.reset("accent"); pump(100)
+    ok("4.5.6 ↺ puts a colour back", app.pal["accent"] == ac.DARK["accent"])
+    cd.destroy(); pump(200)
+    # delete logs dialog exists
+    dd = ac.DeleteLogsDialog(app); pump(200)
+    ok("4.5.6 Delete logs and history dialog", len(dd.v) == 4)
+    dd.destroy(); pump(100)
 
 
 for name, fn in (("main", t_main), ("add click", add_click_job), ("edit/rows", t_edit_and_rows),
@@ -1047,7 +1149,8 @@ for name, fn in (("main", t_main), ("add click", add_click_job), ("edit/rows", t
                  ("test dialog", t_test_dialog_from_main), ("export/import", t_export_import),
                  ("geometry", t_remember_geometry), ("workflows 4.5", t_workflows_45),
                  ("fixes 4.5.1", t_fixes_451), ("fixes 4.5.3", t_fixes_453),
-                 ("fixes 4.5.4", t_fixes_454), ("fixes 4.5.5", t_fixes_455)):
+                 ("fixes 4.5.4", t_fixes_454), ("fixes 4.5.5", t_fixes_455),
+                 ("fixes 4.5.6", t_fixes_456)):
     step(name, fn)
     pump(200)
 

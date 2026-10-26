@@ -289,6 +289,43 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
   palette colour and no fill (clam draws no border with relief flat).
 - **Tests window (4.5.4):** sections `tests_section` (all/click/watch) with `test_kind(name)`;
   per-section scope `tests_scopes`; no paned split any more (history right under the buttons).
+- **4.5.6 watcher engine.** `watch_check` runs during a pending click too (scheduler dues a
+  `watchcheck` while `pending_click_at` is in the future; `next_check` during the delay is
+  `min(interval, max(5, delay/4))`) and cancels it when the condition no longer holds;
+  `watch_click` re-checks with `watched_picture` right before clicking (gone/appears without
+  "click the picture itself"). Screen changes: `screen_sig` = virtual screen + DPI per job;
+  a change sets `settle_until` = now + `SCREEN_SETTLE_S` (15 s) and resets `miss_count`.
+  `watch_issue()` is the single path for "can't tell" (sets `watch_state="unknown"`, counts
+  `issue_count`/`issue_since`, logs every check, the first with `issue_hint()`);
+  `watch_ok_again()` logs recovery. `watch_row` shows unknown as **⚠ Can't watch** /
+  state `warn` (was `paused`, which looked fine). `watch_area_note()` explains scaled areas.
+- **Issue reporting.** `job_health(app, job, iid)` = the job list's hover text (`HoverTip`,
+  refreshed every second while shown); `issue_hint(msg)` maps messages to advice
+  (`ISSUE_HINTS`). `log_retry()` logs every try of a waiting click (idle waits every 6th).
+  `App.log(msg, level)`: "detail" / "info" / "important", filtered by `log_wanted()` and
+  `settings["log_level"]` (quiet keeps lines with problem/click words).
+- **Tray:** `tray_badge()` → None / "due" / "clicking" / "issue"; `make_icon(badge)` draws a
+  dot; `update_tray_status` swaps `tray.icon` only when it changes. Watchers' tooltip detail
+  includes "next check in Ns".
+- **Logs:** `LogGrid(..., natural, refresh, delete)` + `toolbar()`; `done_filling(refilled)`
+  applies Clear view (`app.log_hidden[name]`, session only, by row values), order
+  (`settings["log_order"][name]`, reversing relative to the fill's natural order) and the
+  column fit. Activity: `refresh_activity` (re-read `read_log_tail`), `toggle_activity_order`
+  (inserts at a right-gravity mark for newest-first), `clear_activity` (temporary:
+  `act_hidden_before`), `delete_activity_log` (truncates the handler's stream, removes
+  rotations). `rewrite_history` / `rewrite_runlog` delete rows; `DeleteLogsDialog`.
+- **Main window:** `update_cards` per view (`card_titles`, `cards_caption`,
+  `stats_*_watch` counters via `bump_stats(..., watch=True)`); `Summary.TButton`;
+  `Accent3.TButton` (Record, group 0); `refresh_all` (F5); step rows: `build_rows` wraps
+  `_build_rows`, adds ▸/▾ and `step_row()` rows `step:<job id>:<n>` for `self.expanded`;
+  `_job_for_iid` takes `split(":")[1]`; `selected_is_test` checks the `test:`/`wtest:` prefix.
+- **Mouse:** `human_path()` (pure: quadratic Bézier with a random bend, smoothstep easing,
+  jitter, optional overshoot, Fitts-like duration × `HUMAN_SPEEDS`), `glide()`,
+  `do_click(..., human=speed)` (also glides back when restoring the cursor),
+  `mouse_style(settings, job, step)` (step > job > Preferences). Inside `CURSOR_LOCK`.
+- **Colours:** `theme_palette(settings, dark)` merges `custom_colors[light|dark]` (validated
+  `#rrggbb`, known keys only) over `LIGHT`/`DARK`; `COLOR_NAMES`; `ColorsDialog`,
+  `ColorPicker` (numpy-drawn HSV wheel + brightness + hex + RGB).
 - **Logs (4.5.5).** `LogGrid(app, tree, frame, owner, job_of, extra, fit_col, filterbox)`
   gives a Treeview log its right-click menu (copy rows / cell / all, select all, CSV,
   📍 show on screen when `LOC_RE` finds "(x, y)", filter to job/test, extras), Ctrl+C/A/F,
@@ -510,8 +547,8 @@ pythonw src\clickue.py          rem or double-click scripts\Start Clickue.bat
   `scripts\make_version_file.py` for the exe's version details, then PyInstaller `--onefile
   --noconsole --icon assets\clickue.ico --version-file build\version_info.txt
   --hidden-import pystray._win32`).
-- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.5.5`, run
-  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.5.5.exe`. The installer shows
+- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.5.6`, run
+  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.5.6.exe`. The installer shows
   `installer/before-install.txt` first; its uninstaller removes the HKCU Run value only when it
   points at `{app}`, and deletes `%APPDATA%\Clickue` only if the user says Yes (skipped when
   Clickue's own Uninstall passes `/KEEPDATA`).
@@ -525,8 +562,8 @@ Run from the repository root.
 
 | Command | What | Expected |
 |---|---|---|
-| `python tests/test_watchers.py` | watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries), 4.5.3: search-area margin, partial matching, pointer on the picture, import of the match fields; 4.5.4: every copy (exact and partial), one changed digit, compression/noise, 125/150 % scaling, a 15 px icon among 60 others | `RESULT 42/42` |
-| `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id, guide link + pictures, 4.5.3 batch actions / delete + undo / Edit together | `RESULT 71/71` |
+| `python tests/test_watchers.py` | (4.5.6: click cancelled when the picture returns during the delay or right before the click, screen-change settle, every can't-watch check logged, recovery, can't watch = problem, closest place logged, log levels) watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries), 4.5.3: search-area margin, partial matching, pointer on the picture, import of the match fields; 4.5.4: every copy (exact and partial), one changed digit, compression/noise, 125/150 % scaling, a 15 px icon among 60 others | `RESULT 53/53` |
+| `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id, guide link + pictures, 4.5.3 batch actions / delete + undo / Edit together | `RESULT 88/88` |
 | `python tests/test_click_spot.py` | click-spot matching at 3 picture sizes × 8 screens (100–175 % scaling, moved, look-alikes), with exact matching and with tolerant matching | `0 of 48` failures |
 | `python tests/test_workflows.py` | 4.5: alert hardening (hosts, redirects, rate limit, redaction), secrets out of backups/exports, DPAPI flow (simulated), import validation, data-folder safety, variables, blocks, if/repeat/retries/groups/limits/cancel/pause, held-input release, dry run, the input queue (order, watchers keep checking, yielding, emergency stop), conflicts, recorder compression, paste/clipboard flow, video (lifecycle, no codec, disk full, capture failure, redaction), run history + video positions, failure screenshots, schema migration, adapters | `RESULT N/N` |
 | `python tests/check_release.py` | docs links/anchors/pictures, version = changelog, disclosure placement, planned features marked planned, no secrets or private details in public files, workflow least privilege + pinned actions, uninstall boundaries | `RESULT N/N` |
@@ -594,6 +631,14 @@ Run from the repository root.
      window → the history scrolls sideways; exit and start → Activity still there, Clear view
      → gone after the next start; New watcher is teal; click below the job rows unselects,
      double-click there does nothing.
+   - 4.5.6: switch RDP → console with a watcher running: log shows the screen change and
+     ~15 s of "can't watch", no click; a gone-watcher with a long random delay: bring the
+     picture back during the delay → click cancelled; hover a job (problem + what to do,
+     live countdown); tray dot amber during a countdown, green while clicking, red with a
+     problem; log level Quiet/Detailed; logs: refresh, order, Clear view, Delete; Delete logs
+     and history; job with steps ▸ → ↳ rows; summary per view; Record button colour;
+     "Move like a person" on a job, a step, a recorded macro (watch the pointer glide, also
+     back) at Slow/Normal/Fast; Customize colours (wheel, code, ↺, both themes).
 
 ## 10. GitHub: repository, CI and releases
 

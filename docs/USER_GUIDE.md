@@ -42,14 +42,20 @@
   picks the columns, so each kind of job shows what matters for it; columns fit their text.
   Drag the divider above Activity (or ▲ / ▼) to make the list or Activity taller. Double-click to edit; right-click for everything else. Use the filter above
   it to show all jobs, only scheduled clicks or only watchers.
+- **Hover over a job** to see how it's doing, any problem and what to do. A watcher that
+  can't see its picture shows **⚠ Can't watch**. The **summary** at the top follows the
+  filter; **⟳ Refresh** (F5) makes watchers look right away. Jobs with steps have a ▸ to show
+  their steps.
 - **Tick boxes:** tick jobs at the start of their rows (or press **X**; the heading box ticks
   all). A bar appears to **Start, Stop, Pause, Resume, Duplicate or Delete** them together, or
   **Edit together…** to change the same settings on all of them at once (only the settings
   you tick are changed).
 - **Activity:** a live, colour-coded log. Filter it to *Clicks* or *Problems* or type in the
   🔍 box; click a place like *(878, 243)* to see it on screen; right-click to copy. It keeps
-  its lines across restarts until *Clear view*. Every log in the app can be copied (right-click,
-  Ctrl+C) and filtered the same way.
+  its lines across restarts. **Clear view** hides lines for now, **Delete log…** removes them
+  for good; ⟳ Refresh and newest/oldest first are there too. Every log in the app can be
+  copied (right-click, Ctrl+C), filtered, sorted, refreshed, cleared from view and deleted the
+  same way. Preferences → Data & backups → *How much to log*: Quiet / Normal / Detailed.
 - **☰ Menu:** record a macro, step groups, run history & videos, stop everything now,
   import/export, backups, click-history export, preferences, data folder, log, the complete
   guide (online), help, about, uninstall, exit.
@@ -308,6 +314,7 @@ To keep Clickue working while you're away:
 | "Picture not found" | Is the spot on screen? Re-pick with text or an icon near the spot, or use a Large picture. **Show spot** (with similar pictures outlined) to check |
 | Clicks the wrong place | Keep **Only the exact picture** ticked. **Show spot**. Re-pick if the app's look changed. Make sure the target isn't covered |
 | Watcher shows "Can't tell: Clickue window open" | Minimize Clickue or send it to the tray |
+| Watcher counted a picture as gone after switching remote session ↔ console | Update to 4.5.6 (it waits for the screen to settle and cancels the click if the picture comes back); search the whole screen or re-draw the search area |
 | Picture too small to box | Zoom in with the mouse wheel while drawing |
 | Watcher says the picture is NOT there, but it is | **Dry run** outlines the closest places. Re-draw the box around a part that never changes, or choose **Match: part of the picture is enough** |
 | Watcher never clicks again | "Click only once" is waiting for the picture to come back; untick it to keep clicking |

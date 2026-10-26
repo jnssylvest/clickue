@@ -1,4 +1,4 @@
-"""Clickue 4 features: hours, limits, steps, appears/area, history, backups, undo, alerts, migration. Expect: RESULT 71/71"""
+"""Clickue 4 features: hours, limits, steps, appears/area, history, backups, undo, alerts, migration. Expect: RESULT 88/88"""
 import os
 exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_helpers.py")).read())
 import time, threading, queue, tempfile, json, os
@@ -305,4 +305,46 @@ A.undo_delete()
 ok("batch: one undo brings them all back, in place, running again", [j["id"] for j in A.jobs[:3]] == [c1["id"], c2["id"], w1["id"]] and c1["enabled"] and w1["enabled"])
 A.checked = {c1["id"]}; A.batch_action("stop")
 ok("batch: stop", not c1["enabled"])
+
+# ---- 4.5.6: moving the mouse like a person, settings resolution, palettes, deleting history
+import random as _r
+pts = ac.human_path(100, 100, 900, 500, "normal", _r.Random(5))
+ok("human path ends exactly on the target", pts[-1][1:] == (900, 500), pts[-1])
+ok("human path takes a human-like time (0.15-1.4 s) and has many small steps",
+   0.15 <= pts[-1][0] <= 1.4 and len(pts) >= 10, (pts[-1][0], len(pts)))
+mid = pts[len(pts) // 2]
+line_y = 100 + (mid[1] - 100) * 400 / 800
+ok("human path is not a straight jump (it curves or eases)", len({p[1] for p in pts}) > 5)
+steps = [abs(pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1)]
+ok("human path is slow at the start and end, quick in the middle",
+   max(steps[:2]) < max(steps) and max(steps[-3:]) < max(steps), (steps[:3], max(steps), steps[-3:]))
+slow = ac.human_path(0, 0, 800, 0, "slow", _r.Random(1))[-1][0]
+fast = ac.human_path(0, 0, 800, 0, "fast", _r.Random(1))[-1][0]
+ok("human speed: slow takes longer than fast", slow > fast, (slow, fast))
+ok("human path for a tiny move is one point", len(ac.human_path(5, 5, 6, 5)) == 1)
+S0 = {"human_move": False, "human_speed": "fast"}
+ok("mouse style: job says 'like a person' -> its speed", ac.mouse_style(S0, {"human_move": True}) == "fast")
+ok("mouse style: step 'jump' overrides the job", ac.mouse_style(S0, {"human_move": True}, {"human_move": False}) is None)
+ok("mouse style: nothing chosen -> Preferences", ac.mouse_style({"human_move": True, "human_speed": "slow"}, {}) == "slow"
+   and ac.mouse_style(S0, {"human_move": None}) is None)
+jj = ac.sanitize_job(dict(ac.new_job(), human_move="yes"))[0]
+ok("import: invalid human_move -> follow Preferences", jj["human_move"] is None)
+st, _ = ac.sanitize_step({"type": "click", "x": 1, "y": 2, "human_move": True})
+ok("import: click step keeps its mouse movement choice", st.get("human_move") is True)
+pal = ac.theme_palette({"custom_colors": {"dark": {"bg": "#123456", "fg": "nonsense", "nokey": "#ffffff"}}}, True)
+ok("custom colours: valid ones used, invalid codes and unknown names ignored",
+   pal["bg"] == "#123456" and pal["fg"] == ac.DARK["fg"] and "nokey" not in pal)
+ok("custom colours don't touch the other theme", ac.theme_palette({"custom_colors": {"dark": {"bg": "#123456"}}}, False)["bg"] == ac.LIGHT["bg"])
+ok("hex <-> rgb", ac.rgb_to_hex(*ac.hex_to_rgb("#1e5ac8")) == "#1e5ac8")
+ac.append_history(job="Keep me", kind="scheduled", result="ok")
+ac.append_history(job="Drop me", kind="scheduled", result="ok")
+n = ac.rewrite_history(lambda r: r.get("job") != "Drop me")
+rows = ac.read_history()
+ok("delete click history for good (one job)", n >= 1 and not any(r["job"] == "Drop me" for r in rows) and any(r["job"] == "Keep me" for r in rows))
+A.settings.update(stats_date="", stats_clicks=0)
+A.bump_stats("stats_clicks"); A.bump_stats("stats_clicks", watch=True)
+ok("clicks today counted for watchers separately", A.settings["stats_clicks"] == 2 and A.settings["stats_clicks_watch"] == 1)
+ok("issue hints: screen locked / Clickue window / search area",
+   "console" in ac.issue_hint("screen locked or remote session disconnected")
+   and "Minimize" in ac.issue_hint("Clickue window open") and ac.issue_hint("zzz") == "")
 print(f"\nRESULT {sum(R)}/{len(R)}")

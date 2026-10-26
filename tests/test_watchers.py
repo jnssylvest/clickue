@@ -1,4 +1,4 @@
-"""Screen-watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries). Expect: RESULT 42/42"""
+"""Screen-watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries). Expect: RESULT 53/53"""
 import os
 exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_helpers.py")).read())
 import time, threading, queue, tempfile, random
@@ -158,4 +158,43 @@ for x,y in ((400,400),(1000,600),(1500,200)): di.polygon([(x,y+10),(x+5,y),(x+10
 ipic=ac.img_to_b64(icons.crop((398,398,413,413)))
 rep=[]; r=ac.picture_on_screen(ipic,None,shot=(icons,(0,0)),report=rep)
 expect("38 a tiny 15x15 icon: all three copies, none of the 60 other icons", sorted((x[0],x[1]) for x in rep if x[6])==[(398,398),(998,598),(1498,198)], [x[:2] for x in rep if x[6]])
+
+# ---- 4.5.6: pending click re-checked, screen change settles, issues logged every check
+logs=[]; _orig_log=A.log
+def cap(msg, level="info"):
+    logs.append((level,msg)); _orig_log(msg, level)
+A.log=cap
+show(scene()[0]); w.update(watch_random_on=True, watch_delay_min_s=300, watch_delay_max_s=300, watch_once=False, armed=True, miss_count=0, pending_click_at=None)
+show(scene(kind="gone")[0]); check(); check()
+expect("39 gone twice -> click pending with a 5 min delay", bool(w["pending_click_at"]) and w["pending_click_at"]-time.time()>250)
+n0=len(clicks); show(scene()[0]); check()
+expect("40 picture back during the delay -> click cancelled", w["pending_click_at"] is None and "cancelled" in w["last_result"].lower() and len(clicks)==n0, w["last_result"])
+show(scene(kind="gone")[0]); check(); check(); w["pending_click_at"]=0
+show(scene()[0]); A.watch_click(w)
+expect("41 picture back right before the click -> nothing clicked", len(clicks)==n0 and w["pending_click_at"] is None, w["last_result"])
+w.update(watch_random_on=False, watch_delay_min_s=0, watch_delay_max_s=0)
+_vs=ac.virtual_screen
+ac.virtual_screen=lambda:(0,0,1920,1080); show(scene()[0]); check()
+ac.virtual_screen=lambda:(0,0,1280,800); show(scene(kind="gone")[0]); check()
+expect("42 screen size changed (RDP -> console) -> not counted, settling", w["watch_state"]=="unknown" and w["miss_count"]==0 and "changed" in w["watch_note"], w["watch_note"])
+check(); expect("43 still settling -> still not counted", w["miss_count"]==0)
+w["settle_until"]=time.time()-1; check()
+expect("44 after settling, checks count again", w["miss_count"]==1, w["watch_note"])
+ac.virtual_screen=_vs; w["screen_sig"]=None; w["settle_until"]=None
+logs.clear(); _sa=ac.screen_available; ac.screen_available=lambda:False
+w["issue_count"]=0; check(); check(); check()
+cant=[m for l,m in logs if "can't watch" in m.lower()]
+expect("45 every check that can't tell is logged (first with what to do)", len(cant)==3 and "What to do" in cant[0], cant[:2])
+ac.screen_available=_sa; show(scene()[0]); logs.clear(); check()
+expect("46 recovery is logged", any("watching again" in m for l,m in logs), logs)
+row=[r for r in A.build_rows(time.time()) if r[0]==w["id"]]
+ac.screen_available=lambda:False; check(); row=[r for r in A.build_rows(time.time()) if r[0]==w["id"]][0]
+expect("47 a watcher that can't tell shows as a problem in the list", row[2]=="warn" and "Can't" in row[1].cells["status"], (row[2], row[1].cells["status"]))
+ac.screen_available=_sa
+show(scene(kind="gone")[0]); w["miss_count"]=0; logs.clear(); check()
+expect("48 a missing picture is logged with the closest place", any("closest place at (" in m for l,m in logs), logs)
+expect("49 log levels: quiet keeps problems, drops routine lines; detailed keeps details",
+       ac.log_wanted("quiet","info","[x] CAN'T WATCH: y") and not ac.log_wanted("quiet","info","[x] watching for its picture every 30s")
+       and not ac.log_wanted("normal","detail","x") and ac.log_wanted("detailed","detail","x"))
+A.log=_orig_log
 print(f"RESULT {sum(res)}/{len(res)}")

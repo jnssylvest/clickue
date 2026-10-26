@@ -11,7 +11,7 @@
 
 This guide explains **every feature** of Clickue, with real-world scenarios and example
 pictures. Read it from top to bottom to learn everything, or jump to the part you need.
-In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.5.5.
+In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.5.6.
 
 > [!NOTE]
 > The example pictures show an invented "Example App" so the ideas are easy to see. Your own
@@ -124,7 +124,7 @@ From the [Releases page](https://github.com/jnssylvest/clickue/releases/latest):
   (shown as *Before a fresh start* in Backups), so nothing is lost.
 - **Upgrading.** Your jobs keep working. Every time a new version starts for the first time
   with your jobs, Clickue first saves a backup named *before-upgrade-&lt;version&gt;* (for
-  example *before-upgrade-4.5.5*), so you can always go back to the jobs as they were.
+  example *before-upgrade-4.5.6*), so you can always go back to the jobs as they were.
 - **Jobs file missing or damaged?** If `jobs.json` is gone or can't be read but backups exist,
   Clickue tells you and offers to **restore the newest backup** (it shows its date and the job
   names). Restored jobs start **stopped**, so nothing clicks until you start them.
@@ -147,10 +147,14 @@ From the [Releases page](https://github.com/jnssylvest/clickue/releases/latest):
    light/dark, and **☰ Menu** holds everything else (see below).
 2. **Summary cards.** The next click and its countdown, how many jobs are active, clicks
    today, and whether the screen is available (not locked or disconnected).
-3. **Toolbar.** ＋ New click (blue) and 👁 New watcher (teal) are the two main buttons, then Edit, Duplicate, Delete, ▶ Start / Stop,
-   ⏸ Pause (this job), ⏸ Pause all, 🧪 Tests, ⏺ Record, ↓ Import and ↑ Export. When the window
+3. **Toolbar.** The three main buttons come first: ＋ **New click** (blue), 👁 **New watcher**
+   (teal) and ⏺ **Record** (rose). Then Edit, Duplicate, Delete, ▶ Start / Stop, ⏸ Pause (this
+   job), ⏸ Pause all, 🧪 Tests, ↓ Import and ↑ Export. Buttons you can't use right now are
+   outlines without fill. When the window
    is too narrow, the least-used buttons fold into **More ▾**.
-4. **Filter.** Show all jobs, only scheduled clicks, or only screen watchers.
+4. **Filter.** Show all jobs, only scheduled clicks, or only screen watchers. The filter also
+   picks the columns and what the **summary** at the top shows (below). **⟳ Refresh** (or
+   **F5**) makes every running watcher look at the screen right away and rebuilds the list.
 5. **Job list.** One row per job. **Double-click** a row (or Enter) to edit, **right-click** for
    every action. **Click the empty part** of the list below the rows to unselect; a
    double-click there does nothing. The **tick box** at the start of each row selects jobs for batch actions
@@ -162,6 +166,25 @@ From the [Releases page](https://github.com/jnssylvest/clickue/releases/latest):
    It keeps lines from earlier runs; **Clear view** empties it (the log file keeps
    everything); **Open log file** opens the full log.
 7. **Status bar.** A one-line summary.
+
+**Hover over a job** for everything about it in plain words: what it's doing, any **PROBLEM**
+and **what to do** about it, the next check or click with a live countdown, the last result
+and where it clicks. A job never shows as fine while something is wrong: a watcher that can't
+look at its picture shows **⚠ Can't watch** (orange), and the tray icon says so too.
+
+**The summary** (the cards at the top) follows the filter:
+
+| Filter | Cards |
+|---|---|
+| **All** | Next click, active jobs, clicks today, screen |
+| **Scheduled clicks** | Next click, scheduled clicks running (and any waiting, with why), clicks today by scheduled jobs (missed in red), screen |
+| **Screen watchers** | **Next check** with a live countdown (and a coming click), **watchers** (how many can see their picture, which can't watch and why), **watcher clicks today**, screen |
+
+**📊 Hide summary / Show summary** in the header folds the cards away or brings them back.
+
+**Jobs with steps** have a **▸** in front of their name and ☰ in the *Type* column. Click the
+▸ (or right-click → *Show its steps*, or the **→** key) to list the steps as indented **↳**
+rows under the job; ▾ (or **←**) folds them away. Double-click a step row to edit the job.
 
 While a job is running, or jobs are waiting their turn, a **bar above the job list** shows
 which, with **■ Stop this run** ([section 11](#11-starting-pausing-stopping-and-taking-turns)).
@@ -236,10 +259,12 @@ table in the app (steps, history, run history, backups), there without being rem
 | Status | Meaning |
 |---|---|
 | ● **Running** | Scheduled and counting down |
-| ● **Waiting** | Due, but can't click yet (screen locked, you're using the mouse, the spot is covered…). It retries |
+| ● **Waiting** | Due, but can't click yet (screen locked, you're using the mouse, the spot is covered…). It retries; every try is logged |
 | 👁 **Watching** | A watcher that's looking and hasn't seen a reason to click |
+| ⚠ **Can't watch** | A watcher that can't tell whether its picture is there right now (screen locked, a Clickue window open over it, the mouse pointer on it, the screen just changed size…). Hover for why and what to do. Its picture isn't counted as gone meanwhile |
 | ⚠ **Missing** / ⚠ **Showing** | A watcher has seen the change and is confirming it (flicker protection) |
-| ⚡ **Clicking** | A watcher is about to click (during its random delay) |
+| ⚡ **Clicking** | A watcher is about to click (during its random delay). It keeps checking: if the picture changes back, the click is cancelled |
+| ↳ **step** (teal) | A step of the job above, when its steps are shown |
 | 🌙 **Off hours** | Outside the job's active hours |
 | ⏸ **Paused** | This job, or everything, is paused |
 | ○ **Stopped** | Turned off. *Last result* shows **Finished** if a limit stopped it |
@@ -439,6 +464,7 @@ Click **＋ New click** (Ctrl+N).
 | **Name** | Shown in the list, the log, history and alerts | *Click 1* |
 | **Where to click** | The spot ([section 4](#4-choosing-where-to-click)). Untick **Start with a click on this spot** for a job that only runs its steps | — (on) |
 | **Click** | Left, right or middle; single or double | Left, single |
+| **Mouse movement** | *As in Preferences*, *Move the mouse there like a person* (a smooth, slightly curved movement, quicker in the middle, sometimes a tiny overshoot, then the click) or *Jump straight to the spot*. Also applies to the job's click steps unless a step chooses otherwise | As in Preferences (off: jump) |
 | **Scheduled every** | Hours, minutes and seconds between clicks | 8 h |
 | **Add a random delay after each scheduled time** | Adds a random wait so clicks don't happen at a predictable moment | On |
 | **Random delay from / up to** | The range of the random delay, chosen fresh each time, to the second | 10 s to 15 min |
@@ -688,14 +714,60 @@ re-arms the watcher (no click). The next time it goes away, Clickue clicks once 
 ### Clickue's own window
 
 While the Clickue window is **open on screen**, a *missing* picture isn't counted, because the
-window might be covering it. The list shows *Can't tell: Clickue window open*. Minimize Clickue
-or send it to the tray when you've finished setting up. "Appears" watchers aren't affected.
+window might be covering it. The list shows **⚠ Can't watch** - *Can't tell: Clickue window
+open*. Minimize Clickue or send it to the tray when you've finished setting up. "Appears"
+watchers aren't affected.
+
+### When a watcher can't watch
+
+Since 4.5.6 every check that **can't tell** whether the picture is there is a problem you can
+see:
+
+- The list shows **⚠ Can't watch** in orange with the reason (*Can't tell: screen locked
+  (4 checks)*), hovering the row explains it and **what to do**, the tray tooltip lists it
+  under *needs attention*, and the tray icon gets a red dot.
+- **Every such check is logged**: the first one with the reason and what to do, then *check 2:
+  still can't watch - … (for 1m 30s)*, and *watching again* when it's over.
+- Reasons: the screen is locked or the remote session disconnected; a Clickue window is open
+  (it could be covering the picture); the mouse pointer rests on the picture; **the screen
+  just changed size or scaling** (see below); no picture saved; a screenshot failed.
+- Meanwhile the picture is **not** counted as gone, so nothing is clicked because of it.
+
+### When the screen changes (remote session ↔ console)
+
+Switching between a remote-desktop session and the machine's own console (or changing the
+resolution or scaling) changes the screen under the watcher. Since 4.5.6:
+
+- When a watcher sees that the screen's size or scaling changed since its last check, it
+  **waits 15 seconds** before counting checks again (logged: *the screen changed from
+  2560×1440 (125% scaling) to 1280×800 (100%)*), so a picture that's briefly gone during the
+  switch doesn't count.
+- A **search area** is scaled with the screen size. Windows don't always move that way (a
+  browser re-flows its page), so after a switch the picture can end up outside the area. The
+  log then says so: *searched only its area … drawn on a 2560×1440 screen and the screen is
+  1280×800 now … draw the search area again on this screen*. Search the whole screen, or draw
+  the area generously, if you switch often.
+- A **very small picture** (for example 13 × 22 pixels) at a different scaling (*at 110%
+  size*) has little detail to compare and is more easily missed. Draw a bigger box (zoom in
+  to get it exact) around something that looks the same in every session, or use **part of
+  the picture is enough**.
+- Pictures can also look different when their window isn't the active one (some apps dim
+  their tabs or toolbars then). Box a part that looks the same either way.
+
+### A click that's no longer wanted is cancelled
+
+With a **random delay** (for example 10 s to 15 min), a watcher that has decided to click waits
+before clicking. Since 4.5.6 it **keeps checking during that wait** and looks once more right
+before the click: if the picture came back (or, for "appears", went away), the click is
+**cancelled** (*Click cancelled - picture came back*, logged with where the picture was). Before
+4.5.6 it clicked anyway after the delay.
 
 ### Watcher statuses
 
 **Watching** (*Seen 13:49:58* or *Not showing*), **Missing** / **Showing** (confirming a change),
-**Clicking** (during the random delay), **Off hours**, and **Paused**. The countdown shows
-*check in 12s*.
+**Clicking** (during the random delay), **Can't watch**, **Off hours**, and **Paused**. The
+*Next check* column counts down live (*check in 12s*), as do the hover text, the summary's
+**Next check** card and the tray tooltip.
 
 ### Scenarios
 
@@ -1021,6 +1093,7 @@ edit**, as a new job.
    | **Save a small picture of each clicked spot** | Each recorded click can find its target by its picture later, even if it moves | On |
    | **Keep the pauses between actions** | Pauses of 0.25 s or more become **Wait** steps you can edit | On |
    | **Pause my other jobs while I record** | So Clickue doesn't click in the middle of your recording | On |
+   | **When it plays, move the mouse to each click like a person** | The recorded job moves the pointer smoothly to each click instead of jumping (the job's *Mouse movement* setting) | Off |
 
 3. **⏺ Start recording.** Clickue hides, counts down 3 seconds, and shows a small **red bar**
    in the bottom-right corner: **● REC** with the time and how many clicks and keys so far.
@@ -1438,10 +1511,21 @@ and its result.
 ### Activity and the log file
 
 The **Activity** panel shows what's happening, colour-coded, filterable to **Clicks** or
-**Problems** and with a **🔍 filter** box. Since 4.5.5 it **keeps its lines when you exit
-and start Clickue again** (the last 800 lines are read back from the log file). They're only
-removed by **Clear view** (they don't come back after that), or at every start if you turn on
-**Preferences → General → Clear Activity every time Clickue starts**. Everything also goes into the log file (**☰ Menu → Open log file**). The log
+**Problems** and with a **🔍 filter** box. Lines about a **step** of a job start with a teal
+**↳**. It **keeps its lines when you exit and start Clickue again** (the last 800 lines are
+read back from the log file), unless **Preferences → General → Clear Activity every time
+Clickue starts** is on. Its buttons:
+
+| Button | Does |
+|---|---|
+| **⟳ Refresh** | Reads Activity again from the log file |
+| **↑ Oldest first / ↓ Newest first** | The order of the lines (remembered) |
+| **Clear view** | Empties the view **for now**; nothing is deleted. ⟳ Refresh shows only newer lines; the next start brings everything back |
+| **Delete log…** | Deletes the log file (and its older copies) **for good**, after asking |
+| **Open log file** | Opens the full log file |
+
+How much is logged is set in **Preferences → Data & backups → How much to log**
+([section 20](#data--backups)). Everything also goes into the log file (**☰ Menu → Open log file**). The log
 is limited to 1 MB by default (**Preferences → Data & backups**); two older copies are kept
 and older ones are deleted, so it never grows without limit. Phone-alert credentials are
 removed from every log line, and typed or pasted text never appears in it.
@@ -1456,6 +1540,10 @@ job's Stats, and Dry run results) works the same way (4.5.5):
 | **Right-click** a row (or a line in Activity) | **Copy** (the selected rows), **Copy "column" only** (just that cell), **Copy everything shown** (with the headings), **Select all**, **📍 Show this place on screen** (when the row mentions a place), **Filter to this job / test**, **Edit this job…**, **Save what's shown as CSV…** (Activity: as a text file), Clear the filter |
 | **Ctrl+C** / **Ctrl+A** | Copy the selected rows / select every row shown |
 | **Ctrl+F**, or type in the **🔍** box | Show only rows that contain that text (any column, case doesn't matter); **Esc** or **✕** clears it |
+| **⟳ Refresh** | Read the log again (test history, run history, a job's stats) |
+| **↑ Oldest first / ↓ Newest first** | Order of the rows, remembered per log |
+| **Clear view** | Hide the rows shown now, for this session only (nothing is deleted); right-click → **Show all again** |
+| **Delete…** | Delete for good: the selected rows, or (with nothing selected) the whole log - the test history, this job's click history, or the run history (videos are kept) |
 | **Click a place** in Activity, or **double-click** a test or stats row with a place | **Show it on screen** (see below) |
 
 Copied rows are tab-separated with the columns in order, so they paste straight into a
@@ -1555,7 +1643,7 @@ writes the reason in the Activity log and shows a warning once, instead of faili
 - Backups contain your jobs, step groups and settings, but **never your phone-alert
   credentials**.
 - **Before an upgrade:** the first time a new version starts with your jobs, it saves a backup
-  named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.5*) before saving
+  named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.6*) before saving
   anything. Older jobs keep working exactly as before.
 - **☰ Menu → Backups…** lists them (Daily, Manual, Before a restore, Before an import, Before a
   fresh start, Before an upgrade) with how many jobs each holds.
@@ -1618,6 +1706,17 @@ automations side by side, run a copy of Clickue inside each machine.
   that Clickue is still running.
 - **Tray menu** (right-click the icon): **Show window**, **Job status**, **Pause all / Resume
   all**, **Stop everything now**, **Exit**.
+- **Tray icon colours** (4.5.6): a coloured dot on the icon shows what's going on without
+  opening anything:
+
+  | Dot | Means |
+  |---|---|
+  | none | Everything's fine and no click is coming up |
+  | 🟠 amber | A click is **counting down**: a watcher's random delay, or a scheduled click due within a minute |
+  | 🟢 green | Clickue is **clicking (or typing) right now** |
+  | 🔴 red | A job has a **problem**: a watcher can't watch, a click is waiting, or the last click was missed or failed |
+
+  Turn it off in **Preferences → General**.
 - To quit completely, use **Exit** in the tray menu or ☰ Menu.
 
 ### Job status at a glance (tray icon)
@@ -1629,6 +1728,8 @@ While Clickue is minimized, **point at its tray icon** to see whether your jobs 
 - The first line sums it up: *Clickue: 3 active · all OK*, *… · 1 needs attention*, *Clickue:
   ALL PAUSED*, or *Clickue: no jobs running*.
 - If a job is running right now: *▶ Running "Refresh dashboard" · step 2 of 4*.
+- Watchers show what they last saw **and a live countdown to the next check** (*Seen 13:49:58
+  · next check in 12s*); a watcher about to click shows *Picture gone · click in 4m 59s*.
 - Then one line per active job, **problems first**: ✖ failed (for example *Missed* or *Click
   FAILED*), ⚠ needs attention (a watcher seeing a change, a job waiting because the screen is
   locked), ✓ working normally (*Running · next in 4m 10s*, *Watching · Seen 13:49:58*), ⏸ paused.
@@ -1701,7 +1802,8 @@ minimized** to go straight to the tray.
 | Start automatically when I sign in to Windows | Off |
 | Keep the PC and display awake | On |
 | Show the jobs' status when I point at the tray icon (and in its menu → Job status) | On |
-| Clear Activity every time Clickue starts (off: it keeps earlier lines until Clear view) | Off |
+| Colour the tray icon: amber = a click is coming up, green = clicking now, red = a problem | On |
+| Clear Activity every time Clickue starts (off: Activity shows earlier lines again) | Off |
 
 ### Clicking
 
@@ -1710,6 +1812,8 @@ minimized** to go straight to the tray.
 | If a click can't happen (screen locked / disconnected), keep retrying for | 15 min |
 | Wait until mouse & keyboard have been idle for (0 = off) | 5 s |
 | Put the mouse back where it was after clicking | On |
+| Move the mouse to each click like a person (jobs and steps can choose otherwise) | Off |
+| Speed of those movements: Slow / Normal / Fast | Normal |
 | Warn me when two running jobs use the same window or spot | On |
 | **Checking a spot:** keep the marker on screen for (Show spot, Check now) | 5 s (1 to 120) |
 | Also point out every similar picture on the screen at the same time | Off |
@@ -1766,6 +1870,17 @@ These are only starting values for **new** watchers; each watcher has its own se
 |---|---|
 | Theme | System |
 | Show the summary cards at the top | On |
+| **🎨 Customize colours…** | Clickue's own colours |
+
+**Your own colours.** *Customize colours…* lists every colour of the app: window background,
+tables and panels, every other row, headings, text, labels, borders, grid lines, input fields,
+buttons (and under the mouse), outlines of unavailable buttons, New click / New watcher /
+Record, selected and ticked rows, and the OK / attention / problem / test colours. Pick the
+**Light theme** or **Dark theme** (each has its own colours; the one you edit is shown while
+the window is open). Click a colour (or **Change…**) to open the **colour wheel**: click the
+wheel for the hue and strength, drag **Brightness**, or type a **code** (*#1e5ac8*) or
+**R / G / B** values; *was · new* shows the difference. Changes apply right away; ✱ marks your
+own colours, **↺** puts one back, **Reset all colours of this theme** puts them all back.
 
 ### Data & backups
 
@@ -1775,9 +1890,17 @@ These are only starting values for **new** watchers; each watcher has its own se
 | Keep the newest … daily backups | 14 |
 | Keep a click history (for stats and CSV export) | On |
 | Log file size limit | 1 MB |
+| How much to log: Quiet / Normal / Detailed | Normal |
+
+**Log level.** *Quiet* logs clicks, problems and starts/stops only. *Normal* also logs every
+check that has a problem (with what to do), every try of a click that has to wait, and where
+pictures were found or the closest place when they weren't. *Detailed* adds every successful
+check (*check: picture seen at (191, 290), 96% at 110% size*) and the checks during a click's
+random delay - useful while setting up or tracking down a problem.
 
 Plus buttons for **Backups…**, **Open data folder**, **Export click history…** and
-**Uninstall Clickue…**.
+**Uninstall Clickue…**. **☰ Menu → Delete logs and history…** deletes the log file, the test
+history, the click history and/or the run history for good (tick which).
 
 ---
 
@@ -1987,6 +2110,8 @@ Only in admin tools where your organisation allows automation:
 | X | Tick / untick the selected job (for batch actions) |
 | Ctrl+Up / Ctrl+Down | More room for Activity / for the job list |
 | Ctrl+C / Ctrl+A / Ctrl+F (in a log) | Copy the selected rows / select all / filter |
+| F5 | Refresh: watchers check now, the list is rebuilt |
+| → / ← (in the job list) | Show / hide the selected job's steps |
 | Click the empty part of the job list | Unselect |
 | Mouse wheel, + / −, 0, arrows, middle-drag | Zoom and move while drawing a box ([section 6](#zooming-in-while-you-draw)) |
 | Ctrl+A (in the job list) | Tick every job shown |
@@ -2115,6 +2240,8 @@ signed in as that user). If Clickue was ended abruptly, Windows may leave a temp
 | **Job shows Waiting** | It's due but can't click: the screen is locked or disconnected, you're using the mouse, or the target is covered. Check Activity for the reason |
 | **Missed while I was away** | The screen was locked or the session disconnected; see [section 18](#18-locked-screens-remote-desktop-and-virtual-machines) |
 | **Watcher says "Can't tell: Clickue window open"** | Minimize Clickue or send it to the tray |
+| **The picture was "gone" and a click counted down after switching between a remote session and the console** | The switch changed the screen. Since 4.5.6 the watcher waits 15 s after the screen changes, keeps checking during the random delay and cancels the click if the picture is back. If it keeps happening: search the whole screen (or re-draw the search area on this screen), and draw a bigger box around a part that looks the same in both sessions ([section 6](#when-the-screen-changes-remote-session--console)) |
+| **The status says Can't watch** | Hover over the job: it says why and what to do |
 | **Watcher says "Picture NOT on screen (best 77%)" but it is there** | Something inside the box changes (a number, a time, an animation), the box was drawn while the mouse made a button look different, or a search area was drawn tighter than the picture (fixed in 4.5.3). Run **Dry run**: the closest places are outlined. Then re-draw a box around a part that never changes, or choose **Match: part of the picture is enough** ([section 6](#exact-or-partial-matching)) |
 | **Watcher says "Can't tell: mouse pointer on the picture"** | The pointer rests on the watched picture, which can change how it looks. Move the mouse away; when the computer is idle for 20 s Clickue checks with the pointer moved aside |
 | **The Tests window showed no test buttons until I resized it** | Fixed in 4.5.3 |

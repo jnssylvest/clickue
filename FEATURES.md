@@ -74,6 +74,13 @@ Everything below is available in Clickue 4.5 unless it's under
   that came due while Clickue was closed is skipped, not fired late.
 - Left, right or middle button; single or double click.
 
+## Moving the mouse
+
+- **Like a person** (optional): a smooth, slightly curved movement that's quick in the middle
+  and slow at both ends, sometimes with a tiny overshoot, to each click and back. Per job, per
+  click step, for recorded macros, and as a default (with Slow / Normal / Fast) in
+  Preferences → Clicking. Off by default: the mouse jumps, as before.
+
 ## Screen watchers
 
 - **Draw box around picture.** The screen freezes and dims, and you drag a box around what to
@@ -112,7 +119,13 @@ Everything below is available in Clickue 4.5 unless it's under
 - **Click only once** each time it changes, waiting until the picture comes back (or goes
   away) before clicking again. Can be turned off to keep clicking.
 - Won't count "picture missing" while Clickue's own window is open on screen (it could be
-  covering the picture).
+  covering the picture). Such checks show as **⚠ Can't watch** with the reason and what to do,
+  and every one is logged.
+- **Screen changes** (remote session ↔ console, resolution, scaling): waits 15 s before
+  counting checks again; explains when a search area drawn on another screen size may no
+  longer cover the picture.
+- **Keeps checking during the random delay** before a click and cancels the click if the
+  picture changes back (also checked right before clicking).
 - Live status in the list: Watching / Missing / Showing / Clicking / Off hours, last seen,
   and a countdown to the next check.
 
@@ -262,6 +275,13 @@ All tests hide the whole app while they run, so nothing is in the way.
 - Separate **scheduled clicks** and **screen watchers**, with a filter: All / Scheduled clicks
   / Screen watchers.
 - Add, edit (double-click), duplicate, delete with **undo** (Ctrl+Z), start/stop, pause/resume.
+- **Hover a job** for its full status: problems and what to do, next check/click (live), last
+  result, target.
+- **Summary per view** (all / scheduled clicks / screen watchers), with a clear Hide/Show
+  summary button.
+- **⟳ Refresh** (F5): watchers check now.
+- **Steps as rows:** jobs with steps have ▸/▾ arrows and can list their steps as ↳ rows.
+- **Tray icon colours:** amber = click counting down, green = clicking, red = a problem.
 - **Columns per view:** *Scheduled clicks* shows Clicks at, Schedule, Runs (active hours and
   limits), Next click, Starts in; *Screen watchers* shows Watching for (disappears/appears,
   size, area, exact or N % match), Then, Checks (interval, checks in a row, once), Picture
@@ -290,6 +310,10 @@ All tests hide the whole app while they run, so nothing is in the way.
 
 ## History, stats & logs
 
+- **⟳ Refresh, newest/oldest first, Clear view (temporary) and Delete… (for good)** on every
+  log; ☰ Menu → Delete logs and history… .
+- **Log level:** Quiet / Normal / Detailed. Normal logs every check with a problem (with what
+  to do), every try of a waiting click, and the closest place when a picture isn't found.
 - **Every log** (Activity, test history, run history and its steps, a job's stats, dry run
   results): right-click to **copy** the selected rows, one cell or everything shown (with
   headings, tab-separated for spreadsheets), select all, **save as CSV** (Activity: text),
@@ -388,6 +412,8 @@ All tests hide the whole app while they run, so nothing is in the way.
   contents (like a spreadsheet), in every table. The job list remembers its widths;
   ☰ Menu → Reset column widths.
 - Clear grid with column lines, status icons and colour coding.
+- **Your own colours:** every colour of the light and dark theme, with a colour wheel,
+  brightness, codes and R/G/B (Preferences → Appearance).
 - Buttons that can't be used right now are shown as an **outline without fill**; usable ones
   are filled. **New click** (blue) and **New watcher** (teal) are both primary buttons.
 - Click the empty part of the job list to **unselect**; double-clicking there does nothing.
