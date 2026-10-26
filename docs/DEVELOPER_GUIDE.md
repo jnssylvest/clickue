@@ -683,6 +683,11 @@ Run from the repository root.
      no connection is made; a window watcher with the browser minimized / closed / covered
      (can't watch, no click, pending click cancelled); Clickue's window over the picture (never
      "seen"); click logs show first seen / scheduled for / clicked; the tray tooltip isn't cut.
+   - 4.6.1: Check for updates works on a PC that gave *CERTIFICATE_VERIFY_FAILED* before; every
+     tray tooltip line is fully visible (a long can't-watch reason wraps); the browser in front
+     of a maximized Clickue → the watcher still sees its picture; Clickue in front of the
+     picture → *Clickue window in front of the picture*; after a remote session ↔ console
+     switch the first check shows *seen* when the picture is there.
 
 ## 10. GitHub: repository, CI and releases
 
