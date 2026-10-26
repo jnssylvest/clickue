@@ -11,7 +11,7 @@
 
 This guide explains **every feature** of Clickue, with real-world scenarios and example
 pictures. Read it from top to bottom to learn everything, or jump to the part you need.
-In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.5.6.
+In the app, open it from **☰ Menu → Complete guide (online)**. It describes Clickue 4.6.0.
 
 > [!NOTE]
 > The example pictures show an invented "Example App" so the ideas are easy to see. Your own
@@ -124,7 +124,7 @@ From the [Releases page](https://github.com/jnssylvest/clickue/releases/latest):
   (shown as *Before a fresh start* in Backups), so nothing is lost.
 - **Upgrading.** Your jobs keep working. Every time a new version starts for the first time
   with your jobs, Clickue first saves a backup named *before-upgrade-&lt;version&gt;* (for
-  example *before-upgrade-4.5.6*), so you can always go back to the jobs as they were.
+  example *before-upgrade-4.6.0*), so you can always go back to the jobs as they were.
 - **Jobs file missing or damaged?** If `jobs.json` is gone or can't be read but backups exist,
   Clickue tells you and offers to **restore the newest backup** (it shows its date and the job
   names). Restored jobs start **stopped**, so nothing clicks until you start them.
@@ -718,6 +718,32 @@ window might be covering it. The list shows **⚠ Can't watch** - *Can't tell: C
 open*. Minimize Clickue or send it to the tray when you've finished setting up. "Appears"
 watchers aren't affected.
 
+### Watchers that click inside a window
+
+When the watcher's button is set to **Inside a window** (it clicks a spot in a particular
+window, e.g. *Items | Example - Mozilla Firefox*), the watcher watches **that window** too
+(4.6), whether it searches the whole screen or only an area:
+
+- **The window isn't open** (no window with that title: closed, or the page or tab changed so
+  its title changed) → **⚠ Can't watch**: *its window "…" isn't open*. **Minimized** → *its
+  window "…" is minimized*. The picture isn't counted as gone, so **nothing is clicked**, and a
+  click already counting down is **cancelled** (*Click cancelled - its window … is minimized*).
+  The window is checked once more right before any click too.
+- It **only looks inside that window** (and inside its search area, if it has one), so a
+  look-alike elsewhere on the screen can't count.
+- When the picture isn't found but **another program's window is on top** of the window where
+  the picture was, that's reported (*its window … is covered by …*) instead of "picture gone".
+- Check now and Dry run follow the same rules and say why they didn't look.
+
+Watchers that click on the screen (not in a window) behave as before.
+
+### Clickue's own windows
+
+A watched picture is **never "found" inside a Clickue window** (4.6): its windows are left out of
+the search. Before, a small picture could match something in Clickue's own window when it
+covered the real one, so a watcher said *picture seen* (or *picture came back* and cancelled a
+click) although the real picture was hidden.
+
 ### When a watcher can't watch
 
 Since 4.5.6 every check that **can't tell** whether the picture is there is a problem you can
@@ -728,7 +754,8 @@ see:
   under *needs attention*, and the tray icon gets a red dot.
 - **Every such check is logged**: the first one with the reason and what to do, then *check 2:
   still can't watch - … (for 1m 30s)*, and *watching again* when it's over.
-- Reasons: the screen is locked or the remote session disconnected; a Clickue window is open
+- Reasons: its window isn't open, is minimized or is covered; the screen is locked or the
+  remote session disconnected; a Clickue window is open
   (it could be covering the picture); the mouse pointer rests on the picture; **the screen
   just changed size or scaling** (see below); no picture saved; a screenshot failed.
 - Meanwhile the picture is **not** counted as gone, so nothing is clicked because of it.
@@ -753,6 +780,21 @@ resolution or scaling) changes the screen under the watcher. Since 4.5.6:
   the picture is enough**.
 - Pictures can also look different when their window isn't the active one (some apps dim
   their tabs or toolbars then). Box a part that looks the same either way.
+
+### What the log says about a watcher's click (4.6)
+
+Every step is in Activity with its time:
+
+```
+08:48:41  [Watcher 1] picture NOT found (check 1 of 2) - … closest place at (1207, 339) - confirming
+08:48:46  [Watcher 1] picture GONE - first seen 08:48:41, confirmed 08:48:46 - click scheduled for 08:54:58 (random delay 6m 12s; …)
+08:55:01  [Watcher 1] picture was gone - left click at (682, 299) (exact picture 99%) - OK · gone 08:48:41, click scheduled for 08:54:58, clicked 08:55:01
+```
+
+*Last result* shows the same (*Clicked 10/26 08:55:01 (gone 08:48:41, click scheduled for
+08:54:58, clicked 08:55:01)*). A scheduled click logs its slot, its random delay and when it
+really clicked: *OK · scheduled 08:00:00 + random 3m 10s = due 08:03:10, clicked 08:03:12*
+(and how late it was if it had to wait).
 
 ### A click that's no longer wanted is cancelled
 
@@ -1643,7 +1685,7 @@ writes the reason in the Activity log and shows a warning once, instead of faili
 - Backups contain your jobs, step groups and settings, but **never your phone-alert
   credentials**.
 - **Before an upgrade:** the first time a new version starts with your jobs, it saves a backup
-  named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.5.6*) before saving
+  named *before-upgrade-&lt;version&gt;* (for example *before-upgrade-4.6.0*) before saving
   anything. Older jobs keep working exactly as before.
 - **☰ Menu → Backups…** lists them (Daily, Manual, Before a restore, Before an import, Before a
   fresh start, Before an upgrade) with how many jobs each holds.
@@ -1654,8 +1696,10 @@ writes the reason in the Activity log and shows a warning once, instead of faili
 
 ### Updating and uninstalling
 
-See [section 25](#25-install-portable-and-uninstall): what is kept when you update, and exactly
-what is removed or kept when you uninstall.
+Clickue can upgrade itself from the app (☰ Menu → **Check for updates…**, or the bar that
+appears when a new version is out); your jobs and settings are kept. See
+[section 25](#updating) for how it works and what goes over the internet, and what is removed
+or kept when you uninstall.
 
 ---
 
@@ -1802,6 +1846,7 @@ minimized** to go straight to the tray.
 | Start automatically when I sign in to Windows | Off |
 | Keep the PC and display awake | On |
 | Show the jobs' status when I point at the tray icon (and in its menu → Job status) | On |
+| Check for new versions once a day (only asks GitHub; off = never connects for updates) | On |
 | Colour the tray icon: amber = a click is coming up, green = clicking now, red = a problem | On |
 | Clear Activity every time Clickue starts (off: Activity shows earlier lines again) | Off |
 
@@ -2195,10 +2240,42 @@ save yourself (exports, CSV files, a video folder you choose).
 
 ### Updating
 
-Install the new version over the old one (or unzip the new portable version over the old
-folder). Your jobs and settings are kept. After running the installer, Clickue asks whether to
-**keep your jobs** or start fresh: choose **Yes** to keep them. Jobs from older versions keep
-working; a *before-upgrade* backup is saved first.
+**In the app (4.6).** Clickue looks for a new version once a day (**Preferences → General →
+Check for new versions**, on by default). When there is one, a bar appears above the job list -
+*⬆ Clickue 4.6.1 is available (you have 4.6.0)* - with **⬆ Upgrade now…**, **What's new**
+(the release page), **Later** (hides it for a day; ✕ does the same) and **Skip this version**
+(no more reminders for that one). The tray shows a notification once. **☰ Menu → Check for
+updates…** looks right away.
+
+**⬆ Upgrade now…** shows what's new and then, with **Upgrade to …**:
+
+1. downloads this copy's package from the GitHub release (the installer for an installed copy,
+   the portable zip for a portable copy), with a progress bar;
+2. checks it against the release's **SHA256SUMS.txt** (a download that doesn't match is
+   deleted and nothing is installed);
+3. saves your jobs and settings and makes a **before-upgrade-&lt;version&gt;** backup;
+4. starts the new version and closes this one: an installed copy runs the installer silently
+   over itself (the same folder, for you or for all users as before; Windows may ask for
+   permission for an all-users copy) and starts Clickue again; a portable copy swaps in the new
+   `Clickue.exe` (the old one stays as `Clickue.old.exe` until the next start) and starts it.
+
+Your jobs, settings, histories and backups stay in your data folder and are used as they are;
+after an in-app upgrade Clickue doesn't ask whether to keep them, and the Activity log says
+*Upgraded from 4.6.0 to 4.6.1. Your jobs and settings were kept*. A copy running **from source**
+can't replace itself: the upgrade window opens the release page instead.
+
+**What goes over the internet.** Only when the check is on: a request to GitHub's public
+release information for Clickue (`api.github.com`), and when you choose to upgrade, the
+download from GitHub's release files. Nothing about you or your jobs is sent (GitHub sees the
+computer's internet address and *Clickue/&lt;version&gt;*). Turn the check off and Clickue never
+connects to the internet for updates; *Check for updates…* then only tells you it's off.
+The checksum proves the download is the file the release lists; the files aren't code-signed
+yet.
+
+**By hand.** Install the new version over the old one (or unzip the new portable version over
+the old folder). Your jobs and settings are kept. After running the installer by hand,
+Clickue asks whether to **keep your jobs** or start fresh: choose **Yes** to keep them. Jobs
+from older versions keep working; a *before-upgrade* backup is saved first.
 
 ### Uninstalling
 
@@ -2242,6 +2319,9 @@ signed in as that user). If Clickue was ended abruptly, Windows may leave a temp
 | **Watcher says "Can't tell: Clickue window open"** | Minimize Clickue or send it to the tray |
 | **The picture was "gone" and a click counted down after switching between a remote session and the console** | The switch changed the screen. Since 4.5.6 the watcher waits 15 s after the screen changes, keeps checking during the random delay and cancels the click if the picture is back. If it keeps happening: search the whole screen (or re-draw the search area on this screen), and draw a bigger box around a part that looks the same in both sessions ([section 6](#when-the-screen-changes-remote-session--console)) |
 | **The status says Can't watch** | Hover over the job: it says why and what to do |
+| **"its window … isn't open" although the browser is open** | The watcher's button is *Inside a window* and windows are found by their **title**. A browser's title changes with the page or tab. Show the page you picked it on, or pick the button again |
+| **A watcher said "picture seen" while Clickue's window covered it** | Fixed in 4.6: Clickue's own windows are left out of the search |
+| **The upgrade bar keeps coming back** | Use **Skip this version**, or turn off Preferences → General → Check for new versions |
 | **Watcher says "Picture NOT on screen (best 77%)" but it is there** | Something inside the box changes (a number, a time, an animation), the box was drawn while the mouse made a button look different, or a search area was drawn tighter than the picture (fixed in 4.5.3). Run **Dry run**: the closest places are outlined. Then re-draw a box around a part that never changes, or choose **Match: part of the picture is enough** ([section 6](#exact-or-partial-matching)) |
 | **Watcher says "Can't tell: mouse pointer on the picture"** | The pointer rests on the watched picture, which can change how it looks. Move the mouse away; when the computer is idle for 20 s Clickue checks with the pointer moved aside |
 | **The Tests window showed no test buttons until I resized it** | Fixed in 4.5.3 |

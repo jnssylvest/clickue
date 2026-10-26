@@ -1,4 +1,4 @@
-"""Clickue 4 features: hours, limits, steps, appears/area, history, backups, undo, alerts, migration. Expect: RESULT 88/88"""
+"""Clickue 4 features: hours, limits, steps, appears/area, history, backups, undo, alerts, migration. Expect: RESULT 97/97"""
 import os
 exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_helpers.py")).read())
 import time, threading, queue, tempfile, json, os
@@ -347,4 +347,69 @@ ok("clicks today counted for watchers separately", A.settings["stats_clicks"] ==
 ok("issue hints: screen locked / Clickue window / search area",
    "console" in ac.issue_hint("screen locked or remote session disconnected")
    and "Minimize" in ac.issue_hint("Clickue window open") and ac.issue_hint("zzz") == "")
+
+# ---- 4.6: updates (no real network: a fake GitHub)
+ok("versions: newer / same / older / junk", ac.newer_version("v9.0.0") and not ac.newer_version(ac.VERSION)
+   and not ac.newer_version("0.1") and not ac.newer_version("banana") and ac.parse_version("4.6") == (4, 6, 0))
+import hashlib, io as _io2, zipfile as _zf
+setup_bytes = b"MZ fake installer"
+zbuf = _io2.BytesIO()
+with _zf.ZipFile(zbuf, "w") as z:
+    z.writestr("Clickue.exe", b"MZ new exe"); z.writestr("README.md", "x")
+zip_bytes = zbuf.getvalue()
+sums = (f"{hashlib.sha256(setup_bytes).hexdigest()}  Clickue-Setup-99.0.exe\n"
+        f"{hashlib.sha256(zip_bytes).hexdigest()}  Clickue-Portable-99.0.zip\n")
+release = {"tag_name": "v99.0", "name": "Clickue 99.0", "body": "Notes", "html_url": "https://github.com/jnssylvest/clickue/releases/tag/v99.0",
+           "assets": [{"name": n, "browser_download_url": f"https://github.com/jnssylvest/clickue/releases/download/v99.0/{n}"}
+                      for n in ("Clickue-Setup-99.0.exe", "Clickue-Portable-99.0.zip", "SHA256SUMS.txt")]
+           + [{"name": "evil.exe", "browser_download_url": "https://evil.example/evil.exe"}]}
+served = {}
+def fake_get(url, max_bytes, dest=None, progress=None):
+    served[url] = served.get(url, 0) + 1
+    if url == ac.UPDATE_API:
+        data = json.dumps(release).encode()
+    elif url.endswith("SHA256SUMS.txt"):
+        data = sums.encode()
+    elif url.endswith(".exe"):
+        data = setup_bytes
+    elif url.endswith(".zip"):
+        data = zip_bytes
+    else:
+        raise ValueError("not GitHub")
+    if dest:
+        open(dest, "wb").write(data); return len(data)
+    return data
+ac._HTTPS_GET = fake_get
+info = ac.fetch_latest_release()
+ok("update: newest release read, foreign download links ignored", info["version"] == "99.0" and "evil.exe" not in info["assets"], info["assets"].keys())
+p1 = ac.download_update(info, "installer")
+ok("update: installer downloaded and its checksum checked", open(p1, "rb").read() == setup_bytes and os.path.dirname(p1).endswith("updates"))
+p2 = ac.download_update(info, "portable")
+exe = ac.extract_portable_exe(p2, d)
+ok("update: portable zip checked, only Clickue.exe taken out", open(exe, "rb").read() == b"MZ new exe")
+sums = sums.replace(hashlib.sha256(setup_bytes).hexdigest(), "0" * 64)
+try:
+    ac.download_update(info, "installer"); bad = False
+except ValueError as e:
+    bad = "checksum" in str(e)
+ok("update: a download that doesn't match its checksum is refused and deleted", bad and not os.path.exists(p1))
+ac._HTTPS_GET = None
+try:
+    ac.https_get("https://evil.example/x", 10); refused = False
+except ValueError as e:
+    refused = "not GitHub" in str(e)
+ok("update: connecting anywhere but GitHub is refused", refused)
+try:
+    ac.https_get("http://github.com/x", 10); refused = False
+except ValueError:
+    refused = True
+ok("update: plain http is refused", refused)
+ok("update: this test copy runs from source (it can't replace itself)", ac.install_kind() == "source")
+A.settings["update_check"] = False
+calls = []
+ac._HTTPS_GET = lambda *a, **k: calls.append(a) or b"{}"
+A.cmdq = queue.Queue()
+A.check_for_updates(manual=False)
+ok("update checks off: nothing is sent anywhere", not calls)
+ac._HTTPS_GET = None
 print(f"\nRESULT {sum(R)}/{len(R)}")

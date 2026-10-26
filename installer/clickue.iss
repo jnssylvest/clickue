@@ -56,6 +56,8 @@ Filename: "{app}\install.ini"; Section: "Install"; Key: "Id"; String: "{code:Ins
 
 [Run]
 Filename: "{app}\Clickue.exe"; Description: "Start Clickue now"; Flags: nowait postinstall skipifsilent
+; In-app upgrades (4.6) run this installer silently with /RELAUNCH: start Clickue again after.
+Filename: "{app}\Clickue.exe"; Flags: nowait runasoriginaluser; Check: WantRelaunch
 
 [UninstallDelete]
 Type: files; Name: "{app}\install.ini"
@@ -74,6 +76,11 @@ begin
   for I := 1 to ParamCount do
     if CompareText(ParamStr(I), Name) = 0 then
       Result := True;
+end;
+
+function WantRelaunch(): Boolean;
+begin
+  Result := WizardSilent and HasParam('/RELAUNCH');
 end;
 
 procedure RemoveStartupEntry();

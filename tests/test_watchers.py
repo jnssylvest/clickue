@@ -1,4 +1,4 @@
-"""Screen-watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries). Expect: RESULT 53/53"""
+"""Screen-watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries). Expect: RESULT 61/61"""
 import os
 exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_helpers.py")).read())
 import time, threading, queue, tempfile, random
@@ -197,4 +197,40 @@ expect("49 log levels: quiet keeps problems, drops routine lines; detailed keeps
        ac.log_wanted("quiet","info","[x] CAN'T WATCH: y") and not ac.log_wanted("quiet","info","[x] watching for its picture every 30s")
        and not ac.log_wanted("normal","detail","x") and ac.log_wanted("detailed","detail","x"))
 A.log=_orig_log
+
+# ---- 4.6: a watcher that clicks in a window watches the window; Clickue's own windows; times
+logs.clear(); A.log=cap
+w.update(target_mode="window", window_title="Example App", watch_random_on=True, watch_delay_min_s=300, watch_delay_max_s=300,
+         armed=True, miss_count=0, pending_click_at=None, issue_count=0, screen_sig=None, settle_until=None)
+_ww=ac.watch_window
+ac.watch_window=lambda job:("minimized", None, "Example App")
+show(scene(kind="gone")[0]); check(); check()
+expect("50 window minimized -> can't watch, NOT 'picture gone', no click", w["watch_state"]=="unknown" and not w["pending_click_at"] and "minimized" in w["watch_note"], w["watch_note"])
+ac.watch_window=lambda job:("ok", (0,0,1920,1080), "Example App")
+w["issue_count"]=0; check(); check()
+expect("51 window back, picture gone twice -> click scheduled", bool(w["pending_click_at"]))
+gl=[m for l,m in logs if "click scheduled for" in m]
+expect("52 the log says when it was first seen, confirmed and when the click is scheduled", gl and "first seen" in gl[-1] and "confirmed" in gl[-1], gl[-1:] )
+ac.watch_window=lambda job:("missing", None, "Example App")
+check()
+expect("53 window closed during the delay -> click cancelled, nothing clicked", w["pending_click_at"] is None and "cancelled" in w["last_result"].lower(), w["last_result"])
+ac.watch_window=lambda job:("ok", (0,0,1920,1080), "Example App")
+w["issue_count"]=0; check(); check(); w["pending_click_at"]=0
+ac.watch_window=lambda job:("minimized", None, "Example App")
+n0=len(clicks); A.watch_click(w)
+expect("54 window minimized right before the click -> nothing clicked", len(clicks)==n0 and w["pending_click_at"] is None, w["last_result"])
+ac.watch_window=lambda job:("none", None, "")
+w.update(target_mode="screen", watch_random_on=False, armed=True, miss_count=0, pending_click_at=None, issue_count=0)
+show(scene(kind="gone")[0]); check(); check(); A.watch_click(w)
+okl=[m for l,m in logs if "- OK ·" in m]
+expect("55 a watcher click logs when it was gone, scheduled and clicked", okl and "gone" in okl[-1] and "clicked" in okl[-1], okl[-1:])
+# Clickue's own window over the place: never "found" there
+img_own,_=scene(); show(img_own)
+_,(ccx,ccy)=scene()
+A.own_rects=[(ccx-120, ccy-60, 240, 120)]
+r=ac.watched_picture(dict(w, _exclude=A.own_rects))[0]
+expect("56 a picture inside Clickue's own window doesn't count as found", not r[0], r)
+r=ac.watched_picture(dict(w, _exclude=[(1500,900,100,100)]))[0]
+expect("57 Clickue's window elsewhere doesn't hide the real picture", r[0], r)
+A.own_rects=[]; ac.watch_window=_ww; A.log=_orig_log
 print(f"RESULT {sum(res)}/{len(res)}")

@@ -57,8 +57,9 @@ Jobs can do much more than one click: **steps** click other spots, wait, wait fo
 type or paste text, press keys, scroll and drag, and **If / Repeat / variables / step groups**
 turn them into small, readable workflows with time limits and retries.
 
-It runs quietly in the system tray, uses no internet connection unless you turn on phone
-alerts, and keeps all of its data on your own computer.
+It runs quietly in the system tray, keeps all of its data on your own computer, and only goes
+online to look for a new version on GitHub once a day (you can turn that off) and for phone
+alerts if you turn them on.
 
 ## Who Clickue helps
 
@@ -109,6 +110,8 @@ security checks. See [Responsible use & warnings](#%EF%B8%8F-responsible-use--wa
   Match the exact picture (every pixel area checked), or let **part of the picture** be
   enough when something inside the box changes; every copy on screen is found. Zoom in up to
   24× with a pixel magnifier while drawing the box.
+- ⬆️ **Upgrades itself.** A notice when a new version is out; one click downloads it from
+  GitHub, checks it and installs it, keeping your jobs and settings (turn checks off any time).
 - 🖱️ **Moves like a person (optional).** Smooth, curved mouse movements to each click instead
   of jumps, per job, per step or for recorded macros.
 - 🩺 **Honest status.** Hover a job to see what it's doing, any problem and what to do; the
@@ -259,7 +262,11 @@ Clickue is a general-purpose automation tool. Please read this before using it.
 
 ## Privacy
 
-- No telemetry, analytics, accounts or ads. Clickue never phones home.
+- No telemetry, analytics, accounts or ads. Nothing about you or your jobs is ever sent.
+- **Update checks** (on by default, Preferences → General): once a day Clickue asks GitHub's
+  public release information whether there's a new version, and downloads it from GitHub only
+  when you choose **Upgrade now** (checked against the release's SHA-256 checksums). Turn it off
+  and Clickue never connects to the internet for updates.
 - Everything (jobs, the pictures it saved, settings, logs, history, backups, run history,
   failure screenshots) stays in `%APPDATA%\Clickue` (or `ClickueData` in portable mode).
 - **Screen videos** are off unless you turn them on and ask for them per job. They're recorded
@@ -268,8 +275,8 @@ Clickue is a general-purpose automation tool. Please read this before using it.
   is blacked out while Clickue types or pastes text.
 - Typed and pasted text is never written to the log, click history, run history or error
   messages. Text you mark as **Secret** is encrypted with your Windows account and never exported.
-- The only network traffic happens if **you** turn on phone alerts, and then it goes only to
-  discord.com or api.telegram.org over HTTPS.
+- Apart from update checks, the only network traffic happens if **you** turn on phone alerts,
+  and then it goes only to discord.com or api.telegram.org over HTTPS.
 - Saved pictures are small crops around the spots you picked. They can contain whatever was on
   screen there, so treat backups and exports accordingly.
 

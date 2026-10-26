@@ -164,8 +164,15 @@ ok("installer: shows the notice before installing", "InfoBeforeFile=before-insta
 ok("app: recursive delete only after checking the folder",
    src.count("shutil.rmtree(") == 1 and "if is_clickue_data_dir(DATA_DIR):\n                shutil.rmtree" in src)
 ok("app: no eval/exec/pickle/shell=True", not re.search(r"\beval\(|\bexec\(|pickle|shell=True", src))
-ok("app: no telemetry / unexpected network hosts",
-   set(re.findall(r"https://([\w.\-]+)", src)) <= {"github.com", "api.telegram.org", "discord.com"})
+ok("app: no telemetry / unexpected network hosts (4.6: GitHub's API for update checks)",
+   set(re.findall(r"https://([\w.\-]+)", src)) <= {"github.com", "api.github.com",
+                                                     "api.telegram.org", "discord.com"})
+ok("app: update downloads only from GitHub, over HTTPS, checksum-checked",
+   'UPDATE_HOSTS = ("api.github.com", "github.com", "objects.githubusercontent.com",' in src
+   and "file_sha256(dest)" in src and 'u.scheme != "https"' in src)
+ok("app: update checks can be turned off and then never connect",
+   '"update_check": True' in src and 'if not self.settings.get("update_check", True):' in src)
+ok("installer: relaunches after a silent in-app upgrade only", "WantRelaunch" in iss and "/RELAUNCH" in iss)
 
 print(f"\nRESULT {sum(R)}/{len(R)}")
 sys.exit(0 if all(R) else 1)

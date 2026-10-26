@@ -1,5 +1,50 @@
 # Changelog
 
+## 4.6.0 - Upgrade in the app; window-aware watchers; full click timing in the logs
+
+> Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken
+> during development, but AI-assisted development does not guarantee bug-free or secure
+> software. Review the source and use normal precautions. Test automations safely, protect
+> notification credentials, and avoid unattended use for consequential actions.
+
+From now on, versions with new features raise the middle number (4.6, 4.7 …); versions with
+only fixes raise the last one (4.6.1 …).
+
+**New**
+- **Upgrade in the app.** A daily check (Preferences → General, on by default) shows a
+  dismissible notice when a new version is out: **Upgrade now**, What's new, Later, Skip this
+  version; ☰ Menu → Check for updates. Upgrading downloads the right package from GitHub, checks
+  it against the release's SHA-256 checksums, backs up your jobs, installs it (installed: the
+  installer runs silently and Clickue restarts; portable: the new Clickue.exe replaces the old
+  one) and keeps your jobs and settings without asking. With the check off, Clickue never
+  connects to the internet for updates.
+- **Window-aware watchers.** A watcher whose button is *Inside a window* watches that window:
+  if it's not open or minimized, the watcher reports **Can't watch** (not "picture gone"),
+  nothing is clicked, and a click counting down is cancelled; it only looks inside that
+  window (and its area); a window covering it is reported. Works with whole-screen and area
+  searches, and in Check now / Dry run.
+- **Click timing in the logs.** Watcher clicks log when the change was first seen, when it was
+  confirmed, when the click was scheduled for and when it clicked; scheduled clicks log their
+  slot, random delay, due time and click time (and how late, if they had to wait).
+
+**Fixed**
+- **"Picture seen" while Clickue's own window covered it** (and "picture came back" cancelling
+  a click when Clickue was brought up): a small picture could match something inside Clickue's
+  own window. Clickue's windows are now left out of the search.
+- The tray tooltip cut lines off at 34 characters ("· next c…"); whole lines are shown when
+  they fit.
+- Exact matches at another display size reported the unverified score (e.g. 67 %); they now
+  report the verified one.
+
+**Data:** new settings `update_check` (on), `update_last_check`, `update_skip`,
+`update_later_until`, `update_known`, `upgrade_pending`, `upgrade_from`; runtime job fields
+`first_miss_at`, `click_planned_at`, `planned_run`. No schema change. The installer restarts
+Clickue after a silent in-app upgrade (`/RELAUNCH`).
+
+**Docs:** guide sections 6 (window-aware watchers, own windows, click timing), 17, 20, 25
+(updating), 26; SECURITY (update checks), README (privacy), feature list, quick start,
+developer guide.
+
 ## 4.5.6 - Honest status everywhere, watcher fixes, log tools, person-like mouse, your own colours
 
 > Clickue is vibe-coded and was developed with substantial AI assistance. Caution was taken

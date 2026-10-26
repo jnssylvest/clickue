@@ -30,6 +30,13 @@
 
 ---
 
+## Updates
+
+When a new version is out, a bar appears above the job list: **⬆ Upgrade now…** downloads it
+from GitHub, checks it and installs it; your jobs and settings are kept. **Later** or **Skip
+this version** hide it. ☰ Menu → **Check for updates…** looks right away. Don't want Clickue to
+go online for this? Turn off **Preferences → General → Check for new versions**.
+
 ## The main window
 
 - **Summary cards** (top): the next click and countdown, active jobs, clicks today, and whether

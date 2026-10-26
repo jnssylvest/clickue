@@ -58,7 +58,7 @@ except Exception:
 APP_NAME = "Clickue"
 APP_ID = "Clickue"
 OLD_APP_ID = "ScheduledAutoClicker"      # previous name - data is migrated from here
-VERSION = "4.5.6"
+VERSION = "4.6.0"
 REPO_URL = "https://github.com/jnssylvest/clickue"
 GUIDE_URL = REPO_URL + "/blob/main/docs/GUIDE.md"      # the complete guide (☰ Menu)
 DISCLOSURE = ("Clickue is vibe-coded and was developed with substantial AI assistance. Caution "
@@ -97,7 +97,8 @@ RUNTIME_KEYS = ("base_next", "next_run", "deadline", "test_at", "test_deadline",
                 "armed", "pending_click_at", "pending_since", "watch_scale", "watch_note",
                 "wtest_at", "wtest_deadline", "wtest_click", "once_logged", "run_clicks",
                 "found_xy", "pointer_logged", "issue_count", "issue_since", "screen_sig",
-                "settle_until")
+                "settle_until", "first_miss_at", "click_planned_at",
+                "planned_run")
 
 # ---------------------------------------------------------------- Windows API
 if IS_WIN:
@@ -1102,7 +1103,7 @@ def partial_candidates(tmpl_gray, screen_gray, spot, scale_hint=None, need=0.75,
 
 
 def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None, report=None,
-                      partial=None):
+                      partial=None, exclude=None):
     """Is this exact picture on the screen (or inside `area`) right now?
     Stricter than finding a click spot: shape, colour and (at the original size) fine
     detail must all agree, so a similar-looking replacement doesn't count as "still there".
@@ -1110,6 +1111,7 @@ def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None, report=Non
     `partial` (0.4-0.95, 4.5.3): instead, the picture counts as there when at least that
     share of it matches (see partial_fraction); the score is then that share.
     A search `area` is searched with a margin (search_box), so a picture at its edge counts.
+    `exclude` = screen rectangles (Clickue's own windows, 4.6) where nothing counts as found.
     Returns (found, x, y, score, scale) - x, y is the picture's centre on screen.
     If `report` is a list, every similar place is added to it as
     (x, y, w, h, note, chosen?, exact?) in screen pixels."""
@@ -1143,6 +1145,13 @@ def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None, report=Non
                 cands.append(c)
     if not cands:
         return False, 0, 0, 0.0, None
+    if exclude:
+        def outside(c):
+            box = (c[1] - tw0 * c[3] / 2 + vx, c[2] - th0 * c[3] / 2 + vy, tw0 * c[3], th0 * c[3])
+            return not any(rects_overlap(box, r) for r in exclude)
+        cands = [c for c in cands if outside(c)]
+        if not cands:
+            return False, 0, 0, 0.0, None
     chosen, checked = None, []
     for c in cands:
         sc = c[3]
@@ -1154,14 +1163,18 @@ def picture_on_screen(png_b64, scale_hint=None, shot=None, area=None, report=Non
                 chosen = (c, frac)
             continue
         ok = is_match(c)
+        vscore = None
         if ok and abs(sc - 1) < 0.01:
             ok = c[4] >= WATCH_SAME_SIZE_MIN - 0.03 and c[5] >= WATCH_SAME_SIZE_MIN
         elif ok:
-            ok = verify_exact(tmpl, t_rgb, spot, full, s_rgb, c)[0]
+            ok, vw_, vc_ = verify_exact(tmpl, t_rgb, spot, full, s_rgb, c)
+            vscore = max(0.0, min(vw_, vc_))
         if ok:
             chroma, light = color_difference(t_rgb, s_rgb, c[1], c[2], sc)
             ok = chroma <= WATCH_COLOR_MAX and light <= WATCH_LIGHT_MAX
         val = max(0.0, min(c[4], c[5]))
+        if ok and vscore is not None:
+            val = max(val, vscore)      # 4.6: report the score of the size-corrected check
         if ok or is_match(c):
             # every part of the picture must agree, not just most of it (4.5.4)
             ok2, share = exact_tiles(t_rgb, s_rgb, c, spot)
@@ -1336,6 +1349,75 @@ def job_health(app, j, iid="", now=None):
     return "\n".join(lines[:1] + problems + lines[1:])
 
 
+def watch_window(job):
+    """For a watcher that clicks inside a window (target_mode "window"): is that window there
+    and visible? Returns (state, rect, title): state "ok" / "missing" / "minimized" /
+    "none" (not a window watcher, or not on Windows); rect = the window's inside area."""
+    title = (job.get("window_title") or "").strip()
+    if job.get("target_mode") != "window" or not title or not IS_WIN:
+        return "none", None, title
+    try:
+        h = find_window(title, job.get("window_class", ""))
+        if not h:
+            return "missing", None, title
+        if user32.IsIconic(h):
+            return "minimized", None, title
+        return "ok", client_origin(h), title
+    except Exception:
+        return "none", None, title
+
+
+def window_covering(job, xy):
+    """Is another program's window on top of the watcher's window at xy? Returns its title
+    (or "" if not)."""
+    if not IS_WIN or not xy:
+        return ""
+    try:
+        h = find_window(job.get("window_title", ""), job.get("window_class", ""))
+        w = window_at(*xy)
+        if h and w and not same_window(w, h) and not is_own_window(w):
+            return win_text(w) or "another window"
+    except Exception:
+        pass
+    return ""
+
+
+def rects_overlap(a, b):
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
+def rect_intersection(a, b):
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    x0, y0 = max(ax, bx), max(ay, by)
+    x1, y1 = min(ax + aw, bx + bw), min(ay + ah, by + bh)
+    return (x0, y0, x1 - x0, y1 - y0) if x1 > x0 and y1 > y0 else None
+
+
+def watch_scope(job):
+    """Where a watcher looks (4.6): (job copy with its search rectangle, problem or "").
+    A watcher that clicks inside a window only looks inside that window; a missing or
+    minimized window is a problem, not a missing picture."""
+    snap = dict(job)
+    wstate, wrect, wtitle = watch_window(snap)
+    wt_ = short_title(wtitle, 40)
+    if wstate == "missing":
+        return snap, (f"its window \u201c{wt_}\u201d isn't open (no window with that title - "
+                      f"if the page or tab changed, so did its title)")
+    if wstate == "minimized":
+        return snap, f"its window \u201c{wt_}\u201d is minimized"
+    if wstate == "ok":
+        area = job_area(snap)
+        search = rect_intersection(area, wrect) if area else wrect
+        if not search:
+            return snap, (f"its search area is outside its window \u201c{wt_}\u201d (the "
+                          f"window moved or the area was drawn on another screen)")
+        snap["_search_rect"] = search
+    return snap, ""
+
+
 def watch_area_note(job):
     """If a watcher's search area was drawn on a different screen size, say so (the area is
     scaled, which may not match how the window's content moved)."""
@@ -1359,7 +1441,8 @@ def watched_picture(job, report=None, move_ok=False):
     moment (tests, or when nobody is using the computer); otherwise `pointer` is True and
     the caller shouldn't count it as gone.
     Returns ((found, x, y, score, scale), note, pointer)."""
-    kw = dict(area=job_area(job), partial=watch_partial(job))
+    kw = dict(area=job.get("_search_rect") or job_area(job), partial=watch_partial(job),
+              exclude=job.get("_exclude") or None)
     rep = [] if report is not None else None
     shot = grab_screen(move_cursor=False)
     r = picture_on_screen(job["watch_png"], job.get("watch_scale"), shot=shot, report=rep, **kw)
@@ -2242,6 +2325,193 @@ def _http_post(url, body, content_type):
     with opener.open(req, timeout=ALERT_TIMEOUT_S) as r:
         r.read(ALERT_MAX_RESPONSE)
         return r.status
+
+
+# ---- 4.6: updates (optional; Preferences → General). Only GitHub, only HTTPS, only when on.
+UPDATE_REPO = "jnssylvest/clickue"
+UPDATE_API = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
+UPDATE_HOSTS = ("api.github.com", "github.com", "objects.githubusercontent.com",
+                "release-assets.githubusercontent.com")
+UPDATE_MAX_API = 512 * 1024              # the release description
+UPDATE_MAX_FILE = 400 * 1024 * 1024      # installer / zip
+UPDATE_TIMEOUT_S = 20
+UPDATE_EVERY_S = 24 * 3600               # automatic check at most once a day
+_HTTPS_GET = None                        # tests replace the network with a fake
+
+
+def parse_version(text):
+    """'v4.6.0' / '4.6' -> (4, 6, 0); None if it isn't a version."""
+    m = re.match(r"^\s*v?(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?\s*$", str(text or ""))
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+
+
+def newer_version(remote, local=None):
+    r, l_ = parse_version(remote), parse_version(local or VERSION)
+    return bool(r and l_ and r > l_)
+
+
+def https_get(url, max_bytes, dest=None, progress=None, stop=None):
+    """GET over HTTPS from GitHub only (UPDATE_HOSTS), with certificate checks, at most 5
+    redirects and only to those hosts, a time limit and a size limit. Returns the bytes, or
+    with `dest` writes the file there (via .part) and returns its size. Raises on errors."""
+    if _HTTPS_GET is not None:
+        return _HTTPS_GET(url, max_bytes, dest, progress)
+    import ssl
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    ctx = ssl.create_default_context()
+    opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=ctx))
+    for _ in range(6):
+        u = urllib.parse.urlsplit(url)
+        if u.scheme != "https" or u.hostname not in UPDATE_HOSTS:
+            raise ValueError(f"refused to connect to {u.hostname or url} (not GitHub)")
+        req = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/{VERSION}",
+                                                   "Accept": "*/*"})
+        try:
+            r = opener.open(req, timeout=UPDATE_TIMEOUT_S)
+        except urllib.error.HTTPError as e:
+            if e.code in (301, 302, 303, 307, 308) and e.headers.get("Location"):
+                url = urllib.parse.urljoin(url, e.headers["Location"])
+                continue
+            raise
+        with r:
+            total = int(r.headers.get("Content-Length") or 0)
+            if total > max_bytes:
+                raise ValueError("the download is bigger than expected")
+            if dest is None:
+                data = r.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    raise ValueError("the answer is bigger than expected")
+                return data
+            got = 0
+            part = dest + ".part"
+            with open(part, "wb") as fh:
+                while True:
+                    if stop and stop():
+                        raise RuntimeError("cancelled")
+                    chunk = r.read(256 * 1024)
+                    if not chunk:
+                        break
+                    got += len(chunk)
+                    if got > max_bytes:
+                        raise ValueError("the download is bigger than expected")
+                    fh.write(chunk)
+                    if progress:
+                        progress(got, total)
+            os.replace(part, dest)
+            return got
+    raise ValueError("too many redirects")
+
+
+def fetch_latest_release():
+    """What GitHub says is the newest release: dict(version, name, notes, page, assets)."""
+    data = json.loads(https_get(UPDATE_API, UPDATE_MAX_API).decode("utf-8", "replace"))
+    tag = str(data.get("tag_name", ""))
+    ver = parse_version(tag)
+    if not ver:
+        raise ValueError(f"unexpected release name {tag[:40]!r}")
+    assets = {}
+    for a in data.get("assets") or []:
+        n, u = str(a.get("name", "")), str(a.get("browser_download_url", ""))
+        if re.match(r"^[\w.\-]{1,100}$", n) and u.startswith("https://github.com/"):
+            assets[n] = u
+    page = str(data.get("html_url", ""))
+    if not page.startswith(f"https://github.com/{UPDATE_REPO}/"):
+        page = f"https://github.com/{UPDATE_REPO}/releases"
+    return dict(version="%d.%d.%d" % ver if ver[2] else "%d.%d" % ver[:2],
+                name=str(data.get("name") or tag)[:120],
+                notes=str(data.get("body") or "")[:20000], page=page, assets=assets)
+
+
+def install_kind():
+    """How this copy was installed: "installer", "portable" or "source"."""
+    if not FROZEN or not IS_WIN:
+        return "source"
+    if read_install_id():
+        return "installer"
+    return "portable"
+
+
+def update_asset_name(kind, version):
+    return (f"Clickue-Setup-{version}.exe" if kind == "installer"
+            else f"Clickue-Portable-{version}.zip" if kind == "portable" else "")
+
+
+def expected_sha256(sums_text, name):
+    """The SHA-256 for `name` in a SHA256SUMS.txt ("<hash>  <file>" lines), or ""."""
+    for line in str(sums_text).splitlines():
+        parts = line.strip().split()
+        if len(parts) == 2 and parts[1].lstrip("*") == name and re.match(r"^[0-9a-fA-F]{64}$",
+                                                                          parts[0]):
+            return parts[0].lower()
+    return ""
+
+
+def file_sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def download_update(info, kind, progress=None, stop=None):
+    """Download this copy's package of the release into the data folder's "updates" folder
+    and check it against the release's SHA256SUMS.txt. Returns the file's path."""
+    name = update_asset_name(kind, info["version"])
+    url = info["assets"].get(name)
+    if not url:
+        raise ValueError(f"the release has no {name}")
+    sums_url = info["assets"].get("SHA256SUMS.txt")
+    if not sums_url:
+        raise ValueError("the release has no checksums (SHA256SUMS.txt), so it can't be checked")
+    want = expected_sha256(https_get(sums_url, 64 * 1024).decode("ascii", "replace"), name)
+    if not want:
+        raise ValueError(f"{name} isn't listed in SHA256SUMS.txt")
+    folder = data_path("updates")
+    os.makedirs(folder, exist_ok=True)
+    for old in os.listdir(folder):               # only our own old downloads
+        if re.match(r"^Clickue-(Setup|Portable)-[\d.]+\.(exe|zip)(\.part)?$", old):
+            try:
+                os.remove(os.path.join(folder, old))
+            except OSError:
+                pass
+    dest = os.path.join(folder, name)
+    https_get(url, UPDATE_MAX_FILE, dest=dest, progress=progress, stop=stop)
+    got = file_sha256(dest)
+    if got != want:
+        os.remove(dest)
+        raise ValueError("the download doesn't match its checksum - it was deleted. Try again "
+                         "later or download it from the release page.")
+    return dest
+
+
+def _try_remove(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def extract_portable_exe(zip_path, folder):
+    """Take Clickue.exe out of a downloaded portable zip (only that file, checked)."""
+    import zipfile
+    with zipfile.ZipFile(zip_path) as z:
+        info = next((i for i in z.infolist() if i.filename == "Clickue.exe"), None)
+        if info is None or info.file_size > UPDATE_MAX_FILE:
+            raise ValueError("the zip has no usable Clickue.exe")
+        out = os.path.join(folder, "Clickue.new.exe")
+        with z.open(info) as src, open(out, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+    return out
 
 
 def _alert_allowed(service, now=None):
@@ -5083,6 +5353,13 @@ DEFAULT_SETTINGS = {
     "rec_human": False,             # recorded macros: move like a person when they play
     "custom_colors": {},            # 4.5.6: {"light": {key: "#rrggbb"}, "dark": {...}}
     "tray_colors": True,            # 4.5.6: tray icon dot: amber/green/red
+    "update_check": True,           # 4.6: look for new versions (off = never go online for it)
+    "update_last_check": 0,
+    "update_skip": "",              # a version the user chose to skip
+    "update_later_until": 0,        # "Later": don't show the bar again before this time
+    "upgrade_pending": "",          # an in-app upgrade to this version is under way
+    "upgrade_from": "",
+    "update_known": None,           # the newest release found (version, page, assets, notes)
     "log_level": "normal",          # 4.5.6: "quiet" / "normal" / "detailed"
     "stats_clicks_watch": 0,        # 4.5.6: today's watcher clicks (for the watcher summary)
     "stats_missed_watch": 0,
@@ -5177,6 +5454,9 @@ def new_job(n=1):
         "issue_since": None,
         "screen_sig": None,         # screen size + scaling at the last check (runtime)
         "settle_until": None,
+        "first_miss_at": None,      # 4.6: when the change was first seen (runtime)
+        "click_planned_at": None,   # 4.6: when the click was scheduled for (runtime)
+        "planned_run": None,        # 4.6: a scheduled click's planned time (runtime)
         # ---- extra steps after the click
         "steps": [],
         "watch_random_on": True,    # watcher: random delay before clicking
@@ -5309,6 +5589,14 @@ def rgb_to_hex(r, g, b):
     return "#%02x%02x%02x" % tuple(max(0, min(255, int(round(v)))) for v in (r, g, b))
 
 
+def clock(ts):
+    """08:54:58 (or "?" when unknown)."""
+    try:
+        return datetime.fromtimestamp(float(ts)).strftime("%H:%M:%S")
+    except Exception:
+        return "?"
+
+
 def fmt_compact(sec):
     """8h, 15m, 10s, 1h 30m - drops zero parts."""
     sec = int(max(0, round(sec)))
@@ -5374,7 +5662,8 @@ class App:
         install_id = read_install_id()
         if install_id and self.settings.get("install_id") != install_id:
             # freshly installed / reinstalled: offer a clean start if jobs are left over
-            if self.jobs and not asked_import:
+            # (not after an in-app upgrade: that installs again on purpose, 4.6)
+            if self.jobs and not asked_import and not self.settings.get("upgrade_pending"):
                 root.withdraw()
                 names = ", ".join(short_title(j.get("name", "?"), 30) for j in self.jobs[:6])
                 keep = messagebox.askyesno(
@@ -5480,6 +5769,8 @@ class App:
         self.hk_thread = None
         self.start_hotkeys()
         threading.Thread(target=trim_history, daemon=True).start()
+        self.after_upgrade()
+        root.after(60 * 1000, self.auto_update_check)    # does nothing while checks are off
         threading.Thread(target=trim_runlog, daemon=True).start()
         threading.Thread(target=self.prune_media, daemon=True).start()
         self.root.after(3000, self.backup_check)
@@ -6017,6 +6308,7 @@ class App:
         else:
             delay, extra = 0, " (no random delay)"
         job["next_run"] = job["base_next"] + delay
+        job["planned_run"] = job["next_run"]       # 4.6: for the "due … clicked …" log
         job["deadline"] = None
         self.wait_msgs.pop((job["id"], "scheduled"), None)
         self.log(f"[{job['name']}] scheduled {fmt_time(job['base_next'])}{extra}"
@@ -6104,11 +6396,19 @@ class App:
                    watch_state="", watch_note="")
         self.wait_msgs.pop((job["id"], "watch"), None)
 
-    def watch_issue(self, job, note, now):
+    def watch_issue(self, job, note, now, cancel_click=False):
         """A check that couldn't tell whether the picture is there (4.5.6): the job shows it
-        as a problem, and every such check is logged - the first one with what to do."""
+        as a problem, and every such check is logged - the first one with what to do.
+        cancel_click (4.6): a click waiting for its random delay is cancelled (the window it
+        would click in is gone or minimized)."""
         with self.lock:
             name = job["name"]
+            if cancel_click and job.get("pending_click_at"):
+                job["pending_click_at"] = job["pending_since"] = None
+                job["armed"] = True
+                job["miss_count"] = 0
+                job["last_result"] = f"Click cancelled - {note}"
+                self.log(f"[{name}] click CANCELLED - {note}; nothing clicked")
             n = int(job.get("issue_count") or 0) + 1
             job.update(watch_state="unknown", watch_note=note, issue_count=n)
             job["issue_since"] = job.get("issue_since") or now
@@ -6165,14 +6465,39 @@ class App:
                          f"({sig[4] * 100 // 96}%) - waiting {SCREEN_SETTLE_S} s before counting "
                          f"checks again")
             return self.watch_issue(job, "the screen size or scaling just changed", now)
+        with self.lock:
+            snap = dict(job)
+        # 4.6: a watcher that clicks inside a window also watches that window
+        wstate, wrect, wtitle = watch_window(snap)
+        wt_ = short_title(wtitle, 40)
+        if wstate == "missing":
+            return self.watch_issue(job, f"its window \u201c{wt_}\u201d isn't open (no window "
+                                         f"with that title - if the page or tab changed, so "
+                                         f"did its title)", now, cancel_click=True)
+        if wstate == "minimized":
+            return self.watch_issue(job, f"its window \u201c{wt_}\u201d is minimized", now,
+                                    cancel_click=True)
+        if wstate == "ok":
+            area = job_area(snap)
+            search = rect_intersection(area, wrect) if area else wrect
+            if not search:
+                return self.watch_issue(job, f"its search area is outside its window "
+                                             f"\u201c{wt_}\u201d (the window moved or the area "
+                                             f"was drawn on another screen)", now)
+            snap["_search_rect"] = search
+        snap["_exclude"] = list(getattr(self, "own_rects", []) or [])
         try:
-            with self.lock:
-                snap = dict(job)
             (found, x, y, score, sc), wnote, pointer = watched_picture(
                 snap, move_ok=self.may_move_pointer())
         except Exception as e:
             return self.watch_issue(job, f"couldn't look at the screen ({e})", now)
         appears = snap.get("watch_trigger") == "appears"
+        if not found and wstate == "ok" and not appears:
+            cover = window_covering(snap, snap.get("found_xy"))
+            if cover:
+                return self.watch_issue(job, f"its window \u201c{wt_}\u201d is covered by "
+                                             f"\u201c{short_title(cover, 30)}\u201d where the "
+                                             f"picture was", now)
         if not found and self.own_visible and not appears:
             # This app's own window might be covering the picture - don't count it
             return self.watch_issue(job, "Clickue window open", now)
@@ -6224,6 +6549,8 @@ class App:
                          f"in {fmt_dur(job['pending_click_at'] - now)}", "detail")
                 return
             job["miss_count"] = int(job.get("miss_count", 0)) + 1
+            if job["miss_count"] == 1:
+                job["first_miss_at"] = now
             job["watch_state"] = "seen" if found else "missing"
             need = max(1, int(job.get("watch_confirm", 2)))
             what = "showing" if appears else "missing"
@@ -6253,14 +6580,18 @@ class App:
             delay = (random.randint(min(lo, hi), max(lo, hi))
                      if job.get("watch_random_on", True) else 0)
             job["pending_click_at"] = now + delay
+            job["click_planned_at"] = now + delay
             job["pending_since"] = now
             job["armed"] = False
             # keep looking during the delay, so a picture that comes back cancels the click
             job["next_check"] = now + min(interval, max(5, delay // 4 or 5))
-            self.log(f"[{name}] picture {'APPEARED' if appears else 'GONE'} - clicking in "
-                     f"{fmt_dur(delay)}"
-                     + (" (random delay; checks continue, and the click is cancelled if the "
-                        f"picture {'goes away' if appears else 'comes back'})" if delay else ""))
+            first = job.get("first_miss_at") or now
+            self.log(f"[{name}] picture {'APPEARED' if appears else 'GONE'} - first seen "
+                     f"{clock(first)}, confirmed {clock(now)} - click scheduled for "
+                     f"{clock(now + delay)} ("
+                     + (f"random delay {fmt_dur(delay)}; checks continue, and the click is "
+                        f"cancelled if the picture {'goes away' if appears else 'comes back'})"
+                        if delay else "no delay)"))
             self.save()
 
     def may_move_pointer(self):
@@ -6290,6 +6621,10 @@ class App:
             return out
         if not screen_available():
             out["error"] = "screen locked or session disconnected"
+            return out
+        job, problem = watch_scope(job)
+        if problem:
+            out["error"] = problem + " - the picture wasn't looked for and nothing would be clicked"
             return out
         try:
             out["picture"], out["note"], _ = watched_picture(job, report=report, move_ok=True)
@@ -6416,6 +6751,22 @@ class App:
             point = (px, py)
         elif snap.get("watch_png") and HAVE_CV and screen_available():
             # look once more right before clicking: still gone (or still showing)? (4.5.6)
+            wstate, wrect, wtitle = watch_window(snap)
+            if wstate in ("missing", "minimized"):
+                why = (f"its window \u201c{short_title(wtitle, 40)}\u201d "
+                       + ("isn't open" if wstate == "missing" else "is minimized"))
+                with self.lock:
+                    job["pending_click_at"] = job["pending_since"] = None
+                    job["armed"] = True
+                    job["miss_count"] = 0
+                    job["last_result"] = f"Click cancelled - {why}"
+                self.log(f"[{name}] click CANCELLED - {why} right before the click was due; "
+                         f"nothing clicked")
+                return
+            if wstate == "ok":
+                area = job_area(snap)
+                snap["_search_rect"] = rect_intersection(area, wrect) if area else wrect
+            snap["_exclude"] = list(getattr(self, "own_rects", []) or [])
             try:
                 (f, px, py, score, sc), _, _ = watched_picture(snap)
             except Exception:
@@ -6443,8 +6794,12 @@ class App:
                 job["count"] = int(job.get("count", 0)) + 1
                 self.bump_stats("stats_clicks", watch=True)
                 job["last_run"] = now
-                job["last_result"] = "Clicked " + stamp() + (" (picture appeared)" if appears
-                                                             else " (picture gone)")
+                planned = job.get("click_planned_at")
+                first = job.get("first_miss_at")
+                timing = (f"{'appeared' if appears else 'gone'} {clock(first)}" if first else "") \
+                    + (f", click scheduled for {clock(planned)}" if planned else "") \
+                    + f", clicked {clock(now)}"
+                job["last_result"] = "Clicked " + stamp() + f" ({timing.lstrip(', ')})"
                 job["pending_click_at"] = job["pending_since"] = None
                 # already confirmed gone: if it's still gone after the wait, click again
                 # straight away instead of re-confirming from scratch
@@ -6453,7 +6808,8 @@ class App:
                 job["next_check"] = now + max(1, int(wait_s))
                 via = f" ({how})" if how else ""
                 m = (f"[{name}] picture {'appeared' if appears else 'was gone'} - "
-                     f"{job['button']} click at ({x}, {y}){via} - OK")
+                     f"{job['button']} click at ({x}, {y}){via} - OK · {timing.lstrip(', ')}")
+                job["first_miss_at"] = job["click_planned_at"] = None
                 self.log(m)
                 self.notify(f"{name}: picture {'appeared' if appears else 'was gone'}, clicked.",
                             "watch")
@@ -6688,8 +7044,16 @@ class App:
                     job["count"] = int(job.get("count", 0)) + 1
                     self.bump_stats("stats_clicks")
                     job["last_run"] = now
-                    job["last_result"] = "OK " + stamp() + (" · " + how if "picture" in how else "")
-                    self.log(f"[{name}] {button} click at ({x}, {y}){via} - OK")
+                    base, due = job.get("base_next"), job.get("planned_run") or job.get("next_run")
+                    timing = (f"scheduled {clock(base)}" if base else "") + (
+                        f" + random {fmt_dur(due - base)} = due {clock(due)}"
+                        if base and due and due - base >= 1 else "") + f", clicked {clock(now)}" \
+                        + (f" ({fmt_dur(now - due)} late: it had to wait)"
+                           if due and now - due >= 5 else "")
+                    job["last_result"] = "OK " + stamp() + (" · " + how if "picture" in how else "") \
+                        + f" (due {clock(due)})" * bool(due)
+                    self.log(f"[{name}] {button} click at ({x}, {y}){via} - OK · "
+                             f"{timing.lstrip(', ')}")
                     self.history(name, "scheduled", "ok", x, y, how, msg if msg != "clicked" else "")
                     self.schedule_after_run(job, now)
                     self.count_click(job)
@@ -6853,6 +7217,22 @@ class App:
         ttk.Button(self.undo_bar, text="✕", style="Small.TButton",
                    command=lambda: self.undo_bar.pack_forget()).pack(side="right")
         self.build_batch_bar(main)
+        # 4.6: "a new version is available" (dismissible)
+        self.update_bar = ttk.Frame(main, style="Card.TFrame", padding=(10, 6))
+        self.update_lbl = ttk.Label(self.update_bar, style="CardSub.TLabel")
+        self.update_lbl.pack(side="left")
+        ttk.Button(self.update_bar, text="✕", style="Small.TButton",
+                   command=lambda: self.update_later(hours=24)).pack(side="right")
+        ttk.Button(self.update_bar, text="Skip this version", style="Small.TButton",
+                   command=self.update_skip).pack(side="right", padx=(4, 0))
+        ttk.Button(self.update_bar, text="Later", style="Small.TButton",
+                   command=lambda: self.update_later(hours=24)).pack(side="right", padx=(4, 0))
+        ttk.Button(self.update_bar, text="What's new", style="Small.TButton",
+                   command=lambda: self.open_url((self.update_info or {}).get("page"))).pack(
+            side="right", padx=(4, 0))
+        ttk.Button(self.update_bar, text="⬆  Upgrade now…", style="Accent.TButton",
+                   command=self.upgrade_now).pack(side="right", padx=(4, 0))
+        self.update_info = None
         self.root.bind("<Control-z>", self.undo_delete)
         self.root.bind("<Control-comma>", lambda e: self.open_settings())
 
@@ -7905,6 +8285,18 @@ class App:
 
         now = time.time()
         try:
+            rects = []
+            for w in [self.root] + [w for w in self.root.winfo_children()
+                                    if isinstance(w, tk.Toplevel)]:
+                if w.winfo_viewable():
+                    # where Clickue's own windows are (title bar included): a watched picture
+                    # is never "found" there (4.6)
+                    rects.append((w.winfo_rootx() - 8, w.winfo_rooty() - 40,
+                                  w.winfo_width() + 16, w.winfo_height() + 48))
+            self.own_rects = rects
+        except Exception:
+            self.own_rects = []
+        try:
             self.own_visible = self.root.winfo_viewable() or any(
                 w.winfo_viewable() for w in self.root.winfo_children()
                 if isinstance(w, tk.Toplevel))
@@ -8853,10 +9245,14 @@ class App:
             tip += "\n▶ " + short_title(running, 40)
         shown = 0
         for _, name, word, det, st, _at in items:
-            line = (f"\n{icon.get(st, '•')} {short_title(name, 16)}: "
-                    + short_title(say(word, det if st in ("bad", "warn", "running") else ""), 34))
+            text = say(word, det if st in ("bad", "warn", "running") else "")
             more = n - shown - 1
             tail = f"\n+{more} more (right-click → Job status)" if more else ""
+            # the whole line when it fits (4.6: it was cut at 34 characters), else shortened
+            line = f"\n{icon.get(st, '•')} {short_title(name, 24)}: {text}"
+            if len(tip) + len(line) + len(tail) > self.TRAY_TIP_MAX:
+                line = (f"\n{icon.get(st, '•')} {short_title(name, 16)}: "
+                        + short_title(text.replace("next check in", "check in"), 34))
             if len(tip) + len(line) + len(tail) > self.TRAY_TIP_MAX:
                 rest = n - shown
                 end = f"\n+{rest} more (right-click → Job status)"
@@ -9226,6 +9622,169 @@ class App:
             return
         self.quit_app()
 
+    # ------------------------------------------------------------ 4.6: updates
+    def open_url(self, url):
+        if url and url.startswith(("https://github.com/", REPO_URL)):
+            import webbrowser
+            webbrowser.open(url)
+
+    def auto_update_check(self):
+        """Look for a new version at most once a day, in the background, only while
+        Preferences → General → "Check for new versions" is on."""
+        try:
+            if self.settings.get("update_check", True) and \
+                    time.time() - float(self.settings.get("update_last_check") or 0) >= UPDATE_EVERY_S:
+                self.check_for_updates(manual=False)
+            elif self.settings.get("update_check", True) and self.settings.get("update_known"):
+                self.show_update_bar(self.settings["update_known"])
+        finally:
+            self.root.after(3600 * 1000, self.auto_update_check)
+
+    def check_for_updates(self, manual=True, parent=None):
+        """Ask GitHub for the newest release (in the background). With checks turned off,
+        nothing is sent anywhere."""
+        if not self.settings.get("update_check", True):
+            if manual:
+                if messagebox.askyesno(APP_NAME, "Checking for new versions is turned off, so "
+                                                 "Clickue doesn't connect to the internet for "
+                                                 "it.\n\nOpen Preferences to turn it on?",
+                                       parent=parent or self.root):
+                    self.open_settings()
+            return
+        if getattr(self, "_update_busy", False):
+            return
+        self._update_busy = True
+        if manual:
+            self.flash_status("Looking for a new version…")
+
+        def work():
+            try:
+                info, err = fetch_latest_release(), ""
+            except Exception as e:
+                info, err = None, str(e)[:200]
+            self.cmdq.put(lambda: done(info, err))
+
+        def done(info, err):
+            self._update_busy = False
+            self.settings["update_last_check"] = time.time()
+            if err:
+                self.log(f"Couldn't check for a new version: {err}")
+                if manual:
+                    messagebox.showwarning(APP_NAME, f"Couldn't check for a new version:\n{err}",
+                                           parent=parent or self.root)
+                self.save()
+                return
+            if newer_version(info["version"]):
+                self.settings["update_known"] = {k: info[k] for k in
+                                                 ("version", "name", "page", "assets", "notes")}
+                self.log(f"Clickue {info['version']} is available (you have {VERSION})")
+                self.save()
+                self.show_update_bar(info, force=manual)
+                if manual:
+                    self.upgrade_now()
+            else:
+                self.settings["update_known"] = None
+                self.save()
+                if manual:
+                    messagebox.showinfo(APP_NAME, f"You have the newest version ({VERSION}).",
+                                        parent=parent or self.root)
+        threading.Thread(target=work, daemon=True).start()
+
+    def show_update_bar(self, info, force=False):
+        if not info or not newer_version(info.get("version")):
+            return
+        self.update_info = info
+        v = info["version"]
+        if not force and (self.settings.get("update_skip") == v or
+                          time.time() < float(self.settings.get("update_later_until") or 0)):
+            return
+        self.update_lbl.configure(text=f"⬆  Clickue {v} is available (you have {VERSION}). "
+                                       f"Upgrading keeps your jobs and settings.")
+        if not self.update_bar.winfo_ismapped():
+            self.update_bar.pack(fill="x", pady=(0, 6), before=self.paned)
+        if getattr(self, "_update_notified", "") != v:
+            self._update_notified = v
+            self.notify(f"Clickue {v} is available. Open Clickue to upgrade.", "info")
+
+    def update_later(self, hours=24):
+        self.settings["update_later_until"] = time.time() + hours * 3600
+        self.save()
+        self.update_bar.pack_forget()
+
+    def update_skip(self):
+        if self.update_info:
+            self.settings["update_skip"] = self.update_info["version"]
+            self.save()
+            self.log(f"Version {self.update_info['version']} skipped (no reminders for it)")
+        self.update_bar.pack_forget()
+
+    def upgrade_now(self):
+        info = self.update_info or self.settings.get("update_known")
+        if not info:
+            self.check_for_updates(manual=True)
+            return
+        UpgradeDialog(self, info)
+
+    def finish_upgrade(self, info, kind, path):
+        """Downloaded and checked: back up, remember the upgrade, start the new version, exit.
+        Jobs and settings stay in the data folder, which the new version uses as is."""
+        v = info["version"]
+        self.save()
+        try:
+            make_backup(self.jobs, self.settings, f"before-upgrade-{v}", self.groups)
+        except Exception as e:
+            self.log(f"Backup before the upgrade failed: {e}")
+        self.settings["upgrade_pending"] = v
+        self.settings["upgrade_from"] = VERSION
+        self.save()
+        self.log(f"Upgrading to Clickue {v} ({kind}) - Clickue closes and starts again")
+        import subprocess
+        try:
+            if kind == "installer":
+                args = [path, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+                        "/CLOSEAPPLICATIONS", "/RELAUNCH"]
+                pf = [os.environ.get(k, "") for k in ("ProgramFiles", "ProgramFiles(x86)")]
+                args.append("/ALLUSERS" if any(p_ and os.path.normcase(PROGRAM_DIR).startswith(
+                    os.path.normcase(p_)) for p_ in pf) else "/CURRENTUSER")
+                subprocess.Popen(args, close_fds=True)  # noqa: S603 - fixed arguments
+            else:
+                new = extract_portable_exe(path, PROGRAM_DIR)
+                cur = PROGRAM_PATH
+                old = os.path.join(PROGRAM_DIR, "Clickue.old.exe")
+                if os.path.exists(old):
+                    os.remove(old)
+                os.replace(cur, old)                    # a running exe can be renamed
+                os.replace(new, cur)
+                subprocess.Popen([cur], close_fds=True)  # noqa: S603 - our own new exe
+        except Exception as e:
+            self.settings["upgrade_pending"] = ""
+            self.save()
+            messagebox.showerror(APP_NAME, f"The upgrade couldn't start:\n{e}\n\nNothing was "
+                                           f"changed; Clickue keeps running.", parent=self.root)
+            return
+        self.root.after(800, self.quit_app)
+
+    def after_upgrade(self):
+        """At start: finish an in-app upgrade (note it, tidy up the old program file)."""
+        want = self.settings.get("upgrade_pending")
+        old = os.path.join(PROGRAM_DIR, "Clickue.old.exe")
+        if FROZEN and os.path.exists(old):
+            self.root.after(5000, lambda: os.path.exists(old) and _try_remove(old))
+        if not want:
+            return
+        if parse_version(VERSION) and parse_version(VERSION) >= (parse_version(want) or (0,)):
+            self.log(f"Upgraded from Clickue {self.settings.get('upgrade_from') or '?'} to "
+                     f"{VERSION}. Your jobs and settings were kept (backup "
+                     f"before-upgrade-{want} in ☰ Menu → Backups).")
+            self.settings["update_known"] = None
+            self.update_bar.pack_forget()
+        else:
+            self.log(f"The upgrade to {want} didn't finish; still running {VERSION}. Try "
+                     f"again from ☰ Menu → Check for updates, or install it from the release "
+                     f"page.")
+        self.settings["upgrade_pending"] = ""
+        self.save()
+
     def quit_app(self):
         try:
             self.remember_geometry()
@@ -9518,6 +10077,7 @@ class App:
         m.add_command(label="Open log file", command=self.open_log)
         m.add_command(label="Delete logs and history…", command=lambda: DeleteLogsDialog(self))
         m.add_separator()
+        m.add_command(label="Check for updates…", command=lambda: self.check_for_updates(True))
         m.add_command(label="Complete guide (online)", command=self.open_guide)
         m.add_command(label="Help & shortcuts", command=lambda: HelpDialog(self))
         m.add_command(label=f"About {APP_NAME}", command=lambda: AboutDialog(self))
@@ -10008,8 +10568,17 @@ class App:
 
         def run():
             every = []
+            scoped, problem = watch_scope(job)
+            if problem:
+                self.log(f"[{job['name']}] check: can't look - {problem}")
+                self.record_test(job["name"], "Check picture now", f"Not checked: {problem}",
+                                 "bad")
+                restore()
+                messagebox.showwarning(APP_NAME, f"The picture wasn't looked for: {problem}.",
+                                       parent=owner)
+                return
             try:
-                (found, x, y, score, sc), wnote, _ = watched_picture(job, report=every,
+                (found, x, y, score, sc), wnote, _ = watched_picture(scoped, report=every,
                                                                      move_ok=True)
             except Exception as e:
                 restore()
@@ -15881,6 +16450,113 @@ class ColorsDialog(Dialog):
         super().destroy()
 
 
+class UpgradeDialog(Dialog):
+    """Upgrade Clickue in the app (4.6): what's new, then download, check, install."""
+
+    def __init__(self, app, info):
+        super().__init__(app, f"Upgrade to Clickue {info['version']}")
+        self.info = info
+        self.kind = install_kind()
+        self.cancel_flag = False
+        f = self.body
+        ttk.Label(f, text=f"Clickue {info['version']} is available", style="Title.TLabel").pack(
+            anchor="w")
+        how = {"installer": "It's downloaded from GitHub, checked against the release's "
+                            "checksum, and installed over this copy. Clickue closes and starts "
+                            "again by itself.",
+               "portable": "The portable package is downloaded from GitHub and checked; the "
+                           "new Clickue.exe replaces this one (the old one is kept as "
+                           "Clickue.old.exe until the next start). Clickue closes and starts "
+                           "again by itself.",
+               "source": "This copy runs from the source code, so it can't upgrade itself. "
+                         "Get the new version from the release page (or with git pull)."}
+        ttk.Label(f, style="Muted.TLabel", wraplength=600, justify="left", text=(
+            f"You have {VERSION}. {how[self.kind]} Your jobs, settings, history and backups "
+            f"stay where they are and are kept; a backup of your jobs is made first.")).pack(
+            anchor="w", pady=(4, 8))
+        ttk.Label(f, text="What's new", style="Section.TLabel").pack(anchor="w")
+        tf = ttk.Frame(f, style="Card.TFrame", padding=1)
+        tf.pack(fill="both", expand=True, pady=(4, 0))
+        notes = tk.Text(tf, height=14, width=80, wrap="word", borderwidth=0, padx=10, pady=8,
+                        bg=app.pal["panel"], fg=app.pal["fg"])
+        sb = ttk.Scrollbar(tf, orient="vertical", command=notes.yview)
+        notes.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        notes.pack(fill="both", expand=True)
+        notes.insert("1.0", info.get("notes") or "(no description)")
+        notes.configure(state="disabled")
+        self.status = ttk.Label(f, style="Muted.TLabel", text="")
+        self.status.pack(anchor="w", pady=(8, 0))
+        self.bar = ttk.Progressbar(f, mode="determinate", maximum=100)
+        b = self.footer
+        ttk.Button(b, text="Close", command=self.close).pack(side="right")
+        if self.kind == "source":
+            ttk.Button(b, text="Open the release page", style="Accent.TButton",
+                       command=lambda: app.open_url(info.get("page"))).pack(side="right",
+                                                                            padx=(0, 6))
+        else:
+            self.go_btn = ttk.Button(b, text=f"⬆  Upgrade to {info['version']}",
+                                     style="Accent.TButton", command=self.go)
+            self.go_btn.pack(side="right", padx=(0, 6))
+            ttk.Button(b, text="Release page", command=lambda: app.open_url(info.get("page"))
+                       ).pack(side="left")
+        self.finish()
+
+    def close(self):
+        self.cancel_flag = True
+        self.destroy()
+
+    def go(self):
+        app = self.app
+        busy = getattr(app, "aq", None) is not None and app.aq.running
+        if busy and not messagebox.askyesno(APP_NAME, "A job is running right now. Upgrade "
+                                                      "anyway? (It's stopped when Clickue "
+                                                      "closes.)", parent=self):
+            return
+        self.go_btn.state(["disabled"])
+        self.bar.pack(fill="x", pady=(6, 0))
+        self.status.configure(text="Downloading…")
+
+        def prog(got, total):
+            app.cmdq.put(lambda: self.show_progress(got, total))
+
+        def work():
+            try:
+                path, err = download_update(self.info, self.kind, prog,
+                                            stop=lambda: self.cancel_flag), ""
+            except Exception as e:
+                path, err = None, str(e)[:300]
+            app.cmdq.put(lambda: self.downloaded(path, err))
+        threading.Thread(target=work, daemon=True).start()
+
+    def show_progress(self, got, total):
+        try:
+            if total:
+                self.bar["value"] = 100 * got / total
+            self.status.configure(text=f"Downloading… {got / 1048576:.1f} MB"
+                                       + (f" of {total / 1048576:.1f} MB" if total else ""))
+        except Exception:
+            pass
+
+    def downloaded(self, path, err):
+        if err:
+            if self.cancel_flag:
+                return
+            self.app.log(f"Upgrade download failed: {err}")
+            try:
+                self.status.configure(text=f"Couldn't download: {err}")
+                self.go_btn.state(["!disabled"])
+            except Exception:
+                pass
+            return
+        try:
+            self.status.configure(text="Checked (checksum OK). Installing - Clickue will close "
+                                       "and start again…")
+        except Exception:
+            pass
+        self.app.root.after(600, lambda: self.app.finish_upgrade(self.info, self.kind, path))
+
+
 class DeleteLogsDialog(Dialog):
     """☰ Menu → Delete logs and history… (4.5.6): delete logs and histories for good."""
 
@@ -15988,6 +16664,13 @@ class HelpDialog(Dialog):
              "each with its own history for this job or all jobs. Check picture outlines "
              "every copy of the picture it finds. The whole app hides while a test runs. Preferences → "
              "Clicking sets how long the marker stays and can outline every similar picture."),
+            ("Updates", "When a new version is out, a bar appears: Upgrade now downloads it from "
+             "GitHub, checks it and installs it, keeping your jobs and settings. ☰ Menu → Check "
+             "for updates. Turn checks off in Preferences → General and Clickue never goes "
+             "online for updates."),
+            ("Watchers and windows", "A watcher whose button is inside a window watches that "
+             "window too: closed or minimized means Can't watch and no click. A watched "
+             "picture never counts as found inside Clickue's own windows."),
             ("Is everything OK?", "Hover over a job: it says what the job is doing, any "
              "problem and what to do. A watcher that can't see its picture shows ⚠ Can't watch. "
              "The tray icon dot: amber = a click is counting down, green = clicking now, red = "
@@ -16062,6 +16745,8 @@ class AboutDialog(Dialog):
         ttk.Label(f, text=f"Source code and security notes: {REPO_URL}", style="Muted.TLabel",
                   wraplength=520, justify="left").pack(anchor="w", pady=(6, 0))
         ttk.Button(self.footer, text="Close", command=self.destroy).pack(side="right")
+        ttk.Button(self.footer, text="Check for updates…",
+                   command=lambda: app.check_for_updates(True, self)).pack(side="left")
         self.finish()
 
 
@@ -16130,6 +16815,8 @@ class SettingsDialog(Dialog):
         check(p, "keep_awake", "Keep the PC and display awake")
         check(p, "tray_status", "Show the jobs' status when I point at the tray icon (and in "
                                 "its right-click menu → Job status)", HAVE_TRAY)
+        check(p, "update_check", "Check for new versions once a day (only asks GitHub; off = "
+                                 "Clickue never connects to the internet for updates)")
         check(p, "tray_colors", "Colour the tray icon: amber = a click is coming up, green = "
                                 "clicking now, red = a job has a problem", HAVE_TRAY)
         check(p, "activity_clear_on_start", "Clear Activity every time Clickue starts "

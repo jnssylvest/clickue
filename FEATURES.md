@@ -124,6 +124,12 @@ Everything below is available in Clickue 4.5 unless it's under
 - **Screen changes** (remote session ↔ console, resolution, scaling): waits 15 s before
   counting checks again; explains when a search area drawn on another screen size may no
   longer cover the picture.
+- **Watchers that click inside a window watch that window too:** missing or minimized → can't
+  watch, nothing clicked (a click already counting down is cancelled); only looks inside it;
+  reports when another window covers it.
+- **Never "found" inside Clickue's own windows.**
+- **Every click logged with its timing:** when the change was first seen, when the click was
+  scheduled for, when it clicked (scheduled clicks: slot, random delay, due, clicked).
 - **Keeps checking during the random delay** before a click and cancels the click if the
   picture changes back (also checked right before clicking).
 - Live status in the list: Watching / Missing / Showing / Clicking / Off hours, last seen,
@@ -419,6 +425,15 @@ All tests hide the whole app while they run, so nothing is in the way.
 - Click the empty part of the job list to **unselect**; double-clicking there does nothing.
 - Number fields keep their **units right next to them** (h, m, s, seconds, %), with the same
   spacing everywhere.
+
+## Updates
+
+- **Upgrade in the app:** a check once a day (on by default) shows a dismissible notice when a
+  new version is out (Upgrade now, What's new, Later, Skip this version); ☰ Menu → Check for
+  updates. Upgrade now downloads the right package from GitHub, checks its SHA-256, backs up
+  your jobs, installs it (installed copies: silent installer, restarts; portable: swaps the
+  exe) and keeps your jobs and settings.
+- Turn checks off and Clickue never connects to the internet for updates.
 
 ## Install options
 

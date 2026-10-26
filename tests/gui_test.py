@@ -1142,6 +1142,45 @@ def t_fixes_456():
     dd.destroy(); pump(100)
 
 
+def t_fixes_460():
+    # update notice: shown, Later hides it, Skip remembers the version
+    info = {"version": "99.0", "name": "Clickue 99.0", "page": "https://github.com/jnssylvest/clickue/releases",
+            "assets": {}, "notes": "New things"}
+    app.settings["update_later_until"] = 0; app.settings["update_skip"] = ""
+    app.show_update_bar(info); pump(200)
+    ok("4.6 update notice appears", app.update_bar.winfo_ismapped() and "99.0" in app.update_lbl.cget("text"))
+    app.update_later(); pump(100)
+    ok("4.6 Later hides it", not app.update_bar.winfo_ismapped() and app.settings["update_later_until"] > time.time())
+    app.settings["update_later_until"] = 0
+    app.show_update_bar(info); pump(100); app.update_skip(); pump(100)
+    app.show_update_bar(info); pump(100)
+    ok("4.6 Skip this version: no notice for it again", not app.update_bar.winfo_ismapped())
+    app.settings["update_skip"] = ""
+    app.update_info = info
+    app.upgrade_now(); pump(400)
+    ud = find_dialog(ac.UpgradeDialog)
+    ok("4.6 upgrade window shows what's new (a source copy offers the release page)",
+       ud is not None and ud.kind == "source")
+    if ud:
+        ud.close(); pump(100)
+    app.open_settings(); pump(400)
+    sd = find_dialog(ac.SettingsDialog)
+    ok("4.6 preferences: update checks can be turned off", sd and "update_check" in sd.vars)
+    if sd:
+        btn(sd, "Cancel").invoke(); pump(100)
+    # Clickue's own windows are known (a watched picture never counts as found there)
+    pump(1200)
+    ok("4.6 Clickue knows where its own windows are", app.own_rects and all(len(r) == 4 for r in app.own_rects))
+    # tray tooltip isn't cut off for one watcher
+    w = next(j for j in app.jobs if j.get("kind") == "watch")
+    for j in app.jobs:
+        j["enabled"] = j is w
+    w.update(paused=False, watch_state="seen", watch_note="seen 99%", last_seen=time.time(),
+             next_check=time.time() + 12, issue_count=0, pending_click_at=None)
+    tip, _ = app.tray_status()
+    ok("4.6 tray tooltip shows the whole line (with the next check)", "next check in" in tip and len(tip) <= 127, tip)
+
+
 for name, fn in (("main", t_main), ("add click", add_click_job), ("edit/rows", t_edit_and_rows),
                  ("watcher", add_watcher), ("settings", t_settings), ("menu/dialogs", t_menu_and_dialogs),
                  ("steps/hours", t_steps_and_hours), ("watcher extras", t_watcher_extras),
@@ -1150,7 +1189,7 @@ for name, fn in (("main", t_main), ("add click", add_click_job), ("edit/rows", t
                  ("geometry", t_remember_geometry), ("workflows 4.5", t_workflows_45),
                  ("fixes 4.5.1", t_fixes_451), ("fixes 4.5.3", t_fixes_453),
                  ("fixes 4.5.4", t_fixes_454), ("fixes 4.5.5", t_fixes_455),
-                 ("fixes 4.5.6", t_fixes_456)):
+                 ("fixes 4.5.6", t_fixes_456), ("fixes 4.6", t_fixes_460)):
     step(name, fn)
     pump(200)
 

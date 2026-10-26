@@ -289,6 +289,31 @@ A job is a plain dict. **Settings fields** are saved and exported; **runtime fie
   palette colour and no fill (clam draws no border with relief flat).
 - **Tests window (4.5.4):** sections `tests_section` (all/click/watch) with `test_kind(name)`;
   per-section scope `tests_scopes`; no paned split any more (history right under the buttons).
+- **4.6 updates.** `fetch_latest_release()` (GitHub API, `UPDATE_API`), `https_get()` (HTTPS,
+  default SSL context, manual redirects only to `UPDATE_HOSTS`, size/time limits; tests set
+  `_HTTPS_GET`), `download_update()` (package by `install_kind()`: installer when
+  `install.ini` exists, portable when frozen without it, source otherwise; checked with
+  `expected_sha256` against SHA256SUMS.txt into `data_path("updates")`),
+  `extract_portable_exe()`. App: `auto_update_check` (hourly timer, checks at most every
+  `UPDATE_EVERY_S`, nothing at all while `update_check` is off), `check_for_updates`,
+  `show_update_bar` / `update_later` / `update_skip`, `UpgradeDialog`, `finish_upgrade`
+  (save, backup `before-upgrade-<v>`, `upgrade_pending`, then the installer with
+  `/SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RELAUNCH /ALLUSERS|/CURRENTUSER`,
+  or rename the running exe to `Clickue.old.exe` and swap in the new one; then quit),
+  `after_upgrade` (logs the result, clears the flag, removes `Clickue.old.exe`). The
+  install-id "keep your jobs?" question is skipped while `upgrade_pending` is set. The
+  installer's `[Run]` entry with `Check: WantRelaunch` restarts Clickue after a silent
+  `/RELAUNCH` install. Security rule (section 11) updated: GitHub is the only other network
+  destination, and only while the check is on.
+- **4.6 watchers.** `watch_window(job)` → "ok"/"missing"/"minimized"/"none" for watchers whose
+  button is `target_mode == "window"`; `watch_scope(job)` (Check now, Dry run, watcher tests)
+  and `watch_check` restrict the search to the window (∩ area), report missing/minimized via
+  `watch_issue(..., cancel_click=True)`, and `window_covering()` reports another window on top
+  where the picture was. `watch_click` re-checks the window too. `picture_on_screen(...,
+  exclude=)` drops candidates overlapping Clickue's own windows (`App.own_rects`, from
+  `ui_tick`, title bar included). Exact scaled matches report the verified score. Timing:
+  `first_miss_at`, `click_planned_at`, `planned_run` (runtime), `clock()`; logs and
+  `last_result` include them. Tray tooltip lines are only shortened when they don't fit.
 - **4.5.6 watcher engine.** `watch_check` runs during a pending click too (scheduler dues a
   `watchcheck` while `pending_click_at` is in the future; `next_check` during the delay is
   `min(interval, max(5, delay/4))`) and cancels it when the condition no longer holds;
@@ -547,8 +572,8 @@ pythonw src\clickue.py          rem or double-click scripts\Start Clickue.bat
   `scripts\make_version_file.py` for the exe's version details, then PyInstaller `--onefile
   --noconsole --icon assets\clickue.ico --version-file build\version_info.txt
   --hidden-import pystray._win32`).
-- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.5.6`, run
-  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.5.6.exe`. The installer shows
+- **Installer locally:** install Inno Setup 6, set `CLICKUE_VERSION=4.6.0`, run
+  `ISCC installer\clickue.iss` → `dist\Clickue-Setup-4.6.0.exe`. The installer shows
   `installer/before-install.txt` first; its uninstaller removes the HKCU Run value only when it
   points at `{app}`, and deletes `%APPDATA%\Clickue` only if the user says Yes (skipped when
   Clickue's own Uninstall passes `/KEEPDATA`).
@@ -562,8 +587,8 @@ Run from the repository root.
 
 | Command | What | Expected |
 |---|---|---|
-| `python tests/test_watchers.py` | (4.5.6: click cancelled when the picture returns during the delay or right before the click, screen-change settle, every can't-watch check logged, recovery, can't watch = problem, closest place logged, log levels) watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries), 4.5.3: search-area margin, partial matching, pointer on the picture, import of the match fields; 4.5.4: every copy (exact and partial), one changed digit, compression/noise, 125/150 % scaling, a 15 px icon among 60 others | `RESULT 53/53` |
-| `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id, guide link + pictures, 4.5.3 batch actions / delete + undo / Edit together | `RESULT 88/88` |
+| `python tests/test_watchers.py` | (4.5.6: click cancelled when the picture returns during the delay or right before the click, screen-change settle, every can't-watch check logged, recovery, can't watch = problem, closest place logged, log levels) watcher scenarios (seen/gone/flicker/scaling/look-alikes/retries), 4.5.3: search-area margin, partial matching, pointer on the picture, import of the match fields; 4.5.4: every copy (exact and partial), one changed digit, compression/noise, 125/150 % scaling, a 15 px icon among 60 others | `RESULT 61/61` |
+| `python tests/test_features.py` | hours, limits, steps, click chains, appears/area, history, backups, undo, alerts (faked network), migration, install id, guide link + pictures, 4.5.3 batch actions / delete + undo / Edit together | `RESULT 97/97` |
 | `python tests/test_click_spot.py` | click-spot matching at 3 picture sizes × 8 screens (100–175 % scaling, moved, look-alikes), with exact matching and with tolerant matching | `0 of 48` failures |
 | `python tests/test_workflows.py` | 4.5: alert hardening (hosts, redirects, rate limit, redaction), secrets out of backups/exports, DPAPI flow (simulated), import validation, data-folder safety, variables, blocks, if/repeat/retries/groups/limits/cancel/pause, held-input release, dry run, the input queue (order, watchers keep checking, yielding, emergency stop), conflicts, recorder compression, paste/clipboard flow, video (lifecycle, no codec, disk full, capture failure, redaction), run history + video positions, failure screenshots, schema migration, adapters | `RESULT N/N` |
 | `python tests/check_release.py` | docs links/anchors/pictures, version = changelog, disclosure placement, planned features marked planned, no secrets or private details in public files, workflow least privilege + pinned actions, uninstall boundaries | `RESULT N/N` |
@@ -639,6 +664,13 @@ Run from the repository root.
      and history; job with steps ▸ → ↳ rows; summary per view; Record button colour;
      "Move like a person" on a job, a step, a recorded macro (watch the pointer glide, also
      back) at Slow/Normal/Fast; Customize colours (wheel, code, ↺, both themes).
+   - 4.6: the update bar appears for a newer release (test by running an older build), Later /
+     Skip / What's new; Upgrade now from an installed copy (for me and for all users) and a
+     portable copy: jobs and settings kept, Clickue restarts, Activity says *Upgraded from …*,
+     no "keep your jobs?" question; turn checks off and confirm (e.g. with a firewall log) that
+     no connection is made; a window watcher with the browser minimized / closed / covered
+     (can't watch, no click, pending click cancelled); Clickue's window over the picture (never
+     "seen"); click logs show first seen / scheduled for / clicked; the tray tooltip isn't cut.
 
 ## 10. GitHub: repository, CI and releases
 
@@ -683,7 +715,9 @@ Run from the repository root.
 
 See [SECURITY.md](../SECURITY.md) for the review and remaining risks. Rules for changes:
 - No `eval`/`exec`/`pickle`/`shell=True`; subprocesses only with fixed, validated arguments.
-- No new network destinations, no telemetry. Alerts stay limited to the two services.
+- No new network destinations, no telemetry. Alerts stay limited to the two services; update
+  checks and downloads only to GitHub (`UPDATE_HOSTS`), only while `update_check` is on, and
+  every download is checksum-checked.
 - Secrets (`SECRET_KEYS`, secret step text) never go into logs, history, run history, backups,
   exports, error messages or screenshots/videos.
 - Anything read from a file the user didn't create in this app is untrusted: validate it.
